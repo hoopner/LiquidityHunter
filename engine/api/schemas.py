@@ -43,3 +43,29 @@ class AnalyzeResponse(BaseModel):
 class ReplayResponse(BaseModel):
     """Response schema for /replay endpoint."""
     frames: List[AnalyzeResponse]
+
+
+class ScreenResultSchema(BaseModel):
+    """Screening result for a single symbol."""
+    symbol: str
+    market: str
+    last_close: float
+    ema20: float
+    ema200: float
+    gap: float
+    slope_diff: float
+    days_to_cross: Optional[int]
+    score: int
+    reason: str
+
+
+class ScreenResponse(BaseModel):
+    """Response schema for /screen endpoint."""
+    market: str
+    candidates: List[ScreenResultSchema]
+
+
+class ScreenAllResponse(BaseModel):
+    """Response schema for /screen_all endpoint."""
+    kr_candidates: List[ScreenResultSchema]
+    us_candidates: List[ScreenResultSchema]
