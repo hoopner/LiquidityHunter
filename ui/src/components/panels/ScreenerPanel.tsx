@@ -2,10 +2,15 @@ import { useState } from 'react';
 import { fetchScreen } from '../../api/client';
 import type { ScreenResult } from '../../api/types';
 
+interface ScreenerPanelProps {
+  onStockSelect: (symbol: string, market: string) => void;
+  selectedSymbol: string;
+}
+
 /**
  * EMA Screener panel - finds stocks where EMA20 is approaching EMA200 from below
  */
-export function ScreenerPanel() {
+export function ScreenerPanel({ onStockSelect, selectedSymbol }: ScreenerPanelProps) {
   const [market, setMarket] = useState('KR');
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<ScreenResult[] | null>(null);
@@ -24,6 +29,10 @@ export function ScreenerPanel() {
     } finally {
       setIsSearching(false);
     }
+  };
+
+  const handleItemClick = (item: ScreenResult) => {
+    onStockSelect(item.symbol, item.market);
   };
 
   return (
@@ -74,40 +83,50 @@ export function ScreenerPanel() {
             조건에 맞는 종목이 없습니다
           </div>
         ) : results ? (
-          results.map((item) => (
-            <div
-              key={item.symbol}
-              className="px-3 py-2 border-b border-[var(--border-color)] hover:bg-[var(--bg-tertiary)] cursor-pointer"
-            >
-              <div className="flex justify-between items-center">
-                <div>
-                  <div className="font-medium">{item.symbol}</div>
-                  <div className="text-xs text-[var(--text-secondary)]">{item.market}</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[var(--accent-green)] font-medium">{item.score}</div>
-                  <div className="text-xs text-[var(--text-secondary)]">
-                    {item.days_to_cross}일 후 크로스
+          results.map((item) => {
+            const isSelected = item.symbol === selectedSymbol;
+            return (
+              <div
+                key={item.symbol}
+                onClick={() => handleItemClick(item)}
+                className={`px-3 py-2 border-b border-[var(--border-color)] cursor-pointer transition-colors
+                  ${isSelected
+                    ? 'bg-[var(--accent-blue)] bg-opacity-20 border-l-2 border-l-[var(--accent-blue)]'
+                    : 'hover:bg-[var(--bg-tertiary)]'
+                  }`}
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className={`font-medium ${isSelected ? 'text-[var(--accent-blue)]' : ''}`}>
+                      {item.symbol}
+                    </div>
+                    <div className="text-xs text-[var(--text-secondary)]">{item.market}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[var(--accent-green)] font-medium">{item.score}</div>
+                    <div className="text-xs text-[var(--text-secondary)]">
+                      {item.days_to_cross}일 후 크로스
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="mt-1 flex items-center gap-2">
-                <div className="flex-1 bg-[var(--bg-tertiary)] rounded-full h-1.5">
-                  <div
-                    className="bg-[var(--accent-green)] h-1.5 rounded-full"
-                    style={{ width: `${item.score}%` }}
-                  />
+                <div className="mt-1 flex items-center gap-2">
+                  <div className="flex-1 bg-[var(--bg-tertiary)] rounded-full h-1.5">
+                    <div
+                      className="bg-[var(--accent-green)] h-1.5 rounded-full"
+                      style={{ width: `${item.score}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-[var(--text-secondary)]">
+                    Gap: {(item.gap * 100).toFixed(1)}%
+                  </span>
                 </div>
-                <span className="text-xs text-[var(--text-secondary)]">
-                  Gap: {(item.gap * 100).toFixed(1)}%
-                </span>
+                <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                  EMA20: {item.ema20.toLocaleString(undefined, { maximumFractionDigits: 0 })} |
+                  EMA200: {item.ema200.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </div>
               </div>
-              <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                EMA20: {item.ema20.toLocaleString(undefined, { maximumFractionDigits: 0 })} |
-                EMA200: {item.ema200.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-              </div>
-            </div>
-          ))
+            );
+          })
         ) : null}
       </div>
     </div>

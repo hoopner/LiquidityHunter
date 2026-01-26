@@ -1,10 +1,25 @@
+import { useState } from 'react';
 import './App.css';
 import { MainChart } from './components/layout/MainChart';
 import { SubCharts } from './components/layout/SubCharts';
 import { Sidebar } from './components/layout/Sidebar';
 import { WhyPanel } from './components/layout/WhyPanel';
 
+export interface SelectedStock {
+  symbol: string;
+  market: string;
+}
+
 function App() {
+  const [selectedStock, setSelectedStock] = useState<SelectedStock>({
+    symbol: '005930',
+    market: 'KR',
+  });
+
+  const handleStockSelect = (symbol: string, market: string) => {
+    setSelectedStock({ symbol, market });
+  };
+
   return (
     <div className="h-screen w-screen flex flex-col bg-[var(--bg-primary)]">
       {/* Header */}
@@ -18,11 +33,11 @@ function App() {
             <button className="text-[var(--text-secondary)] hover:text-[var(--accent-blue)]">설정</button>
           </nav>
         </div>
-        <div className="ml-auto flex items-center gap-4">
-          <select className="bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded px-2 py-1 text-sm">
-            <option value="KR">KR 한국</option>
-            <option value="US">US 미국</option>
-          </select>
+        <div className="ml-auto flex items-center gap-4 text-sm">
+          <span className="text-[var(--text-secondary)]">
+            현재: <span className="text-[var(--text-primary)] font-medium">{selectedStock.symbol}</span>
+            <span className="text-[var(--accent-blue)] ml-1">({selectedStock.market})</span>
+          </span>
         </div>
       </header>
 
@@ -32,7 +47,7 @@ function App() {
         <div className="flex-1 flex flex-col">
           {/* Main chart */}
           <div className="flex-1">
-            <MainChart />
+            <MainChart symbol={selectedStock.symbol} market={selectedStock.market} />
           </div>
 
           {/* Sub charts (RSI, MACD, Volume) */}
@@ -43,7 +58,7 @@ function App() {
 
         {/* Right: Sidebar */}
         <div className="w-72">
-          <Sidebar />
+          <Sidebar onStockSelect={handleStockSelect} selectedStock={selectedStock} />
         </div>
       </div>
 

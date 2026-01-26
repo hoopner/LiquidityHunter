@@ -2,13 +2,19 @@ import { useState } from 'react';
 import { PortfolioPanel } from '../panels/PortfolioPanel';
 import { WatchlistPanel } from '../panels/WatchlistPanel';
 import { ScreenerPanel } from '../panels/ScreenerPanel';
+import type { SelectedStock } from '../../App';
 
 type PanelType = 'portfolio' | 'watchlist' | 'screener';
+
+interface SidebarProps {
+  onStockSelect: (symbol: string, market: string) => void;
+  selectedStock: SelectedStock;
+}
 
 /**
  * Right sidebar with collapsible panels
  */
-export function Sidebar() {
+export function Sidebar({ onStockSelect, selectedStock }: SidebarProps) {
   const [expandedPanel, setExpandedPanel] = useState<PanelType>('screener');
 
   const panels: { id: PanelType; title: string; titleKo: string }[] = [
@@ -20,11 +26,11 @@ export function Sidebar() {
   const renderPanel = (panelId: PanelType) => {
     switch (panelId) {
       case 'portfolio':
-        return <PortfolioPanel />;
+        return <PortfolioPanel onStockSelect={onStockSelect} selectedSymbol={selectedStock.symbol} />;
       case 'watchlist':
-        return <WatchlistPanel />;
+        return <WatchlistPanel onStockSelect={onStockSelect} selectedSymbol={selectedStock.symbol} />;
       case 'screener':
-        return <ScreenerPanel />;
+        return <ScreenerPanel onStockSelect={onStockSelect} selectedSymbol={selectedStock.symbol} />;
     }
   };
 
