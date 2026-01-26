@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -1193,3 +1194,188 @@ class StateExplanationBanner(QFrame):
         """Show generic error."""
         self._set_style("error")
         self.message_label.setText(f"Error: {error}")
+
+
+# ============================================================
+# Watchlist Editor Dialog
+# ============================================================
+
+
+class WatchlistEditorDialog(QWidget):
+    """Dialog for editing watchlist symbols."""
+
+    watchlist_saved = Signal()
+
+    def __init__(self, market: str, watchlist_path: str, parent=None):
+        super().__init__(parent)
+        self.market = market
+        self.watchlist_path = watchlist_path
+
+        self.setWindowTitle(f"Edit Watchlist - {market}")
+        self.setMinimumSize(400, 500)
+        self.setWindowFlags(Qt.WindowType.Window)
+
+        self._setup_ui()
+        self._load_watchlist()
+
+    def _setup_ui(self):
+        """Set up the dialog UI."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        # Header
+        header = QLabel(f"Watchlist: {self.market}")
+        font = header.font()
+        font.setBold(True)
+        font.setPointSize(14)
+        header.setFont(font)
+        layout.addWidget(header)
+
+        # Instructions
+        instructions = QLabel("One symbol per line. Edit directly or use controls below.")
+        instructions.setStyleSheet("color: #666;")
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        # Symbol list (text area)
+        self.symbol_text = QTextEdit()
+        self.symbol_text.setPlaceholderText("Enter symbols, one per line...")
+        self.symbol_text.setMinimumHeight(250)
+        layout.addWidget(self.symbol_text, stretch=1)
+
+        # Add symbol section
+        add_group = QGroupBox("Add Symbol")
+        add_layout = QHBoxLayout(add_group)
+
+        self.add_input = QLineEdit()
+        self.add_input.setPlaceholderText("Enter symbol...")
+        self.add_input.returnPressed.connect(self._on_add_clicked)
+        add_layout.addWidget(self.add_input, stretch=1)
+
+        self.add_btn = QPushButton("Add")
+        self.add_btn.clicked.connect(self._on_add_clicked)
+        add_layout.addWidget(self.add_btn)
+
+        layout.addWidget(add_group)
+
+        # Quick actions
+        actions_layout = QHBoxLayout()
+
+        self.sort_btn = QPushButton("Sort A-Z")
+        self.sort_btn.clicked.connect(self._on_sort_clicked)
+        actions_layout.addWidget(self.sort_btn)
+
+        self.remove_dupes_btn = QPushButton("Remove Duplicates")
+        self.remove_dupes_btn.clicked.connect(self._on_remove_dupes_clicked)
+        actions_layout.addWidget(self.remove_dupes_btn)
+
+        actions_layout.addStretch()
+        layout.addLayout(actions_layout)
+
+        # Symbol count
+        self.count_label = QLabel("Symbols: 0")
+        self.count_label.setStyleSheet("color: #666;")
+        layout.addWidget(self.count_label)
+
+        # Update count when text changes
+        self.symbol_text.textChanged.connect(self._update_count)
+
+        # Button row
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.close)
+        btn_layout.addWidget(self.cancel_btn)
+
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setStyleSheet(
+            "background-color: #3498db; color: white; font-weight: bold; "
+            "padding: 8px 20px;"
+        )
+        self.save_btn.clicked.connect(self._on_save_clicked)
+        btn_layout.addWidget(self.save_btn)
+
+        layout.addLayout(btn_layout)
+
+    def _load_watchlist(self):
+        """Load symbols from watchlist file."""
+        try:
+            from pathlib import Path
+            path = Path(self.watchlist_path)
+            if path.exists():
+                content = path.read_text()
+                self.symbol_text.setText(content)
+            else:
+                self.symbol_text.setText("")
+        except Exception as e:
+            self.symbol_text.setText("")
+            print(f"Error loading watchlist: {e}")
+
+        self._update_count()
+
+    def _get_symbols(self) -> list:
+        """Get list of symbols from text area."""
+        text = self.symbol_text.toPlainText()
+        symbols = [s.strip().upper() for s in text.splitlines() if s.strip()]
+        return symbols
+
+    def _set_symbols(self, symbols: list):
+        """Set symbols in text area."""
+        self.symbol_text.setText("\n".join(symbols))
+
+    def _update_count(self):
+        """Update the symbol count label."""
+        symbols = self._get_symbols()
+        self.count_label.setText(f"Symbols: {len(symbols)}")
+
+    def _on_add_clicked(self):
+        """Handle add button click."""
+        symbol = self.add_input.text().strip().upper()
+        if not symbol:
+            return
+
+        symbols = self._get_symbols()
+        if symbol not in symbols:
+            symbols.append(symbol)
+            self._set_symbols(symbols)
+
+        self.add_input.clear()
+        self.add_input.setFocus()
+
+    def _on_sort_clicked(self):
+        """Sort symbols alphabetically."""
+        symbols = self._get_symbols()
+        symbols.sort()
+        self._set_symbols(symbols)
+
+    def _on_remove_dupes_clicked(self):
+        """Remove duplicate symbols."""
+        symbols = self._get_symbols()
+        seen = set()
+        unique = []
+        for s in symbols:
+            if s not in seen:
+                seen.add(s)
+                unique.append(s)
+        self._set_symbols(unique)
+
+    def _on_save_clicked(self):
+        """Save watchlist to file."""
+        try:
+            from pathlib import Path
+            symbols = self._get_symbols()
+            content = "\n".join(symbols)
+            if symbols:
+                content += "\n"  # Trailing newline
+
+            path = Path(self.watchlist_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+
+            self.watchlist_saved.emit()
+            self.close()
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Failed to save watchlist: {e}")

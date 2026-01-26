@@ -35,6 +35,7 @@ from .widgets import (
     ServerHealthPanel,
     StateExplanationBanner,
     TabbedDetailDrawer,
+    WatchlistEditorDialog,
 )
 
 
@@ -105,6 +106,7 @@ class MainWindow(QMainWindow):
         self.current_coverage: Optional[CoverageInfo] = None
         self.current_results: List[ScreenResult] = []
         self.coverage_dialog: Optional[CoverageDetailDialog] = None
+        self.watchlist_dialog: Optional[WatchlistEditorDialog] = None
 
         # Zoom state
         self._scale_factor = self.SCALE_DEFAULT
@@ -307,6 +309,11 @@ class MainWindow(QMainWindow):
         self.market_list.setCurrentRow(0)
         self.market_list.currentRowChanged.connect(self.on_market_changed)
         layout.addWidget(self.market_list)
+
+        # Edit watchlist button
+        self.edit_watchlist_btn = QPushButton("Edit Watchlist")
+        self.edit_watchlist_btn.clicked.connect(self.on_edit_watchlist_clicked)
+        layout.addWidget(self.edit_watchlist_btn)
 
         layout.addSpacing(10)
 
@@ -716,3 +723,27 @@ class MainWindow(QMainWindow):
         """Update the cache size label in status bar."""
         size = self.client.analysis_cache.size
         self.cache_label.setText(f"Cache: {size}")
+
+    def on_edit_watchlist_clicked(self):
+        """Open the watchlist editor dialog."""
+        from .coverage import get_data_root, get_watchlist_path
+
+        data_root = get_data_root()
+        watchlist_path = get_watchlist_path(data_root, self.current_market)
+
+        self.watchlist_dialog = WatchlistEditorDialog(
+            market=self.current_market,
+            watchlist_path=str(watchlist_path),
+            parent=self,
+        )
+        self.watchlist_dialog.watchlist_saved.connect(self.on_watchlist_saved)
+        self.watchlist_dialog.show()
+
+    def on_watchlist_saved(self):
+        """Handle watchlist save - refresh coverage display."""
+        self.update_coverage()
+        self.results_table.setRowCount(0)
+        self.current_results = []
+        self.detail_drawer.clear()
+        self.candidates_label.setText("Candidates: -")
+        self.state_banner.show_ready()
