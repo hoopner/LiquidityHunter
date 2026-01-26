@@ -50,12 +50,15 @@ def load_csv(symbol: str, timeframe: str, data_dir: str = "data") -> OHLCVData:
     with open(filepath, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            timestamps.append(row["timestamp"])
-            opens.append(float(row["open"]))
-            highs.append(float(row["high"]))
-            lows.append(float(row["low"]))
-            closes.append(float(row["close"]))
-            volumes.append(float(row["volume"]))
+            # Handle both "Date" and "timestamp" column names
+            date_val = row.get("Date") or row.get("timestamp") or row.get("date", "")
+            timestamps.append(date_val)
+            # Handle both capitalized and lowercase column names
+            opens.append(float(row.get("Open") or row.get("open", 0)))
+            highs.append(float(row.get("High") or row.get("high", 0)))
+            lows.append(float(row.get("Low") or row.get("low", 0)))
+            closes.append(float(row.get("Close") or row.get("close", 0)))
+            volumes.append(float(row.get("Volume") or row.get("volume", 0)))
 
     return OHLCVData(
         timestamps=timestamps,

@@ -5,6 +5,7 @@ from typing import List, Optional
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 
 from engine.core.orderblock import detect_orderblock, OrderBlock
 from engine.core.screener import screen_watchlist, ScreenResult
@@ -18,12 +19,24 @@ from engine.api.schemas import (
     ScreenResultSchema,
     ScreenResponse,
     ScreenAllResponse,
+    OHLCVBar,
+    OHLCVResponse,
 )
+from engine.core.screener import ema
 
 app = FastAPI(
     title="LiquidityHunter",
     description="Phase 2: Order Block Detection API",
     version="0.1.0",
+)
+
+# Add CORS middleware for frontend development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -240,4 +253,57 @@ def screen_all(
     return ScreenAllResponse(
         kr_candidates=[_result_to_schema(r) for r in kr_results],
         us_candidates=[_result_to_schema(r) for r in us_results],
+    )
+
+
+# --- OHLCV endpoint (Phase 3.2) ---
+
+@app.get("/ohlcv", response_model=OHLCVResponse)
+def get_ohlcv(
+    symbol: str = Query(..., description="Symbol name"),
+    market: str = Query("KR", description="Market: KR or US"),
+    tf: str = Query("1D", description="Timeframe"),
+) -> OHLCVResponse:
+    """
+    Get OHLCV data with EMA indicators for charting.
+
+    Returns bars array with dates and EMA20/EMA200 values.
+    """
+    market = market.upper()
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    try:
+        data_dir = f"data/{market.lower()}"
+        data = load_csv(symbol, tf, data_dir=data_dir)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Build bars list
+    bars = []
+    for i in range(len(data.close)):
+        bars.append(OHLCVBar(
+            time=data.timestamps[i],
+            open=float(data.open[i]),
+            high=float(data.high[i]),
+            low=float(data.low[i]),
+            close=float(data.close[i]),
+            volume=float(data.volume[i]) if data.volume is not None else 0,
+        ))
+
+    # Calculate EMAs
+    ema20_values = ema(data.close, 20)
+    ema200_values = ema(data.close, 200)
+
+    # Convert to list, replacing NaN with None for JSON
+    ema20_list = [float(v) if not np.isnan(v) else 0 for v in ema20_values]
+    ema200_list = [float(v) if not np.isnan(v) else 0 for v in ema200_values]
+
+    return OHLCVResponse(
+        symbol=symbol,
+        market=market,
+        timeframe=tf,
+        bars=bars,
+        ema20=ema20_list,
+        ema200=ema200_list,
     )

@@ -69,3 +69,23 @@ class ScreenAllResponse(BaseModel):
     """Response schema for /screen_all endpoint."""
     kr_candidates: List[ScreenResultSchema]
     us_candidates: List[ScreenResultSchema]
+
+
+class OHLCVBar(BaseModel):
+    """Single OHLCV bar."""
+    time: str  # ISO date string YYYY-MM-DD
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class OHLCVResponse(BaseModel):
+    """Response schema for /ohlcv endpoint."""
+    symbol: str
+    market: str
+    timeframe: str
+    bars: List[OHLCVBar]
+    ema20: List[float]
+    ema200: List[float]
