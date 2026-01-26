@@ -117,27 +117,48 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         """Initialize the UI components."""
         self.setWindowTitle("LiquidityHunter Diagnostic Console")
-        self.setMinimumSize(1200, 850)
 
-        # Central widget
+        # Professional sizing: larger default, reasonable minimum
+        self.setMinimumSize(1000, 700)
+        self.resize(1600, 1000)
+
+        # Central widget with minimal margins
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # Create splitter for sidebar and main content
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter)
+        # Main horizontal splitter: sidebar | content area
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setHandleWidth(5)
+        self.main_splitter.setChildrenCollapsible(False)
+        main_layout.addWidget(self.main_splitter)
 
-        # Left sidebar
+        # Left sidebar (control panel)
         sidebar = self.create_sidebar()
-        splitter.addWidget(sidebar)
+        self.main_splitter.addWidget(sidebar)
 
-        # Main content area
-        content = self.create_content_area()
-        splitter.addWidget(content)
+        # Right area: vertical splitter for results table and detail drawer
+        self.content_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.content_splitter.setHandleWidth(5)
+        self.content_splitter.setChildrenCollapsible(False)
+        self.main_splitter.addWidget(self.content_splitter)
 
-        # Set splitter sizes (sidebar wider for new controls)
-        splitter.setSizes([220, 980])
+        # Upper content: results table area
+        results_area = self.create_results_area()
+        self.content_splitter.addWidget(results_area)
+
+        # Lower content: detail/analysis drawer
+        self.detail_drawer = TabbedDetailDrawer()
+        self.detail_drawer.load_analysis_requested.connect(self.on_load_analysis)
+        self.detail_drawer.setMinimumHeight(200)
+        self.content_splitter.addWidget(self.detail_drawer)
+
+        # Set splitter proportions (sidebar: 240px, content stretches)
+        self.main_splitter.setSizes([240, 1360])
+        # Results table gets more space than detail drawer (65% / 35%)
+        self.content_splitter.setSizes([600, 350])
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -217,21 +238,41 @@ class MainWindow(QMainWindow):
                     font-size: {scaled_font_size}pt;
                 }}
                 QTableWidget::item {{
-                    padding: {int(4 * self._scale_factor)}px;
+                    padding: {int(5 * self._scale_factor)}px;
                 }}
                 QHeaderView::section {{
                     font-size: {scaled_font_size}pt;
-                    padding: {int(4 * self._scale_factor)}px;
+                    padding: {int(6 * self._scale_factor)}px;
+                    background-color: #f5f5f5;
+                    border: 1px solid #ddd;
                 }}
                 QPushButton {{
-                    padding: {int(6 * self._scale_factor)}px {int(12 * self._scale_factor)}px;
+                    padding: {int(8 * self._scale_factor)}px {int(16 * self._scale_factor)}px;
                 }}
                 QGroupBox {{
                     font-size: {scaled_font_size}pt;
-                    padding-top: {int(10 * self._scale_factor)}px;
+                    font-weight: bold;
+                    padding-top: {int(12 * self._scale_factor)}px;
+                    margin-top: {int(8 * self._scale_factor)}px;
+                }}
+                QGroupBox::title {{
+                    subcontrol-origin: margin;
+                    padding: 0 {int(6 * self._scale_factor)}px;
                 }}
                 QListWidget::item {{
-                    padding: {int(4 * self._scale_factor)}px;
+                    padding: {int(5 * self._scale_factor)}px;
+                }}
+                QSplitter::handle {{
+                    background-color: #e0e0e0;
+                }}
+                QSplitter::handle:horizontal {{
+                    width: {int(5 * self._scale_factor)}px;
+                }}
+                QSplitter::handle:vertical {{
+                    height: {int(5 * self._scale_factor)}px;
+                }}
+                QSplitter::handle:hover {{
+                    background-color: #3498db;
                 }}
             """)
 
@@ -242,9 +283,11 @@ class MainWindow(QMainWindow):
     def create_sidebar(self) -> QWidget:
         """Create the left sidebar with controls."""
         sidebar = QWidget()
-        sidebar.setMaximumWidth(250)
+        sidebar.setMinimumWidth(200)
+        sidebar.setMaximumWidth(350)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
         # Market selector section
         market_label = QLabel("MARKET")
@@ -318,41 +361,40 @@ class MainWindow(QMainWindow):
 
         return sidebar
 
-    def create_content_area(self) -> QWidget:
-        """Create the main content area."""
+    def create_results_area(self) -> QWidget:
+        """Create the results table area (upper content panel)."""
         content = QWidget()
+        content.setMinimumHeight(300)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(12, 12, 12, 8)
+        layout.setSpacing(10)
 
         # Top bar with scan mode indicator
         top_bar = QHBoxLayout()
         self.mode_indicator = QLabel("Mode: WATCHLIST_ONLY")
         self.mode_indicator.setStyleSheet(
-            "background: #3498db; color: white; padding: 5px 15px; "
-            "border-radius: 3px; font-weight: bold;"
+            "background: #3498db; color: white; padding: 6px 18px; "
+            "border-radius: 4px; font-weight: bold;"
         )
         top_bar.addWidget(self.mode_indicator)
         top_bar.addStretch()
 
         self.market_indicator = QLabel("Market: KR")
         self.market_indicator.setStyleSheet(
-            "background: #2ecc71; color: white; padding: 5px 15px; "
-            "border-radius: 3px; font-weight: bold;"
+            "background: #2ecc71; color: white; padding: 6px 18px; "
+            "border-radius: 4px; font-weight: bold;"
         )
         top_bar.addWidget(self.market_indicator)
         layout.addLayout(top_bar)
-
-        layout.addSpacing(10)
 
         # State explanation banner (always visible)
         self.state_banner = StateExplanationBanner()
         layout.addWidget(self.state_banner)
 
-        layout.addSpacing(10)
-
         # Coverage summary section with clickable cards
         coverage_group = QGroupBox("Coverage Summary (click for details)")
         coverage_layout = QHBoxLayout(coverage_group)
+        coverage_layout.setSpacing(10)
 
         self.card_selected = CoverageCard("Watchlist", clickable=True)
         self.card_selected.clicked.connect(self.show_coverage_details)
@@ -377,9 +419,10 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(coverage_group)
 
-        # Results table section
+        # Results table section (stretches to fill remaining space)
         results_group = QGroupBox("Screener Results")
         results_layout = QVBoxLayout(results_group)
+        results_layout.setContentsMargins(8, 12, 8, 8)
 
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(9)
@@ -388,10 +431,11 @@ class MainWindow(QMainWindow):
             "EMA20", "EMA200", "Gap", "Slope Diff", "Reason"
         ])
 
-        # Configure table
+        # Configure table for professional appearance
         header = self.results_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
+        header.setMinimumSectionSize(60)
 
         self.results_table.setAlternatingRowColors(True)
         self.results_table.setSelectionBehavior(
@@ -401,16 +445,12 @@ class MainWindow(QMainWindow):
             QTableWidget.SelectionMode.SingleSelection
         )
         self.results_table.setSortingEnabled(True)
+        self.results_table.setShowGrid(True)
+        self.results_table.verticalHeader().setVisible(False)
         self.results_table.itemSelectionChanged.connect(self.on_row_selected)
 
         results_layout.addWidget(self.results_table)
         layout.addWidget(results_group, stretch=1)
-
-        # Tabbed detail drawer at bottom
-        self.detail_drawer = TabbedDetailDrawer()
-        self.detail_drawer.load_analysis_requested.connect(self.on_load_analysis)
-        self.detail_drawer.setMinimumHeight(280)
-        layout.addWidget(self.detail_drawer)
 
         return content
 
