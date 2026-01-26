@@ -35,6 +35,41 @@ class ScanMode(Enum):
         }[self]
 
 
+class CoverageTrustLevel(Enum):
+    """Trust level based on data coverage percentage."""
+
+    TRUSTED = "TRUSTED"  # >= 80% coverage
+    PARTIAL = "PARTIAL"  # >= 30% coverage
+    UNRELIABLE = "UNRELIABLE"  # < 30% coverage
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable display name."""
+        return {
+            CoverageTrustLevel.TRUSTED: "Trusted",
+            CoverageTrustLevel.PARTIAL: "Partial",
+            CoverageTrustLevel.UNRELIABLE: "Unreliable",
+        }[self]
+
+    @property
+    def description(self) -> str:
+        """Description of what this level means."""
+        return {
+            CoverageTrustLevel.TRUSTED: "≥80% of watchlist has sufficient data",
+            CoverageTrustLevel.PARTIAL: "30-79% of watchlist has data",
+            CoverageTrustLevel.UNRELIABLE: "<30% coverage - results incomplete",
+        }[self]
+
+    @property
+    def color(self) -> str:
+        """Color code for this trust level."""
+        return {
+            CoverageTrustLevel.TRUSTED: "#27ae60",  # Green
+            CoverageTrustLevel.PARTIAL: "#f39c12",  # Orange
+            CoverageTrustLevel.UNRELIABLE: "#e74c3c",  # Red
+        }[self]
+
+
 @dataclass
 class ScreenResult:
     """Screening result for a single symbol."""
@@ -131,6 +166,32 @@ class CoverageInfo:
     missing_symbols: List[str] = field(default_factory=list)
     insufficient_symbols: List[SymbolStatus] = field(default_factory=list)
     ready_symbols: List[str] = field(default_factory=list)
+
+    @property
+    def ready_count(self) -> int:
+        """Number of symbols ready for screening."""
+        return self.available_count - self.insufficient_data_count
+
+    @property
+    def coverage_percent(self) -> float:
+        """Coverage percentage (ready / selected)."""
+        if self.selected_size == 0:
+            return 0.0
+        return (self.ready_count / self.selected_size) * 100
+
+    @property
+    def trust_level(self) -> "CoverageTrustLevel":
+        """Calculate trust level from coverage."""
+        if self.selected_size == 0:
+            return CoverageTrustLevel.UNRELIABLE
+
+        pct = self.coverage_percent
+        if pct >= 80:
+            return CoverageTrustLevel.TRUSTED
+        elif pct >= 30:
+            return CoverageTrustLevel.PARTIAL
+        else:
+            return CoverageTrustLevel.UNRELIABLE
 
 
 @dataclass

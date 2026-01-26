@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from .models import (
     AnalyzeResult,
     CoverageInfo,
+    CoverageTrustLevel,
     FVG,
     OrderBlock,
     ScreenResult,
@@ -1035,3 +1036,160 @@ class TabbedDetailDrawer(QFrame):
     def current_result(self) -> Optional[ScreenResult]:
         """Get the current screen result."""
         return self._current_result
+
+
+# ============================================================
+# Reliability UX Widgets (Phase 2.9.1)
+# ============================================================
+
+
+class MarketDataStatusPanel(QFrame):
+    """Panel showing market data trust level and coverage stats."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Header
+        header = QLabel("MARKET DATA STATUS")
+        font = header.font()
+        font.setBold(True)
+        header.setFont(font)
+        layout.addWidget(header)
+
+        # Trust level indicator
+        trust_row = QHBoxLayout()
+        self.trust_icon = QLabel("●")
+        self.trust_icon.setStyleSheet("font-size: 18px; color: gray;")
+        trust_row.addWidget(self.trust_icon)
+
+        self.trust_label = QLabel("Not checked")
+        self.trust_label.setStyleSheet("font-weight: bold;")
+        trust_row.addWidget(self.trust_label)
+        trust_row.addStretch()
+        layout.addLayout(trust_row)
+
+        # Coverage percentage
+        self.coverage_label = QLabel("Coverage: -")
+        self.coverage_label.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(self.coverage_label)
+
+        # Description
+        self.desc_label = QLabel("")
+        self.desc_label.setWordWrap(True)
+        self.desc_label.setStyleSheet("color: #666; font-size: 10px;")
+        layout.addWidget(self.desc_label)
+
+    def update_from_coverage(self, coverage: Optional[CoverageInfo]):
+        """Update panel from coverage info."""
+        if coverage is None:
+            self.trust_icon.setStyleSheet("font-size: 18px; color: gray;")
+            self.trust_label.setText("Unknown")
+            self.trust_label.setStyleSheet("font-weight: bold; color: gray;")
+            self.coverage_label.setText("Coverage: -")
+            self.desc_label.setText("No coverage data available")
+            return
+
+        trust = coverage.trust_level
+        color = trust.color
+
+        self.trust_icon.setStyleSheet(f"font-size: 18px; color: {color};")
+        self.trust_label.setText(trust.display_name.upper())
+        self.trust_label.setStyleSheet(f"font-weight: bold; color: {color};")
+
+        self.coverage_label.setText(
+            f"Coverage: {coverage.ready_count}/{coverage.selected_size} "
+            f"({coverage.coverage_percent:.0f}%)"
+        )
+        self.desc_label.setText(trust.description)
+
+
+class StateExplanationBanner(QFrame):
+    """Banner showing one-line explanation of current application state."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
+        self.setMinimumHeight(40)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(15, 8, 15, 8)
+
+        self.icon_label = QLabel("ℹ")
+        self.icon_label.setStyleSheet("font-size: 16px;")
+        layout.addWidget(self.icon_label)
+
+        self.message_label = QLabel("Ready")
+        self.message_label.setWordWrap(True)
+        layout.addWidget(self.message_label, stretch=1)
+
+        self._set_style("info")
+
+    def _set_style(self, style: str):
+        """Set the banner style (info, warning, error, success)."""
+        styles = {
+            "info": ("#3498db", "#ebf5fb", "ℹ"),
+            "warning": ("#f39c12", "#fef9e7", "⚠"),
+            "error": ("#e74c3c", "#fdedec", "✗"),
+            "success": ("#27ae60", "#eafaf1", "✓"),
+        }
+        color, bg_color, icon = styles.get(style, styles["info"])
+
+        self.setStyleSheet(
+            f"background-color: {bg_color}; "
+            f"border: 1px solid {color}; "
+            f"border-radius: 4px;"
+        )
+        self.icon_label.setStyleSheet(f"font-size: 16px; color: {color};")
+        self.icon_label.setText(icon)
+        self.message_label.setStyleSheet(f"color: {color};")
+
+    def show_server_disconnected(self, message: str = ""):
+        """Show server disconnected state."""
+        self._set_style("error")
+        msg = "Server disconnected"
+        if message:
+            msg += f": {message}"
+        self.message_label.setText(msg)
+
+    def show_data_unreliable(self, coverage: CoverageInfo):
+        """Show unreliable data coverage warning."""
+        self._set_style("warning")
+        self.message_label.setText(
+            f"Data coverage too low ({coverage.coverage_percent:.0f}%). "
+            f"Only {coverage.ready_count} of {coverage.selected_size} symbols have data. "
+            "Results may be incomplete."
+        )
+
+    def show_no_candidates(self, coverage: CoverageInfo):
+        """Show no candidates found (but data is OK)."""
+        self._set_style("info")
+        self.message_label.setText(
+            f"No candidates found. {coverage.ready_count} symbols scanned, "
+            "but none meet the screening criteria."
+        )
+
+    def show_candidates_found(self, count: int):
+        """Show candidates found successfully."""
+        self._set_style("success")
+        self.message_label.setText(f"Found {count} candidate(s) matching criteria.")
+
+    def show_loading(self):
+        """Show loading state."""
+        self._set_style("info")
+        self.message_label.setText("Loading screening results...")
+
+    def show_ready(self):
+        """Show ready to refresh state."""
+        self._set_style("info")
+        self.message_label.setText(
+            "Click 'Refresh Data' to load screening results."
+        )
+
+    def show_error(self, error: str):
+        """Show generic error."""
+        self._set_style("error")
+        self.message_label.setText(f"Error: {error}")

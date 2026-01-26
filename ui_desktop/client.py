@@ -240,31 +240,51 @@ class LHClient:
         self.analysis_cache.clear()
         return count
 
-    def check_health(self) -> ServerHealth:
-        """Check if the server is reachable with detailed health info.
+    def check_health(self, market: str = "KR") -> ServerHealth:
+        """Check if the server is reachable by testing the /screen endpoint.
+
+        Tests the actual /screen endpoint to verify the server can process
+        screening requests, not just that it's running.
+
+        Args:
+            market: Market code to test (KR or US)
 
         Returns:
             ServerHealth with detailed status information
         """
+        url = f"{self.base_url}/screen"
+        params = {"market": market, "top_n": 1}  # Minimal request
+
         start_time = time.time()
         try:
-            response = requests.get(f"{self.base_url}/", timeout=5)
+            response = requests.get(url, params=params, timeout=5)
             elapsed_ms = (time.time() - start_time) * 1000
+
             if response.status_code == 200:
                 return ServerHealth(
                     is_healthy=True,
                     status_code=response.status_code,
                     response_time_ms=elapsed_ms,
-                    message="Server is healthy",
-                    base_url=self.base_url,
+                    message=f"/screen endpoint OK for {market}",
+                    base_url=url,
                 )
-            return ServerHealth(
-                is_healthy=False,
-                status_code=response.status_code,
-                response_time_ms=elapsed_ms,
-                message=f"Unexpected status code: {response.status_code}",
-                base_url=self.base_url,
-            )
+            elif response.status_code == 422:
+                # Validation error - server is up but request issue
+                return ServerHealth(
+                    is_healthy=True,
+                    status_code=response.status_code,
+                    response_time_ms=elapsed_ms,
+                    message="Server reachable (validation error)",
+                    base_url=url,
+                )
+            else:
+                return ServerHealth(
+                    is_healthy=False,
+                    status_code=response.status_code,
+                    response_time_ms=elapsed_ms,
+                    message=f"Endpoint error: HTTP {response.status_code}",
+                    base_url=url,
+                )
         except ConnectionError:
             elapsed_ms = (time.time() - start_time) * 1000
             return ServerHealth(
@@ -272,7 +292,7 @@ class LHClient:
                 status_code=None,
                 response_time_ms=elapsed_ms,
                 message="Connection refused - server not running",
-                base_url=self.base_url,
+                base_url=url,
             )
         except Timeout:
             elapsed_ms = (time.time() - start_time) * 1000
@@ -281,7 +301,7 @@ class LHClient:
                 status_code=None,
                 response_time_ms=elapsed_ms,
                 message="Connection timed out",
-                base_url=self.base_url,
+                base_url=url,
             )
         except RequestException as e:
             elapsed_ms = (time.time() - start_time) * 1000
@@ -290,7 +310,7 @@ class LHClient:
                 status_code=None,
                 response_time_ms=elapsed_ms,
                 message=str(e),
-                base_url=self.base_url,
+                base_url=url,
             )
 
     def test_endpoint(self, endpoint: str) -> ServerHealth:

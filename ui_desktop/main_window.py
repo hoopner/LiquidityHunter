@@ -29,8 +29,10 @@ from .models import CoverageInfo, ScreenResponse, ScreenResult, ScanMode
 from .widgets import (
     CoverageCard,
     CoverageDetailDialog,
+    MarketDataStatusPanel,
     ScanModeSelector,
     ServerHealthPanel,
+    StateExplanationBanner,
     TabbedDetailDrawer,
 )
 
@@ -55,12 +57,13 @@ class HealthCheckWorker(QThread):
 
     finished = Signal(object)  # ServerHealth
 
-    def __init__(self, client: LHClient):
+    def __init__(self, client: LHClient, market: str = "KR"):
         super().__init__()
         self.client = client
+        self.market = market
 
     def run(self):
-        health = self.client.check_health()
+        health = self.client.check_health(self.market)
         self.finished.emit(health)
 
 
@@ -173,6 +176,12 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(10)
 
+        # Market data status panel (trust level)
+        self.data_status_panel = MarketDataStatusPanel()
+        layout.addWidget(self.data_status_panel)
+
+        layout.addSpacing(10)
+
         # Server health panel
         self.health_panel = ServerHealthPanel()
         self.health_panel.test_requested.connect(self.check_server_health)
@@ -234,6 +243,12 @@ class MainWindow(QMainWindow):
         )
         top_bar.addWidget(self.market_indicator)
         layout.addLayout(top_bar)
+
+        layout.addSpacing(10)
+
+        # State explanation banner (always visible)
+        self.state_banner = StateExplanationBanner()
+        layout.addWidget(self.state_banner)
 
         layout.addSpacing(10)
 
@@ -307,7 +322,7 @@ class MainWindow(QMainWindow):
             return
 
         self.health_panel.set_checking()
-        self.health_worker = HealthCheckWorker(self.client)
+        self.health_worker = HealthCheckWorker(self.client, self.current_market)
         self.health_worker.finished.connect(self.on_health_check_finished)
         self.health_worker.start()
 
@@ -319,9 +334,13 @@ class MainWindow(QMainWindow):
         if health.is_healthy:
             self.connection_label.setText("Server: OK")
             self.connection_label.setStyleSheet("color: green;")
+            # Don't override state banner if we have results
+            if not self.current_results:
+                self.state_banner.show_ready()
         else:
             self.connection_label.setText(f"Server: {health.message[:30]}")
             self.connection_label.setStyleSheet("color: red;")
+            self.state_banner.show_server_disconnected(health.message)
 
     def update_coverage(self):
         """Update coverage cards from local files."""
@@ -329,6 +348,7 @@ class MainWindow(QMainWindow):
             data_root = get_data_root()
             self.current_coverage = compute_coverage(data_root, self.current_market)
             self.display_coverage(self.current_coverage)
+            self.data_status_panel.update_from_coverage(self.current_coverage)
         except Exception as e:
             self.current_coverage = None
             self.card_selected.set_value("-")
@@ -336,6 +356,7 @@ class MainWindow(QMainWindow):
             self.card_missing.set_value("-")
             self.card_insufficient.set_value("-")
             self.card_ready.set_value("-")
+            self.data_status_panel.update_from_coverage(None)
 
     def display_coverage(self, coverage: CoverageInfo):
         """Display coverage statistics in cards."""
@@ -376,6 +397,9 @@ class MainWindow(QMainWindow):
             self.current_results = []
             self.detail_drawer.clear()
             self.candidates_label.setText("Candidates: -")
+            self.state_banner.show_ready()
+            # Re-check server health for new market
+            self.check_server_health()
 
     def on_scan_mode_changed(self, mode: ScanMode):
         """Handle scan mode change."""
@@ -389,6 +413,7 @@ class MainWindow(QMainWindow):
 
         self.refresh_btn.setEnabled(False)
         self.refresh_btn.setText("Loading...")
+        self.state_banner.show_loading()
 
         self.worker = FetchWorker(self.client, self.current_market)
         self.worker.finished.connect(self.on_fetch_finished)
@@ -402,22 +427,49 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.timestamp_label.setText(f"Last refresh: {timestamp}")
 
+        # Update coverage first so we have the latest data
+        self.update_coverage()
+
         if result.success:
             self.display_results(result.data)
             self.connection_label.setText("Server: OK")
             self.connection_label.setStyleSheet("color: green;")
-            self.candidates_label.setText(
-                f"Candidates: {len(result.data.candidates)}"
-            )
+
+            candidate_count = len(result.data.candidates)
+            self.candidates_label.setText(f"Candidates: {candidate_count}")
+
+            # Update state banner based on results and coverage
+            self._update_state_banner(candidate_count)
         else:
             self.connection_label.setText(f"Server: {result.error[:30]}")
             self.connection_label.setStyleSheet("color: red;")
             self.results_table.setRowCount(0)
             self.current_results = []
             self.candidates_label.setText("Candidates: Error")
+            self.state_banner.show_server_disconnected(result.error)
 
-        self.update_coverage()
         self.update_cache_label()
+
+    def _update_state_banner(self, candidate_count: int):
+        """Update state banner based on results and coverage."""
+        from .models import CoverageTrustLevel
+
+        # Check coverage status first
+        if self.current_coverage is None:
+            self.state_banner.show_error("Unable to read coverage data")
+            return
+
+        trust = self.current_coverage.trust_level
+
+        # If coverage is unreliable, always show warning
+        if trust == CoverageTrustLevel.UNRELIABLE:
+            self.state_banner.show_data_unreliable(self.current_coverage)
+        elif candidate_count == 0:
+            # Data is OK but no candidates found
+            self.state_banner.show_no_candidates(self.current_coverage)
+        else:
+            # Candidates found
+            self.state_banner.show_candidates_found(candidate_count)
 
     def display_results(self, response: ScreenResponse):
         """Display screening results in the table."""
