@@ -4,8 +4,9 @@ from datetime import datetime
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -86,6 +87,13 @@ class AnalyzeWorker(QThread):
 class MainWindow(QMainWindow):
     """Main application window."""
 
+    # Zoom constants
+    SCALE_DEFAULT = 1.0
+    SCALE_MIN = 0.5
+    SCALE_MAX = 2.0
+    SCALE_STEP = 0.1
+    BASE_FONT_SIZE = 13  # Default macOS font size
+
     def __init__(self):
         super().__init__()
         self.client = LHClient()
@@ -98,7 +106,11 @@ class MainWindow(QMainWindow):
         self.current_results: List[ScreenResult] = []
         self.coverage_dialog: Optional[CoverageDetailDialog] = None
 
+        # Zoom state
+        self._scale_factor = self.SCALE_DEFAULT
+
         self.setup_ui()
+        self.setup_zoom_shortcuts()
         self.update_coverage()
         self.check_server_health()
 
@@ -136,10 +148,96 @@ class MainWindow(QMainWindow):
         self.timestamp_label = QLabel("Last refresh: -")
         self.candidates_label = QLabel("Candidates: -")
         self.cache_label = QLabel("Cache: 0")
+        self.zoom_label = QLabel("Zoom: 100%")
+        self.zoom_label.setStyleSheet("color: #666;")
         self.status_bar.addWidget(self.connection_label)
         self.status_bar.addWidget(self.candidates_label)
         self.status_bar.addWidget(self.cache_label)
+        self.status_bar.addWidget(self.zoom_label)
         self.status_bar.addPermanentWidget(self.timestamp_label)
+
+    def setup_zoom_shortcuts(self):
+        """Set up keyboard shortcuts for zoom controls."""
+        # Cmd+Plus (Cmd+=) to zoom in
+        zoom_in_shortcut = QShortcut(QKeySequence.StandardKey.ZoomIn, self)
+        zoom_in_shortcut.activated.connect(self.zoom_in)
+
+        # Also support Cmd+= directly (without shift)
+        zoom_in_alt = QShortcut(QKeySequence("Ctrl+="), self)
+        zoom_in_alt.activated.connect(self.zoom_in)
+
+        # Cmd+Minus to zoom out
+        zoom_out_shortcut = QShortcut(QKeySequence.StandardKey.ZoomOut, self)
+        zoom_out_shortcut.activated.connect(self.zoom_out)
+
+        # Cmd+0 to reset zoom
+        reset_zoom_shortcut = QShortcut(QKeySequence("Ctrl+0"), self)
+        reset_zoom_shortcut.activated.connect(self.reset_zoom)
+
+    def zoom_in(self):
+        """Increase UI scale factor."""
+        new_scale = min(self._scale_factor + self.SCALE_STEP, self.SCALE_MAX)
+        if new_scale != self._scale_factor:
+            self._scale_factor = new_scale
+            self.apply_scale()
+
+    def zoom_out(self):
+        """Decrease UI scale factor."""
+        new_scale = max(self._scale_factor - self.SCALE_STEP, self.SCALE_MIN)
+        if new_scale != self._scale_factor:
+            self._scale_factor = new_scale
+            self.apply_scale()
+
+    def reset_zoom(self):
+        """Reset UI scale to default."""
+        if self._scale_factor != self.SCALE_DEFAULT:
+            self._scale_factor = self.SCALE_DEFAULT
+            self.apply_scale()
+
+    def apply_scale(self):
+        """Apply the current scale factor to the entire UI."""
+        # Calculate scaled font size
+        scaled_font_size = int(self.BASE_FONT_SIZE * self._scale_factor)
+
+        # Apply global stylesheet with scaled font
+        # This scales fonts, paddings, and other size-dependent properties
+        app = QApplication.instance()
+        if app:
+            # Set application-wide font
+            font = app.font()
+            font.setPointSize(scaled_font_size)
+            app.setFont(font)
+
+            # Apply stylesheet for consistent scaling
+            app.setStyleSheet(f"""
+                * {{
+                    font-size: {scaled_font_size}pt;
+                }}
+                QTableWidget {{
+                    font-size: {scaled_font_size}pt;
+                }}
+                QTableWidget::item {{
+                    padding: {int(4 * self._scale_factor)}px;
+                }}
+                QHeaderView::section {{
+                    font-size: {scaled_font_size}pt;
+                    padding: {int(4 * self._scale_factor)}px;
+                }}
+                QPushButton {{
+                    padding: {int(6 * self._scale_factor)}px {int(12 * self._scale_factor)}px;
+                }}
+                QGroupBox {{
+                    font-size: {scaled_font_size}pt;
+                    padding-top: {int(10 * self._scale_factor)}px;
+                }}
+                QListWidget::item {{
+                    padding: {int(4 * self._scale_factor)}px;
+                }}
+            """)
+
+        # Update zoom indicator
+        zoom_percent = int(self._scale_factor * 100)
+        self.zoom_label.setText(f"Zoom: {zoom_percent}%")
 
     def create_sidebar(self) -> QWidget:
         """Create the left sidebar with controls."""
