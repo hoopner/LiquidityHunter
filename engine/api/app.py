@@ -21,6 +21,12 @@ from engine.api.schemas import (
     ScreenAllResponse,
     OHLCVBar,
     OHLCVResponse,
+    WatchlistItem,
+    WatchlistResponse,
+    AddSymbolRequest,
+    AddSymbolResponse,
+    RemoveSymbolRequest,
+    RemoveSymbolResponse,
 )
 from engine.core.screener import ema
 
@@ -306,4 +312,169 @@ def get_ohlcv(
         bars=bars,
         ema20=ema20_list,
         ema200=ema200_list,
+    )
+
+
+# --- Watchlist endpoints ---
+
+def _get_watchlist_path(market: str) -> Path:
+    """Get watchlist file path for a market."""
+    return DATA_DIR / f"{market.lower()}_watchlist.txt"
+
+
+def _get_data_path(symbol: str, market: str, tf: str = "1D") -> Path:
+    """Get data file path for a symbol."""
+    return DATA_DIR / market.lower() / f"{symbol}_{tf}.csv"
+
+
+def _count_bars(symbol: str, market: str) -> int:
+    """Count bars in data file. Returns 0 if file doesn't exist."""
+    data_path = _get_data_path(symbol, market)
+    if not data_path.exists():
+        return 0
+    try:
+        with open(data_path, "r") as f:
+            # Subtract 1 for header
+            return max(0, sum(1 for _ in f) - 1)
+    except Exception:
+        return 0
+
+
+@app.get("/watchlist", response_model=WatchlistResponse)
+def get_watchlist(
+    market: str = Query(..., description="Market: KR or US"),
+) -> WatchlistResponse:
+    """Get watchlist for a market with data availability info."""
+    market = market.upper()
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    symbols = _load_watchlist(f"{market.lower()}_watchlist.txt")
+
+    items = []
+    for symbol in symbols:
+        bar_count = _count_bars(symbol, market)
+        items.append(WatchlistItem(
+            symbol=symbol,
+            market=market,
+            has_data=bar_count > 0,
+            bar_count=bar_count,
+        ))
+
+    return WatchlistResponse(market=market, symbols=items)
+
+
+@app.post("/watchlist/add", response_model=AddSymbolResponse)
+def add_to_watchlist(request: AddSymbolRequest) -> AddSymbolResponse:
+    """Add symbol to watchlist and download OHLCV data."""
+    symbol = request.symbol.upper().strip()
+    market = request.market.upper()
+
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol cannot be empty")
+
+    # Check if already in watchlist
+    watchlist_path = _get_watchlist_path(market)
+    existing = _load_watchlist(f"{market.lower()}_watchlist.txt")
+    if symbol in existing:
+        bar_count = _count_bars(symbol, market)
+        return AddSymbolResponse(
+            success=True,
+            symbol=symbol,
+            market=market,
+            message="Symbol already in watchlist",
+            bar_count=bar_count,
+        )
+
+    # Download data using yfinance
+    try:
+        import yfinance as yf
+        from datetime import datetime, timedelta
+
+        # Determine ticker format
+        if market == "KR":
+            ticker = f"{symbol}.KS"
+        else:
+            ticker = symbol
+
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=500)
+
+        stock = yf.Ticker(ticker)
+        df = stock.history(start=start_date, end=end_date)
+
+        if df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No data found for {symbol} in {market} market"
+            )
+
+        # Save to CSV
+        df = df.reset_index()
+        df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
+
+        data_dir = DATA_DIR / market.lower()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        data_path = data_dir / f"{symbol}_1D.csv"
+        df.to_csv(data_path, index=False)
+
+        bar_count = len(df)
+
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="yfinance not installed. Run: pip install yfinance"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download data: {str(e)}")
+
+    # Add to watchlist file
+    watchlist_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(watchlist_path, "a") as f:
+        f.write(f"{symbol}\n")
+
+    return AddSymbolResponse(
+        success=True,
+        symbol=symbol,
+        market=market,
+        message=f"Added {symbol} with {bar_count} bars",
+        bar_count=bar_count,
+    )
+
+
+@app.post("/watchlist/remove", response_model=RemoveSymbolResponse)
+def remove_from_watchlist(request: RemoveSymbolRequest) -> RemoveSymbolResponse:
+    """Remove symbol from watchlist (keeps data file)."""
+    symbol = request.symbol.upper().strip()
+    market = request.market.upper()
+
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    watchlist_path = _get_watchlist_path(market)
+    existing = _load_watchlist(f"{market.lower()}_watchlist.txt")
+
+    if symbol not in existing:
+        return RemoveSymbolResponse(
+            success=False,
+            symbol=symbol,
+            market=market,
+            message="Symbol not in watchlist",
+        )
+
+    # Remove from list and rewrite file
+    existing.remove(symbol)
+    with open(watchlist_path, "w") as f:
+        for s in existing:
+            f.write(f"{s}\n")
+
+    return RemoveSymbolResponse(
+        success=True,
+        symbol=symbol,
+        market=market,
+        message=f"Removed {symbol} from watchlist",
     )

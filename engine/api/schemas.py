@@ -89,3 +89,48 @@ class OHLCVResponse(BaseModel):
     bars: List[OHLCVBar]
     ema20: List[float]
     ema200: List[float]
+
+
+# --- Watchlist schemas ---
+
+class WatchlistItem(BaseModel):
+    """Single watchlist item."""
+    symbol: str
+    market: str
+    has_data: bool
+    bar_count: int
+
+
+class WatchlistResponse(BaseModel):
+    """Response for GET /watchlist."""
+    market: str
+    symbols: List[WatchlistItem]
+
+
+class AddSymbolRequest(BaseModel):
+    """Request body for POST /watchlist/add."""
+    symbol: str
+    market: str
+
+
+class AddSymbolResponse(BaseModel):
+    """Response for POST /watchlist/add."""
+    success: bool
+    symbol: str
+    market: str
+    message: str
+    bar_count: int
+
+
+class RemoveSymbolRequest(BaseModel):
+    """Request body for DELETE /watchlist/remove."""
+    symbol: str
+    market: str
+
+
+class RemoveSymbolResponse(BaseModel):
+    """Response for DELETE /watchlist/remove."""
+    success: bool
+    symbol: str
+    market: str
+    message: str

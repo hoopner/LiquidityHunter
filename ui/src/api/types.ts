@@ -37,3 +37,32 @@ export interface ScreenResponse {
   market: string;
   candidates: ScreenResult[];
 }
+
+// Watchlist types
+
+export interface WatchlistItem {
+  symbol: string;
+  market: string;
+  has_data: boolean;
+  bar_count: number;
+}
+
+export interface WatchlistResponse {
+  market: string;
+  symbols: WatchlistItem[];
+}
+
+export interface AddSymbolResponse {
+  success: boolean;
+  symbol: string;
+  market: string;
+  message: string;
+  bar_count: number;
+}
+
+export interface RemoveSymbolResponse {
+  success: boolean;
+  symbol: string;
+  market: string;
+  message: string;
+}

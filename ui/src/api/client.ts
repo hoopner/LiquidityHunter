@@ -2,7 +2,13 @@
  * API client for LiquidityHunter backend
  */
 
-import type { OHLCVResponse, ScreenResponse } from './types';
+import type {
+  OHLCVResponse,
+  ScreenResponse,
+  WatchlistResponse,
+  AddSymbolResponse,
+  RemoveSymbolResponse,
+} from './types';
 
 const BASE_URL = 'http://localhost:8000';
 
@@ -43,6 +49,63 @@ export async function fetchScreen(
   });
 
   const response = await fetch(`${BASE_URL}/screen?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch watchlist for a market
+ */
+export async function fetchWatchlist(market: string = 'KR'): Promise<WatchlistResponse> {
+  const params = new URLSearchParams({ market });
+  const response = await fetch(`${BASE_URL}/watchlist?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Add symbol to watchlist and download data
+ */
+export async function addToWatchlist(
+  symbol: string,
+  market: string
+): Promise<AddSymbolResponse> {
+  const response = await fetch(`${BASE_URL}/watchlist/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, market }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Remove symbol from watchlist
+ */
+export async function removeFromWatchlist(
+  symbol: string,
+  market: string
+): Promise<RemoveSymbolResponse> {
+  const response = await fetch(`${BASE_URL}/watchlist/remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, market }),
+  });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
