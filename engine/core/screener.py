@@ -184,12 +184,16 @@ def screen_symbol(
         # NO_CONVERGENCE: d0 > 0 and v <= 0
         reason = "NO_CONVERGENCE"
         score = 0
+    elif days == 0:
+        # ALREADY_CROSSED: EMA20 is already above EMA200
+        reason = "ALREADY_CROSSED"
+        score = 0
     elif days > 30:
         # OUT_OF_WINDOW
         reason = "OUT_OF_WINDOW"
         score = 0
     else:
-        # OK: days_to_cross in [0..30]
+        # OK: days_to_cross in [1..30], EMA20 below EMA200 and approaching
         reason = "OK"
         score = score_candidate(days, d0, v, ema200_val)
 
