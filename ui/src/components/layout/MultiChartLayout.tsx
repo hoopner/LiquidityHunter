@@ -33,6 +33,20 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
   const [maximizedCell, setMaximizedCell] = useState<number | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>('1D');
 
+  // Handle layout change - clamp selectedCell to valid range
+  const handleLayoutChange = (newLayout: LayoutType) => {
+    setLayout(newLayout);
+    // Reset maximized view when changing layout
+    setMaximizedCell(null);
+    // Clamp selectedCell to valid range for new layout
+    if (selectedCell >= newLayout) {
+      setSelectedCell(0);
+      // Also update parent with the first cell's symbol
+      const firstCell = cells[0];
+      onStockSelect(firstCell.symbol, firstCell.market);
+    }
+  };
+
   // Update selected cell's symbol when sidebar selection changes
   useEffect(() => {
     if (layout > 1) {
@@ -89,7 +103,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
         {/* Layout selector in a thin bar */}
         <div className="flex items-center gap-2 px-4 py-1 border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
           <span className="text-xs text-[var(--text-secondary)] mr-2">레이아웃:</span>
-          <LayoutButtons layout={layout} setLayout={setLayout} />
+          <LayoutButtons layout={layout} setLayout={handleLayoutChange} />
           <div className="ml-4 flex items-center gap-1 bg-[var(--bg-tertiary)] rounded p-0.5">
             {TIMEFRAMES.map((tf) => (
               <button
@@ -134,7 +148,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
         {/* Header with restore button */}
         <div className="flex items-center gap-2 px-4 py-1 border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
           <span className="text-xs text-[var(--text-secondary)] mr-2">레이아웃:</span>
-          <LayoutButtons layout={layout} setLayout={setLayout} />
+          <LayoutButtons layout={layout} setLayout={handleLayoutChange} />
           <div className="ml-4 flex items-center gap-1 bg-[var(--bg-tertiary)] rounded p-0.5">
             {TIMEFRAMES.map((tf) => (
               <button
@@ -183,7 +197,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
       {/* Layout selector */}
       <div className="flex items-center gap-2 px-4 py-1 border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
         <span className="text-xs text-[var(--text-secondary)] mr-2">레이아웃:</span>
-        <LayoutButtons layout={layout} setLayout={setLayout} />
+        <LayoutButtons layout={layout} setLayout={handleLayoutChange} />
         <div className="ml-4 flex items-center gap-1 bg-[var(--bg-tertiary)] rounded p-0.5">
           {TIMEFRAMES.map((tf) => (
             <button
@@ -205,12 +219,12 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
       </div>
 
       {/* Chart grid */}
-      <div className={`flex-1 grid ${getGridClass()} gap-px bg-[var(--border-color)]`}>
+      <div className={`flex-1 grid ${getGridClass()} gap-[2px] bg-[#3a3f4b]`}>
         {cells.slice(0, layout).map((cell, index) => (
           <div
-            key={index}
+            key={`${layout}-${index}`}
             onClick={() => handleCellClick(index)}
-            className="bg-[var(--bg-primary)] cursor-pointer"
+            className="bg-[var(--bg-primary)] cursor-pointer p-[1px]"
           >
             <MainChart
               symbol={cell.symbol}
