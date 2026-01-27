@@ -14,16 +14,26 @@ import type {
 import { fetchOHLCV } from '../../api/client';
 import type { OHLCVResponse } from '../../api/types';
 
+export type ExpandedIndicator = 'rsi' | 'macd' | 'volume' | null;
+
 interface SubChartsProps {
   symbol?: string;
   market?: string;
   timeframe?: string;
+  expandedIndicator?: ExpandedIndicator;
+  onExpandChange?: (indicator: ExpandedIndicator) => void;
 }
 
 /**
  * Sub-charts area for indicators (RSI, MACD, Volume)
  */
-export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }: SubChartsProps) {
+export function SubCharts({
+  symbol = '005930',
+  market = 'KR',
+  timeframe = '1D',
+  expandedIndicator = null,
+  onExpandChange,
+}: SubChartsProps) {
   const rsiContainerRef = useRef<HTMLDivElement>(null);
   const macdContainerRef = useRef<HTMLDivElement>(null);
   const volumeContainerRef = useRef<HTMLDivElement>(null);
@@ -281,8 +291,15 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
     <div className="flex h-full border-t border-[var(--border-color)]">
       {/* RSI */}
       <div className="flex-1 border-r border-[var(--border-color)] flex flex-col">
-        <div className="px-2 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2">
-          <span>RSI (14)</span>
+        <div
+          onClick={() => onExpandChange?.(expandedIndicator === 'rsi' ? null : 'rsi')}
+          className={`px-2 py-1 text-xs bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2 cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors ${
+            expandedIndicator === 'rsi' ? 'bg-[var(--bg-tertiary)] border-l-2 border-l-[var(--accent-blue)]' : ''
+          }`}
+        >
+          <span className={expandedIndicator === 'rsi' ? 'text-[var(--accent-blue)] font-medium' : 'text-[var(--text-secondary)]'}>
+            RSI (14)
+          </span>
           {currentRsi !== null && currentRsi > 0 && (
             <span className={currentRsi >= 70 ? 'text-[#ef5350] font-medium' : currentRsi <= 30 ? 'text-[#26a69a] font-medium' : 'text-[var(--text-primary)]'}>
               {currentRsi.toFixed(1)}
@@ -291,14 +308,26 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
           <span className="text-[#ef5350]">70</span>
           <span className="text-[#758696]">50</span>
           <span className="text-[#26a69a]">30</span>
+          {onExpandChange && (
+            <span className="ml-auto text-[10px] text-[var(--text-secondary)]">
+              {expandedIndicator === 'rsi' ? '축소' : '확대'}
+            </span>
+          )}
         </div>
         <div ref={rsiContainerRef} className="flex-1" />
       </div>
 
       {/* MACD */}
       <div className="flex-1 border-r border-[var(--border-color)] flex flex-col">
-        <div className="px-2 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2">
-          <span>MACD (12, 26, 9)</span>
+        <div
+          onClick={() => onExpandChange?.(expandedIndicator === 'macd' ? null : 'macd')}
+          className={`px-2 py-1 text-xs bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2 cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors ${
+            expandedIndicator === 'macd' ? 'bg-[var(--bg-tertiary)] border-l-2 border-l-[var(--accent-blue)]' : ''
+          }`}
+        >
+          <span className={expandedIndicator === 'macd' ? 'text-[var(--accent-blue)] font-medium' : 'text-[var(--text-secondary)]'}>
+            MACD (12, 26, 9)
+          </span>
           {currentMacd !== null && currentMacd !== 0 && (
             <span className={currentMacd >= 0 ? 'text-[#26a69a] font-medium' : 'text-[#ef5350] font-medium'}>
               {currentMacd.toFixed(2)}
@@ -306,17 +335,34 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
           )}
           <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#2962ff]"></span>MACD</span>
           <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#ff6d00]"></span>Signal</span>
+          {onExpandChange && (
+            <span className="ml-auto text-[10px] text-[var(--text-secondary)]">
+              {expandedIndicator === 'macd' ? '축소' : '확대'}
+            </span>
+          )}
         </div>
         <div ref={macdContainerRef} className="flex-1" />
       </div>
 
       {/* Volume */}
       <div className="flex-1 flex flex-col">
-        <div className="px-2 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2">
-          <span>Volume</span>
+        <div
+          onClick={() => onExpandChange?.(expandedIndicator === 'volume' ? null : 'volume')}
+          className={`px-2 py-1 text-xs bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2 cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors ${
+            expandedIndicator === 'volume' ? 'bg-[var(--bg-tertiary)] border-l-2 border-l-[var(--accent-blue)]' : ''
+          }`}
+        >
+          <span className={expandedIndicator === 'volume' ? 'text-[var(--accent-blue)] font-medium' : 'text-[var(--text-secondary)]'}>
+            Volume
+          </span>
           {data && data.bars.length > 0 && (
             <span className="text-[var(--text-primary)]">
               {(data.bars[data.bars.length - 1].volume / 1000000).toFixed(2)}M
+            </span>
+          )}
+          {onExpandChange && (
+            <span className="ml-auto text-[10px] text-[var(--text-secondary)]">
+              {expandedIndicator === 'volume' ? '축소' : '확대'}
             </span>
           )}
         </div>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MainChart, TIMEFRAMES, type Timeframe } from './MainChart';
-import { SubCharts } from './SubCharts';
+import { SubCharts, type ExpandedIndicator } from './SubCharts';
+import { ExpandedIndicatorChart } from './ExpandedIndicatorChart';
 import { fetchWatchlist, fetchPortfolio } from '../../api/client';
 import type { WatchlistItem } from '../../api/types';
 
@@ -36,6 +37,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
   const [timeframe, setTimeframe] = useState<Timeframe>('1D');
   const [loadedFromWatchlist, setLoadedFromWatchlist] = useState(false);
   const [watchlistSymbols, setWatchlistSymbols] = useState<WatchlistItem[]>([]);
+  const [expandedIndicator, setExpandedIndicator] = useState<ExpandedIndicator>(null);
 
   // Load watchlist symbols (for autocomplete)
   const refreshWatchlist = useCallback(async () => {
@@ -218,7 +220,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
         </div>
 
         {/* Main chart */}
-        <div className="flex-1">
+        <div className={expandedIndicator ? 'flex-1 min-h-0' : 'flex-1'}>
           <MainChart
             symbol={selectedSymbol}
             market={selectedMarket}
@@ -231,9 +233,26 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
           />
         </div>
 
+        {/* Expanded indicator chart (between main and sub-charts) */}
+        {expandedIndicator && (
+          <ExpandedIndicatorChart
+            symbol={selectedSymbol}
+            market={selectedMarket}
+            timeframe={timeframe}
+            indicator={expandedIndicator}
+            onCollapse={() => setExpandedIndicator(null)}
+          />
+        )}
+
         {/* Sub charts */}
-        <div className="h-40">
-          <SubCharts symbol={selectedSymbol} market={selectedMarket} timeframe={timeframe} />
+        <div className={expandedIndicator ? 'h-8' : 'h-40'}>
+          <SubCharts
+            symbol={selectedSymbol}
+            market={selectedMarket}
+            timeframe={timeframe}
+            expandedIndicator={expandedIndicator}
+            onExpandChange={setExpandedIndicator}
+          />
         </div>
       </div>
     );
@@ -272,7 +291,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
         </div>
 
         {/* Full screen chart with all indicators */}
-        <div className="flex-1">
+        <div className={expandedIndicator ? 'flex-1 min-h-0' : 'flex-1'}>
           <MainChart
             symbol={cell.symbol}
             market={cell.market}
@@ -287,9 +306,26 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
           />
         </div>
 
+        {/* Expanded indicator chart */}
+        {expandedIndicator && (
+          <ExpandedIndicatorChart
+            symbol={cell.symbol}
+            market={cell.market}
+            timeframe={timeframe}
+            indicator={expandedIndicator}
+            onCollapse={() => setExpandedIndicator(null)}
+          />
+        )}
+
         {/* Sub charts - RSI, MACD, Volume */}
-        <div className="h-40">
-          <SubCharts symbol={cell.symbol} market={cell.market} timeframe={timeframe} />
+        <div className={expandedIndicator ? 'h-8' : 'h-40'}>
+          <SubCharts
+            symbol={cell.symbol}
+            market={cell.market}
+            timeframe={timeframe}
+            expandedIndicator={expandedIndicator}
+            onExpandChange={setExpandedIndicator}
+          />
         </div>
       </div>
     );
