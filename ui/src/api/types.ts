@@ -54,6 +54,42 @@ export interface AnalyzeResponse {
   reason_code: 'OK' | 'NO_VALID_OB';
 }
 
+// Portfolio types
+export interface PortfolioHolding {
+  symbol: string;
+  market: string;
+  quantity: number;
+  avg_price: number;
+  buy_date: string;
+  current_price: number;
+  pnl_amount: number;
+  pnl_percent: number;
+  total_value: number;
+}
+
+export interface PortfolioResponse {
+  holdings: PortfolioHolding[];
+  total_kr_value: number;
+  total_us_value: number;
+  total_kr_pnl: number;
+  total_us_pnl: number;
+}
+
+export interface AddHoldingResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface UpdateHoldingResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface RemoveHoldingResponse {
+  success: boolean;
+  message: string;
+}
+
 export interface ScreenResult {
   symbol: string;
   market: string;

@@ -138,3 +138,79 @@ class RemoveSymbolResponse(BaseModel):
     symbol: str
     market: str
     message: str
+
+
+# --- Portfolio schemas ---
+
+class PortfolioHolding(BaseModel):
+    """Single portfolio holding."""
+    symbol: str
+    market: str
+    quantity: float
+    avg_price: float
+    buy_date: str  # ISO date string YYYY-MM-DD
+
+
+class PortfolioHoldingWithPnL(BaseModel):
+    """Portfolio holding with current price and P&L."""
+    symbol: str
+    market: str
+    quantity: float
+    avg_price: float
+    buy_date: str
+    current_price: float
+    pnl_amount: float  # Total P&L amount
+    pnl_percent: float  # P&L percentage
+    total_value: float  # Current total value
+
+
+class PortfolioResponse(BaseModel):
+    """Response for GET /portfolio."""
+    holdings: List[PortfolioHoldingWithPnL]
+    total_kr_value: float
+    total_us_value: float
+    total_kr_pnl: float
+    total_us_pnl: float
+
+
+class AddHoldingRequest(BaseModel):
+    """Request body for POST /portfolio/add."""
+    symbol: str
+    market: str
+    quantity: float
+    avg_price: float
+    buy_date: Optional[str] = None  # Defaults to today
+
+
+class AddHoldingResponse(BaseModel):
+    """Response for POST /portfolio/add."""
+    success: bool
+    message: str
+    holding: Optional[PortfolioHolding] = None
+
+
+class UpdateHoldingRequest(BaseModel):
+    """Request body for POST /portfolio/update."""
+    symbol: str
+    market: str
+    quantity: Optional[float] = None
+    avg_price: Optional[float] = None
+
+
+class UpdateHoldingResponse(BaseModel):
+    """Response for POST /portfolio/update."""
+    success: bool
+    message: str
+    holding: Optional[PortfolioHolding] = None
+
+
+class RemoveHoldingRequest(BaseModel):
+    """Request body for DELETE /portfolio/remove."""
+    symbol: str
+    market: str
+
+
+class RemoveHoldingResponse(BaseModel):
+    """Response for DELETE /portfolio/remove."""
+    success: bool
+    message: str

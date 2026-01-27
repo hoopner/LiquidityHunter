@@ -9,6 +9,10 @@ import type {
   AddSymbolResponse,
   RemoveSymbolResponse,
   AnalyzeResponse,
+  PortfolioResponse,
+  AddHoldingResponse,
+  UpdateHoldingResponse,
+  RemoveHoldingResponse,
 } from './types';
 
 const BASE_URL = 'http://localhost:8000';
@@ -133,6 +137,99 @@ export async function fetchAnalyze(
   });
 
   const response = await fetch(`${BASE_URL}/analyze?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch portfolio holdings with P&L
+ */
+export async function fetchPortfolio(): Promise<PortfolioResponse> {
+  const response = await fetch(`${BASE_URL}/portfolio`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Add a holding to portfolio
+ */
+export async function addHolding(
+  symbol: string,
+  market: string,
+  quantity: number,
+  avgPrice: number,
+  buyDate?: string
+): Promise<AddHoldingResponse> {
+  const response = await fetch(`${BASE_URL}/portfolio/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      symbol,
+      market,
+      quantity,
+      avg_price: avgPrice,
+      buy_date: buyDate,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Update a holding in portfolio
+ */
+export async function updateHolding(
+  symbol: string,
+  market: string,
+  quantity?: number,
+  avgPrice?: number
+): Promise<UpdateHoldingResponse> {
+  const response = await fetch(`${BASE_URL}/portfolio/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      symbol,
+      market,
+      quantity,
+      avg_price: avgPrice,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Remove a holding from portfolio
+ */
+export async function removeHolding(
+  symbol: string,
+  market: string
+): Promise<RemoveHoldingResponse> {
+  const response = await fetch(`${BASE_URL}/portfolio/remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, market }),
+  });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));

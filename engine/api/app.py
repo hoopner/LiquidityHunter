@@ -27,6 +27,15 @@ from engine.api.schemas import (
     AddSymbolResponse,
     RemoveSymbolRequest,
     RemoveSymbolResponse,
+    PortfolioHolding,
+    PortfolioHoldingWithPnL,
+    PortfolioResponse,
+    AddHoldingRequest,
+    AddHoldingResponse,
+    UpdateHoldingRequest,
+    UpdateHoldingResponse,
+    RemoveHoldingRequest,
+    RemoveHoldingResponse,
 )
 from engine.core.screener import ema, rsi, macd
 
@@ -491,4 +500,206 @@ def remove_from_watchlist(request: RemoveSymbolRequest) -> RemoveSymbolResponse:
         symbol=symbol,
         market=market,
         message=f"Removed {symbol} from watchlist",
+    )
+
+
+# --- Portfolio endpoints ---
+
+import json
+from datetime import date
+
+PORTFOLIO_FILE = DATA_DIR / "portfolio.json"
+
+
+def _load_portfolio() -> List[dict]:
+    """Load portfolio from JSON file."""
+    if not PORTFOLIO_FILE.exists():
+        return []
+    try:
+        with open(PORTFOLIO_FILE, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return []
+
+
+def _save_portfolio(holdings: List[dict]) -> None:
+    """Save portfolio to JSON file."""
+    PORTFOLIO_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PORTFOLIO_FILE, "w") as f:
+        json.dump(holdings, f, indent=2)
+
+
+def _get_current_price(symbol: str, market: str) -> Optional[float]:
+    """Get current price for a symbol from stored data."""
+    try:
+        data_dir = f"data/{market.lower()}"
+        data = load_csv(symbol, "1D", data_dir=data_dir)
+        if len(data.close) > 0:
+            return float(data.close[-1])
+    except FileNotFoundError:
+        pass
+    return None
+
+
+@app.get("/portfolio", response_model=PortfolioResponse)
+def get_portfolio() -> PortfolioResponse:
+    """Get all portfolio holdings with current prices and P&L."""
+    holdings_data = _load_portfolio()
+    holdings_with_pnl = []
+    total_kr_value = 0.0
+    total_us_value = 0.0
+    total_kr_pnl = 0.0
+    total_us_pnl = 0.0
+
+    for h in holdings_data:
+        symbol = h["symbol"]
+        market = h["market"]
+        quantity = h["quantity"]
+        avg_price = h["avg_price"]
+        buy_date = h.get("buy_date", "")
+
+        current_price = _get_current_price(symbol, market)
+        if current_price is None:
+            current_price = avg_price  # Fallback to avg price if no data
+
+        total_value = current_price * quantity
+        cost_basis = avg_price * quantity
+        pnl_amount = total_value - cost_basis
+        pnl_percent = (pnl_amount / cost_basis * 100) if cost_basis > 0 else 0.0
+
+        holdings_with_pnl.append(PortfolioHoldingWithPnL(
+            symbol=symbol,
+            market=market,
+            quantity=quantity,
+            avg_price=avg_price,
+            buy_date=buy_date,
+            current_price=current_price,
+            pnl_amount=pnl_amount,
+            pnl_percent=pnl_percent,
+            total_value=total_value,
+        ))
+
+        if market == "KR":
+            total_kr_value += total_value
+            total_kr_pnl += pnl_amount
+        else:
+            total_us_value += total_value
+            total_us_pnl += pnl_amount
+
+    return PortfolioResponse(
+        holdings=holdings_with_pnl,
+        total_kr_value=total_kr_value,
+        total_us_value=total_us_value,
+        total_kr_pnl=total_kr_pnl,
+        total_us_pnl=total_us_pnl,
+    )
+
+
+@app.post("/portfolio/add", response_model=AddHoldingResponse)
+def add_holding(request: AddHoldingRequest) -> AddHoldingResponse:
+    """Add a new holding to portfolio."""
+    symbol = request.symbol.upper().strip()
+    market = request.market.upper()
+
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol cannot be empty")
+
+    if request.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be positive")
+
+    if request.avg_price <= 0:
+        raise HTTPException(status_code=400, detail="Average price must be positive")
+
+    buy_date = request.buy_date or date.today().isoformat()
+
+    holdings = _load_portfolio()
+
+    # Check if already exists
+    for h in holdings:
+        if h["symbol"] == symbol and h["market"] == market:
+            return AddHoldingResponse(
+                success=False,
+                message=f"{symbol} already in portfolio. Use update to modify.",
+                holding=None,
+            )
+
+    new_holding = {
+        "symbol": symbol,
+        "market": market,
+        "quantity": request.quantity,
+        "avg_price": request.avg_price,
+        "buy_date": buy_date,
+    }
+    holdings.append(new_holding)
+    _save_portfolio(holdings)
+
+    return AddHoldingResponse(
+        success=True,
+        message=f"Added {symbol} to portfolio",
+        holding=PortfolioHolding(**new_holding),
+    )
+
+
+@app.post("/portfolio/update", response_model=UpdateHoldingResponse)
+def update_holding(request: UpdateHoldingRequest) -> UpdateHoldingResponse:
+    """Update an existing holding in portfolio."""
+    symbol = request.symbol.upper().strip()
+    market = request.market.upper()
+
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    holdings = _load_portfolio()
+
+    for h in holdings:
+        if h["symbol"] == symbol and h["market"] == market:
+            if request.quantity is not None:
+                if request.quantity <= 0:
+                    raise HTTPException(status_code=400, detail="Quantity must be positive")
+                h["quantity"] = request.quantity
+            if request.avg_price is not None:
+                if request.avg_price <= 0:
+                    raise HTTPException(status_code=400, detail="Average price must be positive")
+                h["avg_price"] = request.avg_price
+
+            _save_portfolio(holdings)
+            return UpdateHoldingResponse(
+                success=True,
+                message=f"Updated {symbol}",
+                holding=PortfolioHolding(**h),
+            )
+
+    return UpdateHoldingResponse(
+        success=False,
+        message=f"{symbol} not found in portfolio",
+        holding=None,
+    )
+
+
+@app.post("/portfolio/remove", response_model=RemoveHoldingResponse)
+def remove_holding(request: RemoveHoldingRequest) -> RemoveHoldingResponse:
+    """Remove a holding from portfolio."""
+    symbol = request.symbol.upper().strip()
+    market = request.market.upper()
+
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    holdings = _load_portfolio()
+    original_len = len(holdings)
+    holdings = [h for h in holdings if not (h["symbol"] == symbol and h["market"] == market)]
+
+    if len(holdings) == original_len:
+        return RemoveHoldingResponse(
+            success=False,
+            message=f"{symbol} not found in portfolio",
+        )
+
+    _save_portfolio(holdings)
+    return RemoveHoldingResponse(
+        success=True,
+        message=f"Removed {symbol} from portfolio",
     )
