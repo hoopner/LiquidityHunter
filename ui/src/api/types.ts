@@ -24,6 +24,36 @@ export interface OHLCVResponse {
   macd_histogram: number[];
 }
 
+// Order Block types
+export interface FVG {
+  index: number;
+  direction: string;
+  gap_high: number;
+  gap_low: number;
+}
+
+export interface OrderBlock {
+  index: number;
+  direction: string;
+  zone_top: number;
+  zone_bottom: number;
+  displacement_index: number;
+  has_fvg: boolean;
+  fvg: FVG | null;
+}
+
+export interface AnalyzeResponse {
+  bar_index: number;
+  current_price: number;
+  current_valid_ob: OrderBlock | null;
+  validation_details: {
+    has_displacement: boolean;
+    has_fvg: boolean;
+    is_fresh: boolean;
+  };
+  reason_code: 'OK' | 'NO_VALID_OB';
+}
+
 export interface ScreenResult {
   symbol: string;
   market: string;

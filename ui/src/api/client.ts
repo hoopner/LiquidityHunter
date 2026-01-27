@@ -8,6 +8,7 @@ import type {
   WatchlistResponse,
   AddSymbolResponse,
   RemoveSymbolResponse,
+  AnalyzeResponse,
 } from './types';
 
 const BASE_URL = 'http://localhost:8000';
@@ -106,6 +107,32 @@ export async function removeFromWatchlist(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ symbol, market }),
   });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch Order Block analysis for a symbol at a specific bar index
+ */
+export async function fetchAnalyze(
+  symbol: string,
+  market: string,
+  timeframe: string,
+  barIndex: number
+): Promise<AnalyzeResponse> {
+  const params = new URLSearchParams({
+    symbol,
+    market,
+    tf: timeframe,
+    bar_index: barIndex.toString(),
+  });
+
+  const response = await fetch(`${BASE_URL}/analyze?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));

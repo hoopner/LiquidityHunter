@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   createChart,
   CandlestickSeries,
@@ -11,8 +11,8 @@ import type {
   LineData,
   Time,
 } from 'lightweight-charts';
-import { fetchOHLCV } from '../../api/client';
-import type { OHLCVResponse } from '../../api/types';
+import { fetchOHLCV, fetchAnalyze } from '../../api/client';
+import type { OHLCVResponse, AnalyzeResponse } from '../../api/types';
 
 interface MainChartProps {
   symbol?: string;
@@ -21,6 +21,14 @@ interface MainChartProps {
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'] as const;
 type Timeframe = typeof TIMEFRAMES[number];
+
+interface BoxPosition {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  visible: boolean;
+}
 
 /**
  * Main chart area with TradingView lightweight-charts
@@ -38,11 +46,18 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
   const [timeframe, setTimeframe] = useState<Timeframe>('1D');
   const [noData, setNoData] = useState(false);
 
-  // Fetch data
+  // Order Block state
+  const [analyzeData, setAnalyzeData] = useState<AnalyzeResponse | null>(null);
+  const [showOB, setShowOB] = useState(true);
+  const [obBoxPosition, setObBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
+  const [fvgBoxPosition, setFvgBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
+
+  // Fetch OHLCV data
   useEffect(() => {
     setLoading(true);
     setError(null);
     setNoData(false);
+    setAnalyzeData(null);
 
     fetchOHLCV(symbol, market, timeframe)
       .then((response) => {
@@ -55,7 +70,6 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
         setLoading(false);
       })
       .catch((err) => {
-        // Check if it's a "no data" error (404)
         if (err.message.includes('not found') || err.message.includes('404')) {
           setNoData(true);
           setData(null);
@@ -65,6 +79,85 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
         setLoading(false);
       });
   }, [symbol, market, timeframe]);
+
+  // Fetch Order Block analysis after data loads
+  useEffect(() => {
+    if (!data || data.bars.length === 0) return;
+
+    const barIndex = data.bars.length - 1;
+    fetchAnalyze(symbol, market, timeframe, barIndex)
+      .then(setAnalyzeData)
+      .catch(() => setAnalyzeData(null));
+  }, [data, symbol, market, timeframe]);
+
+  // Calculate box positions for OB and FVG
+  const updateBoxPositions = useCallback(() => {
+    if (!chartRef.current || !candlestickSeriesRef.current || !data || !analyzeData?.current_valid_ob) {
+      setObBoxPosition(prev => ({ ...prev, visible: false }));
+      setFvgBoxPosition(prev => ({ ...prev, visible: false }));
+      return;
+    }
+
+    const chart = chartRef.current;
+    const series = candlestickSeriesRef.current;
+    const ob = analyzeData.current_valid_ob;
+
+    // Get time values for OB
+    const obStartTime = data.bars[ob.index]?.time;
+    const obEndTime = data.bars[data.bars.length - 1]?.time;
+
+    if (!obStartTime || !obEndTime) {
+      setObBoxPosition(prev => ({ ...prev, visible: false }));
+      return;
+    }
+
+    // Convert coordinates
+    const timeScale = chart.timeScale();
+    const leftX = timeScale.timeToCoordinate(obStartTime as Time);
+    const rightX = timeScale.timeToCoordinate(obEndTime as Time);
+    const topY = series.priceToCoordinate(ob.zone_top);
+    const bottomY = series.priceToCoordinate(ob.zone_bottom);
+
+    if (leftX !== null && rightX !== null && topY !== null && bottomY !== null) {
+      setObBoxPosition({
+        left: Math.min(leftX, rightX),
+        right: Math.max(leftX, rightX) + 20, // Extend a bit past last bar
+        top: Math.min(topY, bottomY),
+        bottom: Math.max(topY, bottomY),
+        visible: true,
+      });
+    } else {
+      setObBoxPosition(prev => ({ ...prev, visible: false }));
+    }
+
+    // FVG box
+    if (ob.has_fvg && ob.fvg) {
+      const fvg = ob.fvg;
+      const fvgStartTime = data.bars[fvg.index]?.time;
+      const fvgEndTime = data.bars[Math.min(fvg.index + 3, data.bars.length - 1)]?.time;
+
+      if (fvgStartTime && fvgEndTime) {
+        const fvgLeftX = timeScale.timeToCoordinate(fvgStartTime as Time);
+        const fvgRightX = timeScale.timeToCoordinate(fvgEndTime as Time);
+        const fvgTopY = series.priceToCoordinate(fvg.gap_high);
+        const fvgBottomY = series.priceToCoordinate(fvg.gap_low);
+
+        if (fvgLeftX !== null && fvgRightX !== null && fvgTopY !== null && fvgBottomY !== null) {
+          setFvgBoxPosition({
+            left: Math.min(fvgLeftX, fvgRightX),
+            right: Math.max(fvgLeftX, fvgRightX),
+            top: Math.min(fvgTopY, fvgBottomY),
+            bottom: Math.max(fvgTopY, fvgBottomY),
+            visible: true,
+          });
+        } else {
+          setFvgBoxPosition(prev => ({ ...prev, visible: false }));
+        }
+      }
+    } else {
+      setFvgBoxPosition(prev => ({ ...prev, visible: false }));
+    }
+  }, [data, analyzeData]);
 
   // Initialize chart
   useEffect(() => {
@@ -141,7 +234,11 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
           height: chartContainerRef.current.clientHeight,
         });
       }
+      updateBoxPositions();
     };
+
+    // Subscribe to visible range changes to update box positions
+    chart.timeScale().subscribeVisibleLogicalRangeChange(updateBoxPositions);
 
     window.addEventListener('resize', handleResize);
     handleResize();
@@ -150,7 +247,7 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
-  }, []);
+  }, [updateBoxPositions]);
 
   // Update chart data
   useEffect(() => {
@@ -188,13 +285,24 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
 
     // Fit content
     chartRef.current?.timeScale().fitContent();
-  }, [data]);
+
+    // Update box positions after data loads
+    setTimeout(updateBoxPositions, 100);
+  }, [data, updateBoxPositions]);
+
+  // Update box positions when analyze data changes
+  useEffect(() => {
+    updateBoxPositions();
+  }, [analyzeData, updateBoxPositions]);
 
   // Get current price info
   const lastBar = data?.bars[data.bars.length - 1];
   const prevBar = data?.bars[data.bars.length - 2];
   const priceChange = lastBar && prevBar ? lastBar.close - prevBar.close : 0;
   const priceChangePercent = prevBar ? (priceChange / prevBar.close) * 100 : 0;
+
+  const ob = analyzeData?.current_valid_ob;
+  const isBullish = ob?.direction === 'bullish';
 
   return (
     <div className="flex flex-col h-full bg-[var(--bg-primary)]">
@@ -230,7 +338,26 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
           ))}
         </div>
 
+        {/* OB Toggle */}
+        <button
+          onClick={() => setShowOB(!showOB)}
+          className={`ml-2 px-3 py-1 text-xs font-medium rounded transition-colors ${
+            showOB
+              ? 'bg-[var(--accent-blue)] text-white'
+              : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          OB
+        </button>
+
         <div className="ml-auto flex items-center gap-4 text-xs text-[var(--text-secondary)]">
+          {ob && showOB && (
+            <span className={`flex items-center gap-1 ${isBullish ? 'text-[#26a69a]' : 'text-[#ef5350]'}`}>
+              <span className={`w-3 h-3 rounded ${isBullish ? 'bg-[#26a69a]' : 'bg-[#ef5350]'} opacity-40`}></span>
+              {isBullish ? 'Bullish' : 'Bearish'} OB
+              {ob.has_fvg && ' + FVG'}
+            </span>
+          )}
           <span className="flex items-center gap-1">
             <span className="w-3 h-0.5 bg-[#f59e0b]"></span> EMA20
           </span>
@@ -264,6 +391,59 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
             </div>
           </div>
         )}
+
+        {/* Order Block overlay */}
+        {showOB && obBoxPosition.visible && ob && (
+          <div
+            className="absolute pointer-events-none z-[5]"
+            style={{
+              left: obBoxPosition.left,
+              top: obBoxPosition.top,
+              width: obBoxPosition.right - obBoxPosition.left,
+              height: obBoxPosition.bottom - obBoxPosition.top,
+              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.15)' : 'rgba(239, 83, 80, 0.15)',
+              border: `1px solid ${isBullish ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'}`,
+              borderRadius: '2px',
+            }}
+          >
+            <div
+              className="absolute top-1 left-1 px-1 text-[10px] font-bold rounded"
+              style={{
+                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
+                color: 'white',
+              }}
+            >
+              OB
+            </div>
+          </div>
+        )}
+
+        {/* FVG overlay */}
+        {showOB && fvgBoxPosition.visible && ob?.has_fvg && (
+          <div
+            className="absolute pointer-events-none z-[4]"
+            style={{
+              left: fvgBoxPosition.left,
+              top: fvgBoxPosition.top,
+              width: fvgBoxPosition.right - fvgBoxPosition.left,
+              height: fvgBoxPosition.bottom - fvgBoxPosition.top,
+              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.08)' : 'rgba(239, 83, 80, 0.08)',
+              border: `1px dashed ${isBullish ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)'}`,
+              borderRadius: '2px',
+            }}
+          >
+            <div
+              className="absolute bottom-1 left-1 px-1 text-[9px] font-medium rounded opacity-80"
+              style={{
+                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)',
+                color: 'white',
+              }}
+            >
+              FVG
+            </div>
+          </div>
+        )}
+
         <div ref={chartContainerRef} className="w-full h-full" />
       </div>
     </div>
