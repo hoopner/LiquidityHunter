@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   createChart,
   LineSeries,
@@ -20,10 +20,15 @@ interface SubChartsProps {
   timeframe?: string;
 }
 
+type ExpandedChart = 'rsi' | 'macd' | 'volume' | null;
+
 /**
  * Sub-charts area for indicators (RSI, MACD, Volume)
+ * Click on any chart header to expand it, click again or "축소" to collapse
  */
 export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }: SubChartsProps) {
+  const [expanded, setExpanded] = useState<ExpandedChart>(null);
+
   const rsiContainerRef = useRef<HTMLDivElement>(null);
   const macdContainerRef = useRef<HTMLDivElement>(null);
   const volumeContainerRef = useRef<HTMLDivElement>(null);
@@ -48,7 +53,7 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
   }, [symbol, market, timeframe]);
 
   // Chart options shared across all sub-charts
-  const getChartOptions = () => ({
+  const getChartOptions = useCallback((showTimeScale: boolean = false) => ({
     layout: {
       background: { color: '#131722' },
       textColor: '#d1d4dc',
@@ -63,20 +68,50 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
     },
     timeScale: {
       borderColor: '#2a2e39',
-      visible: false,
+      visible: showTimeScale,
+      timeVisible: true,
+      secondsVisible: false,
     },
     crosshair: {
       mode: 1,
-      vertLine: { color: '#758696', width: 1 as const, style: 3, labelVisible: false },
+      vertLine: { color: '#758696', width: 1 as const, style: 3, labelVisible: showTimeScale },
       horzLine: { color: '#758696', width: 1 as const, style: 3, labelBackgroundColor: '#2a2e39' },
     },
-  });
+  }), []);
+
+  // Handle expand/collapse toggle
+  const handleToggle = useCallback((chartType: ExpandedChart) => {
+    setExpanded(prev => prev === chartType ? null : chartType);
+  }, []);
+
+  // Resize charts when expanded state changes
+  useEffect(() => {
+    const resizeCharts = () => {
+      [
+        { chart: rsiChartRef.current, container: rsiContainerRef.current },
+        { chart: macdChartRef.current, container: macdContainerRef.current },
+        { chart: volumeChartRef.current, container: volumeContainerRef.current },
+      ].forEach(({ chart, container }) => {
+        if (chart && container) {
+          chart.applyOptions({
+            width: container.clientWidth,
+            height: container.clientHeight,
+          });
+          chart.timeScale().fitContent();
+        }
+      });
+    };
+
+    // Delay to allow CSS transitions
+    const timer = setTimeout(resizeCharts, 50);
+    return () => clearTimeout(timer);
+  }, [expanded]);
 
   // Initialize RSI chart
   useEffect(() => {
     if (!rsiContainerRef.current) return;
 
-    const chart = createChart(rsiContainerRef.current, getChartOptions());
+    const chart = createChart(rsiContainerRef.current, getChartOptions(expanded === 'rsi'));
     rsiChartRef.current = chart;
 
     // RSI line
@@ -88,8 +123,8 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
     rsiSeriesRef.current = rsiSeries;
 
     // Add overbought/oversold lines
-    rsiSeries.createPriceLine({ price: 70, color: '#ef5350', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
-    rsiSeries.createPriceLine({ price: 30, color: '#26a69a', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+    rsiSeries.createPriceLine({ price: 70, color: '#ef5350', lineWidth: 1, lineStyle: 2, axisLabelVisible: true });
+    rsiSeries.createPriceLine({ price: 30, color: '#26a69a', lineWidth: 1, lineStyle: 2, axisLabelVisible: true });
     rsiSeries.createPriceLine({ price: 50, color: '#758696', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
 
     const handleResize = () => {
@@ -107,13 +142,13 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
-  }, []);
+  }, [getChartOptions, expanded]);
 
   // Initialize MACD chart
   useEffect(() => {
     if (!macdContainerRef.current) return;
 
-    const chart = createChart(macdContainerRef.current, getChartOptions());
+    const chart = createChart(macdContainerRef.current, getChartOptions(expanded === 'macd'));
     macdChartRef.current = chart;
 
     // MACD histogram (must be added first to appear behind)
@@ -138,6 +173,9 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
     });
     macdSignalSeriesRef.current = signalSeries;
 
+    // Zero line
+    macdLineSeries.createPriceLine({ price: 0, color: '#758696', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+
     const handleResize = () => {
       if (macdContainerRef.current) {
         chart.applyOptions({
@@ -153,21 +191,13 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
-  }, []);
+  }, [getChartOptions, expanded]);
 
   // Initialize Volume chart
   useEffect(() => {
     if (!volumeContainerRef.current) return;
 
-    const chart = createChart(volumeContainerRef.current, {
-      ...getChartOptions(),
-      timeScale: {
-        borderColor: '#2a2e39',
-        visible: true,
-        timeVisible: true,
-        secondsVisible: false,
-      },
-    });
+    const chart = createChart(volumeContainerRef.current, getChartOptions(true));
     volumeChartRef.current = chart;
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -191,7 +221,7 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
-  }, []);
+  }, [getChartOptions, expanded]);
 
   // Update chart data
   useEffect(() => {
@@ -271,35 +301,117 @@ export function SubCharts({ symbol = '005930', market = 'KR', timeframe = '1D' }
     }
   }, [data]);
 
+  // Get current indicator values for display
+  const currentRsi = data && data.rsi.length > 0 ? data.rsi[data.rsi.length - 1] : null;
+  const currentMacd = data && data.macd_line.length > 0 ? data.macd_line[data.macd_line.length - 1] : null;
+
+  // Render chart header with expand/collapse
+  const renderHeader = (
+    chartType: ExpandedChart,
+    title: string,
+    children?: React.ReactNode
+  ) => {
+    const isExpanded = expanded === chartType;
+    return (
+      <div
+        onClick={() => handleToggle(chartType)}
+        className={`px-2 py-1 text-xs bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2 cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors ${
+          isExpanded ? 'bg-[var(--bg-tertiary)]' : ''
+        }`}
+      >
+        <span className={`font-medium ${isExpanded ? 'text-[var(--accent-blue)]' : 'text-[var(--text-secondary)]'}`}>
+          {title}
+        </span>
+        {children}
+        <span className="ml-auto text-[10px] text-[var(--text-secondary)]">
+          {isExpanded ? '클릭하여 축소' : '클릭하여 확대'}
+        </span>
+        {isExpanded && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded(null);
+            }}
+            className="px-1.5 py-0.5 text-[10px] bg-[var(--accent-blue)] text-white rounded hover:opacity-90"
+          >
+            축소
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  // Calculate heights based on expanded state
+  const getChartClass = (chartType: ExpandedChart) => {
+    if (expanded === null) {
+      return 'flex-1'; // Equal height when nothing expanded
+    }
+    if (expanded === chartType) {
+      return 'flex-[4]'; // Expanded chart takes 4x space
+    }
+    return 'flex-[0.5]'; // Collapsed charts take minimal space
+  };
+
   return (
-    <div className="flex h-full border-t border-[var(--border-color)]">
+    <div className={`flex h-full border-t border-[var(--border-color)] ${expanded ? 'flex-col' : ''}`}>
       {/* RSI */}
-      <div className="flex-1 border-r border-[var(--border-color)] flex flex-col">
-        <div className="px-2 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2">
-          <span>RSI (14)</span>
-          <span className="text-[#ef5350]">70</span>
-          <span className="text-[#758696]">50</span>
-          <span className="text-[#26a69a]">30</span>
-        </div>
-        <div ref={rsiContainerRef} className="flex-1" />
+      <div className={`${expanded ? getChartClass('rsi') : 'flex-1'} ${!expanded ? 'border-r border-[var(--border-color)]' : ''} flex flex-col min-h-0 transition-all duration-200`}>
+        {renderHeader(
+          'rsi',
+          'RSI (14)',
+          <>
+            {currentRsi !== null && currentRsi > 0 && (
+              <span className={currentRsi >= 70 ? 'text-[#ef5350]' : currentRsi <= 30 ? 'text-[#26a69a]' : 'text-[var(--text-primary)]'}>
+                {currentRsi.toFixed(1)}
+              </span>
+            )}
+            <span className="text-[#ef5350]">70</span>
+            <span className="text-[#758696]">50</span>
+            <span className="text-[#26a69a]">30</span>
+          </>
+        )}
+        <div
+          ref={rsiContainerRef}
+          className={`flex-1 min-h-0 ${expanded !== null && expanded !== 'rsi' ? 'hidden' : ''}`}
+        />
       </div>
 
       {/* MACD */}
-      <div className="flex-1 border-r border-[var(--border-color)] flex flex-col">
-        <div className="px-2 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2">
-          <span>MACD (12, 26, 9)</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#2962ff]"></span>MACD</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#ff6d00]"></span>Signal</span>
-        </div>
-        <div ref={macdContainerRef} className="flex-1" />
+      <div className={`${expanded ? getChartClass('macd') : 'flex-1'} ${!expanded ? 'border-r border-[var(--border-color)]' : ''} flex flex-col min-h-0 transition-all duration-200`}>
+        {renderHeader(
+          'macd',
+          'MACD (12, 26, 9)',
+          <>
+            {currentMacd !== null && currentMacd !== 0 && (
+              <span className={currentMacd >= 0 ? 'text-[#26a69a]' : 'text-[#ef5350]'}>
+                {currentMacd.toFixed(2)}
+              </span>
+            )}
+            <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#2962ff]"></span>MACD</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#ff6d00]"></span>Signal</span>
+          </>
+        )}
+        <div
+          ref={macdContainerRef}
+          className={`flex-1 min-h-0 ${expanded !== null && expanded !== 'macd' ? 'hidden' : ''}`}
+        />
       </div>
 
       {/* Volume */}
-      <div className="flex-1 flex flex-col">
-        <div className="px-2 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-b border-[var(--border-color)]">
-          Volume
-        </div>
-        <div ref={volumeContainerRef} className="flex-1" />
+      <div className={`${expanded ? getChartClass('volume') : 'flex-1'} flex flex-col min-h-0 transition-all duration-200`}>
+        {renderHeader(
+          'volume',
+          'Volume',
+          data && data.bars.length > 0 && (
+            <span className="text-[var(--text-primary)]">
+              {(data.bars[data.bars.length - 1].volume / 1000000).toFixed(2)}M
+            </span>
+          )
+        )}
+        <div
+          ref={volumeContainerRef}
+          className={`flex-1 min-h-0 ${expanded !== null && expanded !== 'volume' ? 'hidden' : ''}`}
+        />
       </div>
     </div>
   );
