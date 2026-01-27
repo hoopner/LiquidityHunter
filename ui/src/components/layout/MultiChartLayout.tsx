@@ -227,6 +227,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             showHeader={true}
             watchlistSymbols={watchlistSymbols}
             onWatchlistChange={refreshWatchlist}
+            onSymbolChange={(newSymbol, newMarket) => onStockSelect(newSymbol, newMarket)}
           />
         </div>
 
@@ -280,6 +281,9 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             showHeader={true}
             watchlistSymbols={watchlistSymbols}
             onWatchlistChange={refreshWatchlist}
+            onSymbolChange={(newSymbol, newMarket) => {
+              handleSymbolChange(maximizedCell, newSymbol, newMarket);
+            }}
           />
         </div>
 

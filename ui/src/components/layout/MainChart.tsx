@@ -497,8 +497,137 @@ export function MainChart({
       {/* Chart header - full mode */}
       {showHeader && !compact && (
         <div className="flex items-center gap-4 px-4 py-2 border-b border-[var(--border-color)]">
-          <span className="text-lg font-semibold">{symbol}</span>
-          <span className="text-[var(--text-secondary)]">{market}</span>
+          {/* Editable symbol input */}
+          {isEditing ? (
+            <div
+              ref={editContainerRef}
+              className="relative"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 bg-[var(--bg-secondary)] rounded-lg p-1.5">
+                {/* Market selector */}
+                <select
+                  value={editMarket}
+                  onChange={(e) => {
+                    const newMarket = e.target.value as 'KR' | 'US';
+                    setEditMarket(newMarket);
+                    setShowSuggestions(true);
+                  }}
+                  className={`text-sm font-bold px-2 py-1.5 rounded border-2 cursor-pointer ${
+                    editMarket === 'KR'
+                      ? 'bg-[#ef5350] bg-opacity-20 border-[#ef5350] text-[#ef5350]'
+                      : 'bg-[#26a69a] bg-opacity-20 border-[#26a69a] text-[#26a69a]'
+                  }`}
+                >
+                  <option value="KR">KR</option>
+                  <option value="US">US</option>
+                </select>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={editValue}
+                  onChange={(e) => {
+                    setEditValue(e.target.value.toUpperCase());
+                    setShowSuggestions(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && editValue.trim()) {
+                      onSymbolChange?.(editValue.trim(), editMarket);
+                      setIsEditing(false);
+                      setShowSuggestions(false);
+                    } else if (e.key === 'Escape') {
+                      setIsEditing(false);
+                      setShowSuggestions(false);
+                    }
+                  }}
+                  placeholder={editMarket === 'KR' ? '종목코드' : 'Symbol'}
+                  className="w-32 bg-[var(--bg-tertiary)] text-lg font-semibold px-3 py-1.5 rounded border border-[var(--accent-blue)] outline-none"
+                  autoFocus
+                />
+                {/* Submit button */}
+                <button
+                  onClick={() => {
+                    if (editValue.trim()) {
+                      onSymbolChange?.(editValue.trim(), editMarket);
+                      setIsEditing(false);
+                      setShowSuggestions(false);
+                    }
+                  }}
+                  className="px-3 py-1.5 text-sm font-bold bg-[var(--accent-blue)] text-white rounded hover:opacity-90"
+                >
+                  확인
+                </button>
+                {/* Cancel button */}
+                <button
+                  onClick={() => {
+                    setIsEditing(false);
+                    setShowSuggestions(false);
+                  }}
+                  className="px-2 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                >
+                  취소
+                </button>
+              </div>
+              {/* Autocomplete suggestions */}
+              {showSuggestions && editValue.length > 0 && (
+                <div className="absolute top-full left-0 mt-1 w-64 max-h-48 overflow-y-auto bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-50">
+                  {watchlistSymbols
+                    .filter(item =>
+                      item.market === editMarket && (
+                        item.symbol.includes(editValue) ||
+                        item.symbol.startsWith(editValue)
+                      )
+                    )
+                    .slice(0, 8)
+                    .map((item) => (
+                      <div
+                        key={`${item.market}-${item.symbol}`}
+                        onClick={() => {
+                          onSymbolChange?.(item.symbol, item.market);
+                          setIsEditing(false);
+                          setShowSuggestions(false);
+                        }}
+                        className="px-3 py-2 hover:bg-[var(--bg-tertiary)] cursor-pointer flex justify-between items-center"
+                      >
+                        <span className="font-medium">{item.symbol}</span>
+                        <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${item.market === 'KR' ? 'bg-[#ef5350] bg-opacity-20 text-[#ef5350]' : 'bg-[#26a69a] bg-opacity-20 text-[#26a69a]'}`}>
+                          {item.market}
+                        </span>
+                      </div>
+                    ))}
+                  {watchlistSymbols.filter(item =>
+                    item.market === editMarket && (
+                      item.symbol.includes(editValue) ||
+                      item.symbol.startsWith(editValue)
+                    )
+                  ).length === 0 && (
+                    <div className="px-3 py-2 text-sm text-[var(--text-secondary)]">
+                      {editMarket} 관심목록에 없음 - Enter로 직접 입력
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <span
+                onClick={() => {
+                  if (onSymbolChange) {
+                    setEditValue(symbol);
+                    setEditMarket(market as 'KR' | 'US');
+                    setIsEditing(true);
+                  }
+                }}
+                className={`text-lg font-semibold ${onSymbolChange ? 'cursor-text hover:bg-[var(--bg-tertiary)] px-2 py-1 rounded transition-colors' : ''}`}
+                title={onSymbolChange ? '클릭하여 종목 변경' : undefined}
+              >
+                {symbol}
+              </span>
+              <span className={`text-sm font-medium px-1.5 py-0.5 rounded ${market === 'KR' ? 'bg-[#ef5350] bg-opacity-20 text-[#ef5350]' : 'bg-[#26a69a] bg-opacity-20 text-[#26a69a]'}`}>
+                {market}
+              </span>
+            </>
+          )}
           {/* Watchlist star button - always visible */}
           <button
             onClick={handleWatchlistToggle}
