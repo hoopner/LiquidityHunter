@@ -509,18 +509,21 @@ export function MainChart({
                 <select
                   value={editMarket}
                   onChange={(e) => {
+                    e.stopPropagation();
                     const newMarket = e.target.value as 'KR' | 'US';
                     setEditMarket(newMarket);
                     setShowSuggestions(true);
                   }}
-                  className={`text-sm font-bold px-2 py-1.5 rounded border-2 cursor-pointer ${
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className={`text-sm font-bold px-2 py-1.5 rounded border-2 cursor-pointer outline-none ${
                     editMarket === 'KR'
                       ? 'bg-[#ef5350] bg-opacity-20 border-[#ef5350] text-[#ef5350]'
                       : 'bg-[#26a69a] bg-opacity-20 border-[#26a69a] text-[#26a69a]'
                   }`}
+                  style={{ WebkitAppearance: 'menulist', appearance: 'menulist' }}
                 >
-                  <option value="KR">KR</option>
-                  <option value="US">US</option>
+                  <option value="KR" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">KR</option>
+                  <option value="US" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">US</option>
                 </select>
                 <input
                   ref={inputRef}
@@ -728,18 +731,21 @@ export function MainChart({
                   <select
                     value={editMarket}
                     onChange={(e) => {
+                      e.stopPropagation();
                       const newMarket = e.target.value as 'KR' | 'US';
                       setEditMarket(newMarket);
                       setShowSuggestions(true);
                     }}
-                    className={`text-xs font-bold px-1.5 py-1 rounded border-2 cursor-pointer ${
+                    onMouseDown={(e) => e.stopPropagation()}
+                    className={`text-xs font-bold px-1.5 py-1 rounded border-2 cursor-pointer outline-none ${
                       editMarket === 'KR'
                         ? 'bg-[#ef5350] bg-opacity-20 border-[#ef5350] text-[#ef5350]'
                         : 'bg-[#26a69a] bg-opacity-20 border-[#26a69a] text-[#26a69a]'
                     }`}
+                    style={{ WebkitAppearance: 'menulist', appearance: 'menulist' }}
                   >
-                    <option value="KR">KR</option>
-                    <option value="US">US</option>
+                    <option value="KR" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">KR</option>
+                    <option value="US" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">US</option>
                   </select>
                   <input
                     ref={inputRef}
