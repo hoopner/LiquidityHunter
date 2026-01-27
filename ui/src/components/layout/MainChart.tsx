@@ -401,16 +401,18 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
               top: obBoxPosition.top,
               width: obBoxPosition.right - obBoxPosition.left,
               height: obBoxPosition.bottom - obBoxPosition.top,
-              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.15)' : 'rgba(239, 83, 80, 0.15)',
-              border: `1px solid ${isBullish ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'}`,
-              borderRadius: '2px',
+              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.45)' : 'rgba(239, 83, 80, 0.45)',
+              border: `2px solid ${isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
+              borderRadius: '3px',
+              boxShadow: `0 0 8px ${isBullish ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'}`,
             }}
           >
             <div
-              className="absolute top-1 left-1 px-1 text-[10px] font-bold rounded"
+              className="absolute top-1 left-1 px-1.5 py-0.5 text-xs font-black rounded"
               style={{
-                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
+                backgroundColor: isBullish ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
                 color: 'white',
+                textShadow: '0 1px 2px rgba(0,0,0,0.3)',
               }}
             >
               OB
@@ -427,16 +429,17 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
               top: fvgBoxPosition.top,
               width: fvgBoxPosition.right - fvgBoxPosition.left,
               height: fvgBoxPosition.bottom - fvgBoxPosition.top,
-              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.08)' : 'rgba(239, 83, 80, 0.08)',
-              border: `1px dashed ${isBullish ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)'}`,
-              borderRadius: '2px',
+              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.35)' : 'rgba(239, 83, 80, 0.35)',
+              border: `2px dashed ${isBullish ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)'}`,
+              borderRadius: '3px',
             }}
           >
             <div
-              className="absolute bottom-1 left-1 px-1 text-[9px] font-medium rounded opacity-80"
+              className="absolute bottom-1 left-1 px-1.5 py-0.5 text-[11px] font-bold rounded"
               style={{
-                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)',
+                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
                 color: 'white',
+                textShadow: '0 1px 2px rgba(0,0,0,0.3)',
               }}
             >
               FVG
