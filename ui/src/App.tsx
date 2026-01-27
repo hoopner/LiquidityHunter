@@ -59,7 +59,7 @@ function App() {
 
       {/* Footer: WHY panel */}
       <div className="h-14">
-        <WhyPanel />
+        <WhyPanel symbol={selectedStock.symbol} market={selectedStock.market} />
       </div>
     </div>
   );
