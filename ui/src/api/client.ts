@@ -13,6 +13,7 @@ import type {
   AddHoldingResponse,
   UpdateHoldingResponse,
   RemoveHoldingResponse,
+  VolumeProfileResponse,
 } from './types';
 
 const BASE_URL = 'http://localhost:8000';
@@ -230,6 +231,32 @@ export async function removeHolding(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ symbol, market }),
   });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch Volume Profile data for a symbol
+ */
+export async function fetchVolumeProfile(
+  symbol: string,
+  market: string = 'KR',
+  timeframe: string = '1D',
+  numBins: number = 50
+): Promise<VolumeProfileResponse> {
+  const params = new URLSearchParams({
+    symbol,
+    market,
+    tf: timeframe,
+    num_bins: numBins.toString(),
+  });
+
+  const response = await fetch(`${BASE_URL}/volume_profile?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));

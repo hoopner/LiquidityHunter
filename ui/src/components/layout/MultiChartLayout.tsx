@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MainChart, TIMEFRAMES, type Timeframe } from './MainChart';
 import { SubCharts } from './SubCharts';
+import { fetchWatchlist, fetchPortfolio } from '../../api/client';
+import type { WatchlistItem } from '../../api/types';
 
 export type LayoutType = 1 | 2 | 4 | 8;
 
@@ -32,6 +34,87 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
   const [selectedCell, setSelectedCell] = useState(0);
   const [maximizedCell, setMaximizedCell] = useState<number | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>('1D');
+  const [loadedFromWatchlist, setLoadedFromWatchlist] = useState(false);
+  const [watchlistSymbols, setWatchlistSymbols] = useState<WatchlistItem[]>([]);
+
+  // Load watchlist symbols (for autocomplete)
+  const refreshWatchlist = useCallback(async () => {
+    try {
+      const [krWatchlist, usWatchlist] = await Promise.all([
+        fetchWatchlist('KR').catch(() => ({ symbols: [] })),
+        fetchWatchlist('US').catch(() => ({ symbols: [] })),
+      ]);
+      const allWatchlist = [
+        ...krWatchlist.symbols,
+        ...usWatchlist.symbols,
+      ];
+      setWatchlistSymbols(allWatchlist);
+      return allWatchlist;
+    } catch (err) {
+      console.error('Failed to refresh watchlist:', err);
+      return watchlistSymbols;
+    }
+  }, [watchlistSymbols]);
+
+  // Load watchlist and portfolio symbols on mount
+  useEffect(() => {
+    const loadSymbols = async () => {
+      try {
+        const [krWatchlist, usWatchlist, portfolio] = await Promise.all([
+          fetchWatchlist('KR').catch(() => ({ symbols: [] })),
+          fetchWatchlist('US').catch(() => ({ symbols: [] })),
+          fetchPortfolio().catch(() => ({ holdings: [] })),
+        ]);
+
+        // Combine all symbols for autocomplete
+        const allWatchlist = [
+          ...krWatchlist.symbols,
+          ...usWatchlist.symbols,
+        ];
+        setWatchlistSymbols(allWatchlist);
+
+        // Build cell symbols from watchlist + portfolio
+        const watchlistCells: ChartCell[] = allWatchlist
+          .filter(item => item.has_data)
+          .map(item => ({ symbol: item.symbol, market: item.market }));
+
+        const portfolioCells: ChartCell[] = portfolio.holdings
+          .map(h => ({ symbol: h.symbol, market: h.market }));
+
+        // Deduplicate and combine
+        const seen = new Set<string>();
+        const combined: ChartCell[] = [];
+
+        for (const cell of [...portfolioCells, ...watchlistCells]) {
+          const key = `${cell.market}-${cell.symbol}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            combined.push(cell);
+          }
+        }
+
+        // Fill with defaults if not enough
+        if (combined.length < 8) {
+          for (const cell of DEFAULT_SYMBOLS) {
+            const key = `${cell.market}-${cell.symbol}`;
+            if (!seen.has(key) && combined.length < 8) {
+              seen.add(key);
+              combined.push(cell);
+            }
+          }
+        }
+
+        if (combined.length > 0) {
+          setCells(combined.slice(0, 8));
+          setLoadedFromWatchlist(true);
+        }
+      } catch (err) {
+        console.error('Failed to load watchlist/portfolio:', err);
+      }
+    };
+
+    loadSymbols();
+  }, []);
 
   // Handle layout change - clamp selectedCell to valid range
   const handleLayoutChange = (newLayout: LayoutType) => {
@@ -49,14 +132,14 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
 
   // Update selected cell's symbol when sidebar selection changes
   useEffect(() => {
-    if (layout > 1) {
+    if (layout > 1 && maximizedCell === null) {
       setCells(prev => {
         const newCells = [...prev];
         newCells[selectedCell] = { symbol: selectedSymbol, market: selectedMarket };
         return newCells;
       });
     }
-  }, [selectedSymbol, selectedMarket, selectedCell, layout]);
+  }, [selectedSymbol, selectedMarket, selectedCell, layout, maximizedCell]);
 
   // Handle ESC key to restore from maximized view
   useEffect(() => {
@@ -84,6 +167,19 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
   const handleRestore = useCallback(() => {
     setMaximizedCell(null);
   }, []);
+
+  // Handle symbol change from editable input in compact mode
+  const handleSymbolChange = useCallback((index: number, newSymbol: string, newMarket: string) => {
+    setCells(prev => {
+      const newCells = [...prev];
+      newCells[index] = { symbol: newSymbol, market: newMarket };
+      return newCells;
+    });
+    // Also update parent selection if this is the selected cell
+    if (index === selectedCell) {
+      onStockSelect(newSymbol, newMarket);
+    }
+  }, [selectedCell, onStockSelect]);
 
   // Get grid class based on layout
   const getGridClass = () => {
@@ -129,6 +225,8 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             timeframe={timeframe}
             onTimeframeChange={setTimeframe}
             showHeader={true}
+            watchlistSymbols={watchlistSymbols}
+            onWatchlistChange={refreshWatchlist}
           />
         </div>
 
@@ -140,7 +238,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
     );
   }
 
-  // Render maximized view
+  // Render maximized view (from grid double-click)
   if (maximizedCell !== null) {
     const cell = cells[maximizedCell];
     return (
@@ -172,7 +270,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
           </button>
         </div>
 
-        {/* Full screen chart */}
+        {/* Full screen chart with all indicators */}
         <div className="flex-1">
           <MainChart
             symbol={cell.symbol}
@@ -180,10 +278,12 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             timeframe={timeframe}
             onTimeframeChange={setTimeframe}
             showHeader={true}
+            watchlistSymbols={watchlistSymbols}
+            onWatchlistChange={refreshWatchlist}
           />
         </div>
 
-        {/* Sub charts */}
+        {/* Sub charts - RSI, MACD, Volume */}
         <div className="h-40">
           <SubCharts symbol={cell.symbol} market={cell.market} timeframe={timeframe} />
         </div>
@@ -214,6 +314,9 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
           ))}
         </div>
         <span className="ml-auto text-xs text-[var(--text-secondary)]">
+          {loadedFromWatchlist && (
+            <span className="text-[var(--accent-green)] mr-2">관심리스트에서 불러옴</span>
+          )}
           더블클릭하여 확대 | 선택된 셀: {selectedCell + 1}
         </span>
       </div>
@@ -234,6 +337,9 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
               isSelected={selectedCell === index}
               onDoubleClick={() => handleCellDoubleClick(index)}
               showHeader={false}
+              onSymbolChange={(newSymbol, newMarket) => handleSymbolChange(index, newSymbol, newMarket)}
+              watchlistSymbols={watchlistSymbols}
+              onWatchlistChange={refreshWatchlist}
             />
           </div>
         ))}

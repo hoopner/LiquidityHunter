@@ -136,3 +136,24 @@ export interface RemoveSymbolResponse {
   market: string;
   message: string;
 }
+
+// Volume Profile types
+
+export interface VolumeProfileBin {
+  price: number;
+  volume: number;
+  percent: number;  // Percentage of max volume (for bar width)
+  in_value_area: boolean;
+}
+
+export interface VolumeProfileResponse {
+  symbol: string;
+  market: string;
+  timeframe: string;
+  poc_price: number;          // Point of Control - price with highest volume
+  vah_price: number;          // Value Area High
+  val_price: number;          // Value Area Low
+  total_volume: number;
+  value_area_volume: number;
+  histogram: VolumeProfileBin[];
+}

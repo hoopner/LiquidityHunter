@@ -214,3 +214,26 @@ class RemoveHoldingResponse(BaseModel):
     """Response for DELETE /portfolio/remove."""
     success: bool
     message: str
+
+
+# --- Volume Profile schemas ---
+
+class VolumeProfileBin(BaseModel):
+    """Single bin in volume profile histogram."""
+    price: float
+    volume: float
+    percent: float  # Percentage of max volume (for bar width)
+    in_value_area: bool
+
+
+class VolumeProfileResponse(BaseModel):
+    """Response for GET /volume_profile endpoint."""
+    symbol: str
+    market: str
+    timeframe: str
+    poc_price: float          # Point of Control - price with highest volume
+    vah_price: float          # Value Area High
+    val_price: float          # Value Area Low
+    total_volume: float
+    value_area_volume: float
+    histogram: List[VolumeProfileBin]

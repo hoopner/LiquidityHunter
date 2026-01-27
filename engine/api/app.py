@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from engine.core.orderblock import detect_orderblock, OrderBlock
 from engine.core.screener import screen_watchlist, ScreenResult
+from engine.core.volume_profile import calculate_volume_profile
 from engine.api.data import load_csv, OHLCVData
 from engine.api.schemas import (
     AnalyzeResponse,
@@ -36,6 +37,8 @@ from engine.api.schemas import (
     UpdateHoldingResponse,
     RemoveHoldingRequest,
     RemoveHoldingResponse,
+    VolumeProfileBin,
+    VolumeProfileResponse,
 )
 from engine.core.screener import ema, rsi, macd
 
@@ -702,4 +705,65 @@ def remove_holding(request: RemoveHoldingRequest) -> RemoveHoldingResponse:
     return RemoveHoldingResponse(
         success=True,
         message=f"Removed {symbol} from portfolio",
+    )
+
+
+# --- Volume Profile endpoint ---
+
+@app.get("/volume_profile", response_model=VolumeProfileResponse)
+def get_volume_profile(
+    symbol: str = Query(..., description="Symbol name"),
+    market: str = Query("KR", description="Market: KR or US"),
+    tf: str = Query("1D", description="Timeframe"),
+    num_bins: int = Query(50, description="Number of price bins for histogram"),
+) -> VolumeProfileResponse:
+    """
+    Get Volume Profile data for a symbol.
+
+    Returns POC (Point of Control), VAH (Value Area High), VAL (Value Area Low),
+    and a histogram of volume at each price level.
+    """
+    market = market.upper()
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    try:
+        data_dir = f"data/{market.lower()}"
+        data = load_csv(symbol, tf, data_dir=data_dir)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if data.volume is None or len(data.volume) == 0:
+        raise HTTPException(status_code=400, detail="Volume data not available")
+
+    # Calculate volume profile
+    result = calculate_volume_profile(
+        highs=data.high,
+        lows=data.low,
+        closes=data.close,
+        volumes=data.volume,
+        num_bins=num_bins,
+    )
+
+    # Convert histogram to schema
+    histogram_bins = [
+        VolumeProfileBin(
+            price=h["price"],
+            volume=h["volume"],
+            percent=h["percent"],
+            in_value_area=h.get("in_value_area", False),
+        )
+        for h in result.histogram
+    ]
+
+    return VolumeProfileResponse(
+        symbol=symbol,
+        market=market,
+        timeframe=tf,
+        poc_price=result.poc_price,
+        vah_price=result.vah_price,
+        val_price=result.val_price,
+        total_volume=result.total_volume,
+        value_area_volume=result.value_area_volume,
+        histogram=histogram_bins,
     )
