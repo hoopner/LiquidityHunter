@@ -57,7 +57,7 @@ function App() {
         </div>
 
         {/* Right: Sidebar */}
-        <div className="w-72">
+        <div className="w-96">
           <Sidebar onStockSelect={handleStockSelect} selectedStock={selectedStock} />
         </div>
       </div>

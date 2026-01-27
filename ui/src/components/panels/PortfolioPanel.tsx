@@ -105,35 +105,35 @@ export function PortfolioPanel({ onStockSelect, selectedSymbol }: PortfolioPanel
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-3 py-2 border-b border-[var(--border-color)] bg-[var(--bg-tertiary)]">
-        <div className="font-semibold">나의 포트폴리오</div>
-        <div className="text-xs text-[var(--text-secondary)]">
+      <div className="px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-tertiary)]">
+        <div className="text-lg font-bold">나의 포트폴리오</div>
+        <div className="text-sm text-[var(--text-secondary)]">
           Portfolio ({portfolio?.holdings.length || 0})
         </div>
       </div>
 
       {/* Summary */}
-      {portfolio && (
-        <div className="px-3 py-2 border-b border-[var(--border-color)] text-sm">
+      {portfolio && (portfolio.total_kr_value > 0 || portfolio.total_us_value > 0) && (
+        <div className="px-4 py-3 border-b border-[var(--border-color)]">
           {portfolio.total_kr_value > 0 && (
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-[var(--text-secondary)]">KR 총액</span>
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-sm text-[var(--text-secondary)]">KR 총액</span>
               <div className="text-right">
-                <span className="font-medium">₩{portfolio.total_kr_value.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                <span className={`ml-2 text-xs ${portfolio.total_kr_pnl >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
+                <div className="text-lg font-bold">₩{portfolio.total_kr_value.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                <div className={`text-sm font-medium ${portfolio.total_kr_pnl >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
                   {portfolio.total_kr_pnl >= 0 ? '+' : ''}₩{portfolio.total_kr_pnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                </span>
+                </div>
               </div>
             </div>
           )}
           {portfolio.total_us_value > 0 && (
             <div className="flex justify-between items-center">
-              <span className="text-[var(--text-secondary)]">US 총액</span>
+              <span className="text-sm text-[var(--text-secondary)]">US 총액</span>
               <div className="text-right">
-                <span className="font-medium">${portfolio.total_us_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                <span className={`ml-2 text-xs ${portfolio.total_us_pnl >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
+                <div className="text-lg font-bold">${portfolio.total_us_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                <div className={`text-sm font-medium ${portfolio.total_us_pnl >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
                   {portfolio.total_us_pnl >= 0 ? '+' : ''}${portfolio.total_us_pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
+                </div>
               </div>
             </div>
           )}
@@ -155,7 +155,7 @@ export function PortfolioPanel({ onStockSelect, selectedSymbol }: PortfolioPanel
             {/* KR Holdings */}
             {krHoldings.length > 0 && (
               <>
-                <div className="px-3 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-tertiary)] border-b border-[var(--border-color)]">
+                <div className="px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] bg-[var(--bg-tertiary)] border-b border-[var(--border-color)]">
                   한국 (KR)
                 </div>
                 {krHoldings.map((holding) => (
@@ -174,7 +174,7 @@ export function PortfolioPanel({ onStockSelect, selectedSymbol }: PortfolioPanel
             {/* US Holdings */}
             {usHoldings.length > 0 && (
               <>
-                <div className="px-3 py-1 text-xs text-[var(--text-secondary)] bg-[var(--bg-tertiary)] border-b border-[var(--border-color)]">
+                <div className="px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] bg-[var(--bg-tertiary)] border-b border-[var(--border-color)]">
                   미국 (US)
                 </div>
                 {usHoldings.map((holding) => (
@@ -194,10 +194,10 @@ export function PortfolioPanel({ onStockSelect, selectedSymbol }: PortfolioPanel
       </div>
 
       {/* Add button */}
-      <div className="px-3 py-2 border-t border-[var(--border-color)]">
+      <div className="px-4 py-3 border-t border-[var(--border-color)]">
         <button
           onClick={() => setShowAddModal(true)}
-          className="w-full py-1.5 text-sm text-[var(--accent-blue)] border border-[var(--border-color)] rounded hover:bg-[var(--bg-tertiary)]"
+          className="w-full py-2 text-base font-semibold text-[var(--accent-blue)] border border-[var(--border-color)] rounded hover:bg-[var(--bg-tertiary)]"
         >
           + 종목 추가
         </button>
@@ -312,41 +312,49 @@ function HoldingItem({ holding, isSelected, onClick, onDelete, formatCurrency }:
   return (
     <div
       onClick={onClick}
-      className={`px-3 py-2 border-b border-[var(--border-color)] cursor-pointer transition-colors group
+      className={`px-4 py-3 border-b border-[var(--border-color)] cursor-pointer transition-colors group
         ${isSelected
-          ? 'bg-[var(--accent-blue)] bg-opacity-20 border-l-2 border-l-[var(--accent-blue)]'
+          ? 'bg-[var(--accent-blue)] bg-opacity-20 border-l-4 border-l-[var(--accent-blue)]'
           : 'hover:bg-[var(--bg-tertiary)]'
         }`}
     >
       <div className="flex justify-between items-start">
-        <div className="flex-1">
-          <div className={`font-medium ${isSelected ? 'text-[var(--accent-blue)]' : ''}`}>
+        <div className="flex-1 min-w-0">
+          <div className={`text-base font-bold ${isSelected ? 'text-[var(--accent-blue)]' : ''}`}>
             {holding.symbol}
           </div>
-          <div className="text-xs text-[var(--text-secondary)] mt-0.5">
-            {holding.quantity}주 @ {formatCurrency(holding.avg_price, holding.market)}
+          <div className="text-sm text-[var(--text-secondary)] mt-1">
+            {holding.quantity.toLocaleString()}주 @ {formatCurrency(holding.avg_price, holding.market)}
           </div>
         </div>
-        <div className="text-right">
-          <div className="font-medium">
+        <div className="text-right flex-shrink-0 ml-3">
+          <div className="text-base font-bold">
             {formatCurrency(holding.current_price, holding.market)}
           </div>
-          <div className={`text-xs ${isProfitable ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
+          <div className={`text-sm font-semibold ${isProfitable ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
             {isProfitable ? '+' : ''}{holding.pnl_percent.toFixed(2)}%
           </div>
         </div>
         <button
           onClick={onDelete}
-          className="ml-2 opacity-0 group-hover:opacity-100 text-[var(--accent-red)] text-xs px-2 py-1 hover:bg-[var(--accent-red)] hover:bg-opacity-20 rounded transition-opacity"
+          className="ml-3 opacity-0 group-hover:opacity-100 text-[var(--accent-red)] text-sm px-2 py-1 hover:bg-[var(--accent-red)] hover:bg-opacity-20 rounded transition-opacity"
         >
           삭제
         </button>
       </div>
-      <div className="flex justify-between items-center mt-1 text-xs">
-        <span className="text-[var(--text-secondary)]">
-          평가금액: {formatCurrency(holding.total_value, holding.market)}
+      <div className="flex justify-between items-center mt-2 pt-2 border-t border-[var(--border-color)] border-opacity-50">
+        <span className="text-sm text-[var(--text-secondary)]">
+          평가금액
         </span>
-        <span className={isProfitable ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}>
+        <span className="text-sm font-semibold">
+          {formatCurrency(holding.total_value, holding.market)}
+        </span>
+      </div>
+      <div className="flex justify-between items-center mt-1">
+        <span className="text-sm text-[var(--text-secondary)]">
+          평가손익
+        </span>
+        <span className={`text-sm font-semibold ${isProfitable ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
           {isProfitable ? '+' : ''}{formatCurrency(holding.pnl_amount, holding.market)}
         </span>
       </div>
