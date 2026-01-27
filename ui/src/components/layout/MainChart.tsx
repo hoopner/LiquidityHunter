@@ -19,6 +19,9 @@ interface MainChartProps {
   market?: string;
 }
 
+const TIMEFRAMES = ['1D', '1W', '1M'] as const;
+type Timeframe = typeof TIMEFRAMES[number];
+
 /**
  * Main chart area with TradingView lightweight-charts
  */
@@ -32,22 +35,36 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
   const [data, setData] = useState<OHLCVResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [timeframe, setTimeframe] = useState<Timeframe>('1D');
+  const [noData, setNoData] = useState(false);
 
   // Fetch data
   useEffect(() => {
     setLoading(true);
     setError(null);
+    setNoData(false);
 
-    fetchOHLCV(symbol, market)
+    fetchOHLCV(symbol, market, timeframe)
       .then((response) => {
-        setData(response);
+        if (response.bars.length === 0) {
+          setNoData(true);
+          setData(null);
+        } else {
+          setData(response);
+        }
         setLoading(false);
       })
       .catch((err) => {
-        setError(err.message);
+        // Check if it's a "no data" error (404)
+        if (err.message.includes('not found') || err.message.includes('404')) {
+          setNoData(true);
+          setData(null);
+        } else {
+          setError(err.message);
+        }
         setLoading(false);
       });
-  }, [symbol, market]);
+  }, [symbol, market, timeframe]);
 
   // Initialize chart
   useEffect(() => {
@@ -195,6 +212,24 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
             </span>
           </>
         )}
+
+        {/* Timeframe selector */}
+        <div className="flex items-center gap-1 ml-4 bg-[var(--bg-tertiary)] rounded p-0.5">
+          {TIMEFRAMES.map((tf) => (
+            <button
+              key={tf}
+              onClick={() => setTimeframe(tf)}
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                timeframe === tf
+                  ? 'bg-[var(--accent-blue)] text-white'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]'
+              }`}
+            >
+              {tf}
+            </button>
+          ))}
+        </div>
+
         <div className="ml-auto flex items-center gap-4 text-xs text-[var(--text-secondary)]">
           <span className="flex items-center gap-1">
             <span className="w-3 h-0.5 bg-[#f59e0b]"></span> EMA20
@@ -215,6 +250,18 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
         {error && (
           <div className="absolute inset-0 flex items-center justify-center bg-[var(--bg-primary)] z-10">
             <div className="text-[var(--accent-red)]">Error: {error}</div>
+          </div>
+        )}
+        {noData && !loading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-[var(--bg-primary)] z-10">
+            <div className="text-center">
+              <div className="text-[var(--text-secondary)] text-lg mb-2">
+                해당 타임프레임 데이터 없음
+              </div>
+              <div className="text-[var(--text-secondary)] text-sm opacity-60">
+                No data available for {timeframe} timeframe
+              </div>
+            </div>
           </div>
         )}
         <div ref={chartContainerRef} className="w-full h-full" />
