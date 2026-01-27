@@ -242,31 +242,72 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
   );
 }
 
-// Layout button icons
+// Layout button icons with visual grid representations
 function LayoutButtons({ layout, setLayout }: { layout: LayoutType; setLayout: (l: LayoutType) => void }) {
-  const buttons: { layout: LayoutType; icon: string; label: string }[] = [
-    { layout: 1, icon: '▢', label: '1개' },
-    { layout: 2, icon: '▢▢', label: '2개' },
-    { layout: 4, icon: '⊞', label: '4개' },
-    { layout: 8, icon: '⊞⊞', label: '8개' },
+  const buttons: { layout: LayoutType; label: string }[] = [
+    { layout: 1, label: '1개' },
+    { layout: 2, label: '2개' },
+    { layout: 4, label: '4개' },
+    { layout: 8, label: '8개' },
   ];
 
+  // Render a mini grid icon for each layout
+  const renderGridIcon = (layoutType: LayoutType, isActive: boolean) => {
+    const boxClass = `rounded-sm ${isActive ? 'bg-white' : 'bg-[var(--text-secondary)]'}`;
+
+    switch (layoutType) {
+      case 1:
+        return (
+          <div className="w-5 h-5 flex items-center justify-center">
+            <div className={`w-4 h-4 ${boxClass}`}></div>
+          </div>
+        );
+      case 2:
+        return (
+          <div className="w-5 h-5 flex items-center justify-center gap-[2px]">
+            <div className={`w-[9px] h-4 ${boxClass}`}></div>
+            <div className={`w-[9px] h-4 ${boxClass}`}></div>
+          </div>
+        );
+      case 4:
+        return (
+          <div className="w-5 h-5 grid grid-cols-2 grid-rows-2 gap-[2px]">
+            <div className={boxClass}></div>
+            <div className={boxClass}></div>
+            <div className={boxClass}></div>
+            <div className={boxClass}></div>
+          </div>
+        );
+      case 8:
+        return (
+          <div className="w-5 h-5 grid grid-cols-4 grid-rows-2 gap-[1px]">
+            {[...Array(8)].map((_, i) => (
+              <div key={i} className={boxClass}></div>
+            ))}
+          </div>
+        );
+    }
+  };
+
   return (
-    <div className="flex items-center gap-1">
-      {buttons.map((btn) => (
-        <button
-          key={btn.layout}
-          onClick={() => setLayout(btn.layout)}
-          title={btn.label}
-          className={`px-2 py-1 text-sm rounded transition-colors ${
-            layout === btn.layout
-              ? 'bg-[var(--accent-blue)] text-white'
-              : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-          }`}
-        >
-          {btn.icon}
-        </button>
-      ))}
+    <div className="flex items-center gap-2">
+      {buttons.map((btn) => {
+        const isActive = layout === btn.layout;
+        return (
+          <button
+            key={btn.layout}
+            onClick={() => setLayout(btn.layout)}
+            className={`flex flex-col items-center justify-center min-w-[40px] h-[40px] px-2 py-1 rounded-lg transition-colors ${
+              isActive
+                ? 'bg-[var(--accent-blue)] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]'
+            }`}
+          >
+            {renderGridIcon(btn.layout, isActive)}
+            <span className="text-[10px] mt-0.5 font-medium">{btn.label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
