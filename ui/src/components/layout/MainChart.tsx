@@ -19,7 +19,7 @@ interface MainChartProps {
   market?: string;
 }
 
-const TIMEFRAMES = ['1D', '1W', '1M'] as const;
+const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'] as const;
 type Timeframe = typeof TIMEFRAMES[number];
 
 /**
