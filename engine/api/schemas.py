@@ -89,6 +89,10 @@ class OHLCVResponse(BaseModel):
     bars: List[OHLCVBar]
     ema20: List[float]
     ema200: List[float]
+    rsi: List[float]
+    macd_line: List[float]
+    macd_signal: List[float]
+    macd_histogram: List[float]
 
 
 # --- Watchlist schemas ---

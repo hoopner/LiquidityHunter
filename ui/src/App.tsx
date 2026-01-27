@@ -51,8 +51,8 @@ function App() {
           </div>
 
           {/* Sub charts (RSI, MACD, Volume) */}
-          <div className="h-32">
-            <SubCharts />
+          <div className="h-40">
+            <SubCharts symbol={selectedStock.symbol} market={selectedStock.market} />
           </div>
         </div>
 

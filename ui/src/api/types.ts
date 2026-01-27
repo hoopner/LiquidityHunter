@@ -18,6 +18,10 @@ export interface OHLCVResponse {
   bars: OHLCVBar[];
   ema20: number[];
   ema200: number[];
+  rsi: number[];
+  macd_line: number[];
+  macd_signal: number[];
+  macd_histogram: number[];
 }
 
 export interface ScreenResult {

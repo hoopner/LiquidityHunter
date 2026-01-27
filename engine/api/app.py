@@ -28,7 +28,7 @@ from engine.api.schemas import (
     RemoveSymbolRequest,
     RemoveSymbolResponse,
 )
-from engine.core.screener import ema
+from engine.core.screener import ema, rsi, macd
 
 app = FastAPI(
     title="LiquidityHunter",
@@ -301,9 +301,19 @@ def get_ohlcv(
     ema20_values = ema(data.close, 20)
     ema200_values = ema(data.close, 200)
 
-    # Convert to list, replacing NaN with None for JSON
+    # Calculate RSI
+    rsi_values = rsi(data.close, 14)
+
+    # Calculate MACD
+    macd_line_values, macd_signal_values, macd_histogram_values = macd(data.close, 12, 26, 9)
+
+    # Convert to list, replacing NaN with 0 for JSON
     ema20_list = [float(v) if not np.isnan(v) else 0 for v in ema20_values]
     ema200_list = [float(v) if not np.isnan(v) else 0 for v in ema200_values]
+    rsi_list = [float(v) if not np.isnan(v) else 0 for v in rsi_values]
+    macd_line_list = [float(v) if not np.isnan(v) else 0 for v in macd_line_values]
+    macd_signal_list = [float(v) if not np.isnan(v) else 0 for v in macd_signal_values]
+    macd_histogram_list = [float(v) if not np.isnan(v) else 0 for v in macd_histogram_values]
 
     return OHLCVResponse(
         symbol=symbol,
@@ -312,6 +322,10 @@ def get_ohlcv(
         bars=bars,
         ema20=ema20_list,
         ema200=ema200_list,
+        rsi=rsi_list,
+        macd_line=macd_line_list,
+        macd_signal=macd_signal_list,
+        macd_histogram=macd_histogram_list,
     )
 
 

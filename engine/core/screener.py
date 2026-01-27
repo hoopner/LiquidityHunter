@@ -47,6 +47,94 @@ def ema(closes: np.ndarray, period: int) -> np.ndarray:
     return result
 
 
+def rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
+    """
+    Calculate RSI (Relative Strength Index).
+
+    Returns array of same length, with NaN for insufficient data.
+    """
+    n = len(closes)
+    if n < period + 1:
+        return np.full(n, np.nan)
+
+    result = np.full(n, np.nan)
+
+    # Calculate price changes
+    deltas = np.diff(closes)
+
+    # Separate gains and losses
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+
+    # First average (SMA)
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses[:period])
+
+    if avg_loss == 0:
+        result[period] = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        result[period] = 100.0 - (100.0 / (1.0 + rs))
+
+    # Subsequent values use smoothed average (Wilder's smoothing)
+    for i in range(period, n - 1):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+        if avg_loss == 0:
+            result[i + 1] = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            result[i + 1] = 100.0 - (100.0 / (1.0 + rs))
+
+    return result
+
+
+def macd(
+    closes: np.ndarray,
+    fast_period: int = 12,
+    slow_period: int = 26,
+    signal_period: int = 9,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Calculate MACD (Moving Average Convergence Divergence).
+
+    Returns:
+        macd_line: EMA(fast) - EMA(slow)
+        signal_line: EMA(macd_line, signal_period)
+        histogram: macd_line - signal_line
+    """
+    n = len(closes)
+
+    ema_fast = ema(closes, fast_period)
+    ema_slow = ema(closes, slow_period)
+
+    macd_line = ema_fast - ema_slow
+
+    # Calculate signal line (EMA of MACD line)
+    # Need to handle NaN values in macd_line
+    signal_line = np.full(n, np.nan)
+
+    # Find first valid MACD value
+    first_valid = slow_period - 1
+    if first_valid + signal_period <= n:
+        # Calculate EMA of MACD line starting from first valid
+        valid_macd = macd_line[first_valid:]
+        multiplier = 2.0 / (signal_period + 1)
+
+        # SMA for first signal value
+        signal_line[first_valid + signal_period - 1] = np.mean(valid_macd[:signal_period])
+
+        # EMA for rest
+        for i in range(signal_period, len(valid_macd)):
+            idx = first_valid + i
+            signal_line[idx] = (macd_line[idx] - signal_line[idx - 1]) * multiplier + signal_line[idx - 1]
+
+    histogram = macd_line - signal_line
+
+    return macd_line, signal_line, histogram
+
+
 def forecast_cross_days(ema20: np.ndarray, ema200: np.ndarray) -> Optional[int]:
     """
     Forecast days until EMA20 crosses above EMA200.
