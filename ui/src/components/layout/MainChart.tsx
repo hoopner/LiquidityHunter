@@ -14,13 +14,19 @@ import type {
 import { fetchOHLCV, fetchAnalyze } from '../../api/client';
 import type { OHLCVResponse, AnalyzeResponse } from '../../api/types';
 
+export const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'] as const;
+export type Timeframe = typeof TIMEFRAMES[number];
+
 interface MainChartProps {
   symbol?: string;
   market?: string;
+  compact?: boolean;
+  timeframe?: Timeframe;
+  onTimeframeChange?: (tf: Timeframe) => void;
+  isSelected?: boolean;
+  onDoubleClick?: () => void;
+  showHeader?: boolean;
 }
-
-const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'] as const;
-type Timeframe = typeof TIMEFRAMES[number];
 
 interface BoxPosition {
   left: number;
@@ -33,7 +39,16 @@ interface BoxPosition {
 /**
  * Main chart area with TradingView lightweight-charts
  */
-export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) {
+export function MainChart({
+  symbol = '005930',
+  market = 'KR',
+  compact = false,
+  timeframe: externalTimeframe,
+  onTimeframeChange,
+  isSelected = false,
+  onDoubleClick,
+  showHeader = true,
+}: MainChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -43,8 +58,18 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
   const [data, setData] = useState<OHLCVResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [timeframe, setTimeframe] = useState<Timeframe>('1D');
+  const [internalTimeframe, setInternalTimeframe] = useState<Timeframe>('1D');
   const [noData, setNoData] = useState(false);
+
+  // Use external timeframe if provided, otherwise use internal
+  const timeframe = externalTimeframe ?? internalTimeframe;
+  const setTimeframe = (tf: Timeframe) => {
+    if (onTimeframeChange) {
+      onTimeframeChange(tf);
+    } else {
+      setInternalTimeframe(tf);
+    }
+  };
 
   // Order Block state
   const [analyzeData, setAnalyzeData] = useState<AnalyzeResponse | null>(null);
@@ -305,95 +330,114 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
   const isBullish = ob?.direction === 'bullish';
 
   return (
-    <div className="flex flex-col h-full bg-[var(--bg-primary)]">
-      {/* Chart header */}
-      <div className="flex items-center gap-4 px-4 py-2 border-b border-[var(--border-color)]">
-        <span className="text-lg font-semibold">{symbol}</span>
-        <span className="text-[var(--text-secondary)]">{market}</span>
-        {lastBar && (
-          <>
-            <span className={priceChange >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}>
-              {lastBar.close.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            </span>
-            <span className={`text-sm ${priceChange >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
-              {priceChange >= 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%
-            </span>
-          </>
-        )}
-
-        {/* Timeframe selector */}
-        <div className="flex items-center gap-1 ml-4 bg-[var(--bg-tertiary)] rounded p-0.5">
-          {TIMEFRAMES.map((tf) => (
-            <button
-              key={tf}
-              onClick={() => setTimeframe(tf)}
-              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                timeframe === tf
-                  ? 'bg-[var(--accent-blue)] text-white'
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]'
-              }`}
-            >
-              {tf}
-            </button>
-          ))}
-        </div>
-
-        {/* OB Toggle */}
-        <button
-          onClick={() => setShowOB(!showOB)}
-          className={`ml-2 px-3 py-1 text-xs font-medium rounded transition-colors ${
-            showOB
-              ? 'bg-[var(--accent-blue)] text-white'
-              : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-          }`}
-        >
-          OB
-        </button>
-
-        <div className="ml-auto flex items-center gap-4 text-xs text-[var(--text-secondary)]">
-          {ob && showOB && (
-            <span className={`flex items-center gap-1 ${isBullish ? 'text-[#26a69a]' : 'text-[#ef5350]'}`}>
-              <span className={`w-3 h-3 rounded ${isBullish ? 'bg-[#26a69a]' : 'bg-[#ef5350]'} opacity-40`}></span>
-              {isBullish ? 'Bullish' : 'Bearish'} OB
-              {ob.has_fvg && ' + FVG'}
-            </span>
+    <div
+      className={`flex flex-col h-full bg-[var(--bg-primary)] ${isSelected ? 'ring-2 ring-[var(--accent-blue)]' : ''}`}
+      onDoubleClick={onDoubleClick}
+    >
+      {/* Chart header - full mode */}
+      {showHeader && !compact && (
+        <div className="flex items-center gap-4 px-4 py-2 border-b border-[var(--border-color)]">
+          <span className="text-lg font-semibold">{symbol}</span>
+          <span className="text-[var(--text-secondary)]">{market}</span>
+          {lastBar && (
+            <>
+              <span className={priceChange >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}>
+                {lastBar.close.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </span>
+              <span className={`text-sm ${priceChange >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
+                {priceChange >= 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%
+              </span>
+            </>
           )}
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-0.5 bg-[#f59e0b]"></span> EMA20
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-0.5 bg-[#8b5cf6]"></span> EMA200
-          </span>
+
+          {/* Timeframe selector */}
+          <div className="flex items-center gap-1 ml-4 bg-[var(--bg-tertiary)] rounded p-0.5">
+            {TIMEFRAMES.map((tf) => (
+              <button
+                key={tf}
+                onClick={() => setTimeframe(tf)}
+                className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                  timeframe === tf
+                    ? 'bg-[var(--accent-blue)] text-white'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]'
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
+
+          {/* OB Toggle */}
+          <button
+            onClick={() => setShowOB(!showOB)}
+            className={`ml-2 px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showOB
+                ? 'bg-[var(--accent-blue)] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            OB
+          </button>
+
+          <div className="ml-auto flex items-center gap-4 text-xs text-[var(--text-secondary)]">
+            {ob && showOB && (
+              <span className={`flex items-center gap-1 ${isBullish ? 'text-[#26a69a]' : 'text-[#ef5350]'}`}>
+                <span className={`w-3 h-3 rounded ${isBullish ? 'bg-[#26a69a]' : 'bg-[#ef5350]'} opacity-40`}></span>
+                {isBullish ? 'Bullish' : 'Bearish'} OB
+                {ob.has_fvg && ' + FVG'}
+              </span>
+            )}
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-0.5 bg-[#f59e0b]"></span> EMA20
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-3 h-0.5 bg-[#8b5cf6]"></span> EMA200
+            </span>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Chart area */}
       <div className="flex-1 relative">
+        {/* Compact mode symbol overlay */}
+        {compact && (
+          <div className="absolute top-2 left-2 z-20 flex items-center gap-2">
+            <span className="text-sm font-bold bg-[var(--bg-secondary)] bg-opacity-90 px-2 py-1 rounded">
+              {symbol}
+            </span>
+            <span className="text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] bg-opacity-90 px-1.5 py-0.5 rounded">
+              {market}
+            </span>
+            {lastBar && (
+              <span className={`text-xs font-medium bg-[var(--bg-secondary)] bg-opacity-90 px-1.5 py-0.5 rounded ${priceChange >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'}`}>
+                {priceChange >= 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%
+              </span>
+            )}
+          </div>
+        )}
+
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-[var(--bg-primary)] z-10">
-            <div className="text-[var(--text-secondary)]">Loading chart data...</div>
+            <div className="text-[var(--text-secondary)]">{compact ? '...' : 'Loading chart data...'}</div>
           </div>
         )}
         {error && (
           <div className="absolute inset-0 flex items-center justify-center bg-[var(--bg-primary)] z-10">
-            <div className="text-[var(--accent-red)]">Error: {error}</div>
+            <div className="text-[var(--accent-red)] text-sm">{compact ? 'Error' : `Error: ${error}`}</div>
           </div>
         )}
         {noData && !loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-[var(--bg-primary)] z-10">
             <div className="text-center">
-              <div className="text-[var(--text-secondary)] text-lg mb-2">
-                해당 타임프레임 데이터 없음
-              </div>
-              <div className="text-[var(--text-secondary)] text-sm opacity-60">
-                No data available for {timeframe} timeframe
+              <div className="text-[var(--text-secondary)] text-sm">
+                {compact ? '데이터 없음' : '해당 타임프레임 데이터 없음'}
               </div>
             </div>
           </div>
         )}
 
-        {/* Order Block overlay */}
-        {showOB && obBoxPosition.visible && ob && (
+        {/* Order Block overlay - only in non-compact mode */}
+        {!compact && showOB && obBoxPosition.visible && ob && (
           <div
             className="absolute pointer-events-none z-[5]"
             style={{
@@ -420,8 +464,8 @@ export function MainChart({ symbol = '005930', market = 'KR' }: MainChartProps) 
           </div>
         )}
 
-        {/* FVG overlay */}
-        {showOB && fvgBoxPosition.visible && ob?.has_fvg && (
+        {/* FVG overlay - only in non-compact mode */}
+        {!compact && showOB && fvgBoxPosition.visible && ob?.has_fvg && (
           <div
             className="absolute pointer-events-none z-[4]"
             style={{

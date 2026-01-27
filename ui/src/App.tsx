@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import './App.css';
-import { MainChart } from './components/layout/MainChart';
-import { SubCharts } from './components/layout/SubCharts';
+import { MultiChartLayout } from './components/layout/MultiChartLayout';
 import { Sidebar } from './components/layout/Sidebar';
 import { WhyPanel } from './components/layout/WhyPanel';
 
@@ -43,17 +42,13 @@ function App() {
 
       {/* Main content area */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left: Chart area */}
+        {/* Left: Chart area with multi-chart layout */}
         <div className="flex-1 flex flex-col">
-          {/* Main chart */}
-          <div className="flex-1">
-            <MainChart symbol={selectedStock.symbol} market={selectedStock.market} />
-          </div>
-
-          {/* Sub charts (RSI, MACD, Volume) */}
-          <div className="h-40">
-            <SubCharts symbol={selectedStock.symbol} market={selectedStock.market} />
-          </div>
+          <MultiChartLayout
+            selectedSymbol={selectedStock.symbol}
+            selectedMarket={selectedStock.market}
+            onStockSelect={handleStockSelect}
+          />
         </div>
 
         {/* Right: Sidebar */}
