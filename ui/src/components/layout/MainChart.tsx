@@ -119,6 +119,14 @@ export function MainChart({
   const [isResizingOB, setIsResizingOB] = useState(false);
   const resizeStartRef = useRef<{ x: number; value: number }>({ x: 0, value: 0 });
 
+  // Ctrl+wheel zoom anchor lock (prevents jitter during zoom gesture)
+  const zoomAnchorRef = useRef<{ locked: boolean; anchorLogical: number; lastWheelTime: number }>({
+    locked: false,
+    anchorLogical: 0,
+    lastWheelTime: 0,
+  });
+  const zoomResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Volume Profile state
   const [volumeProfile, setVolumeProfile] = useState<VolumeProfileResponse | null>(null);
   const [showVP, setShowVP] = useState(false);
@@ -499,9 +507,13 @@ export function MainChart({
     chart.timeScale().subscribeVisibleLogicalRangeChange(updateBoxPositions);
 
     // Ctrl + mouse wheel zoom: RIGHT edge stays fixed, LEFT side changes
-    // This lets you zoom into history while keeping the "present" (right edge) fixed
+    // Uses locked anchor to prevent jitter during zoom gesture
     const handleCtrlWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return; // Only handle when Ctrl is held
+      if (!e.ctrlKey) {
+        // Ctrl released - reset anchor lock
+        zoomAnchorRef.current.locked = false;
+        return;
+      }
 
       e.preventDefault();
       e.stopPropagation();
@@ -509,6 +521,26 @@ export function MainChart({
       const timeScale = chart.timeScale();
       const currentRange = timeScale.getVisibleLogicalRange();
       if (!currentRange) return;
+
+      const now = Date.now();
+
+      // Lock the anchor point at the start of zoom gesture
+      // Only update anchor if: not locked, or more than 300ms since last wheel event
+      if (!zoomAnchorRef.current.locked || (now - zoomAnchorRef.current.lastWheelTime > 300)) {
+        zoomAnchorRef.current.locked = true;
+        zoomAnchorRef.current.anchorLogical = currentRange.to; // Lock to current right edge
+      }
+      zoomAnchorRef.current.lastWheelTime = now;
+
+      // Clear existing reset timer
+      if (zoomResetTimerRef.current) {
+        clearTimeout(zoomResetTimerRef.current);
+      }
+
+      // Set timer to reset anchor lock after 200ms of no scrolling
+      zoomResetTimerRef.current = setTimeout(() => {
+        zoomAnchorRef.current.locked = false;
+      }, 200);
 
       // Zoom direction:
       // Scroll up (deltaY < 0) = zoom IN = spread candles = show FEWER bars = width DECREASES
@@ -522,13 +554,19 @@ export function MainChart({
       // Clamp width (min 5 bars, max 500 bars)
       const clampedWidth = Math.max(5, Math.min(500, newWidth));
 
-      // RIGHT edge is the fixed anchor (current right edge stays in place)
-      // Only the LEFT side changes
-      const rightAnchor = currentRange.to;
+      // Use LOCKED anchor point (prevents jitter as chart moves during zoom)
+      const rightAnchor = zoomAnchorRef.current.anchorLogical;
       const newFrom = rightAnchor - clampedWidth;
       const newTo = rightAnchor;
 
       timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
+    };
+
+    // Reset anchor lock when Ctrl key is released
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control') {
+        zoomAnchorRef.current.locked = false;
+      }
     };
 
     // Add wheel listener to chart container
@@ -537,11 +575,17 @@ export function MainChart({
       container.addEventListener('wheel', handleCtrlWheel, { passive: false });
     }
 
+    // Add keyup listener to reset anchor lock when Ctrl is released
+    window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('resize', handleResize);
     handleResize();
 
     return () => {
+      window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('resize', handleResize);
+      if (zoomResetTimerRef.current) {
+        clearTimeout(zoomResetTimerRef.current);
+      }
       if (container) {
         container.removeEventListener('wheel', handleCtrlWheel);
       }
