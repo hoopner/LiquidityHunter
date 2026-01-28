@@ -5,7 +5,9 @@ Rules:
 - OB: last opposite-direction candle before displacement
 - Zone = BODY only (open to close)
 - Displacement: body_size >= 1.5 * median_body_size(last 20 bars)
-- FVG (3-candle rule): bullish High(c1) < Low(c3), bearish Low(c1) > High(c3)
+- FVG (2-candle rule, BODY only):
+  - Bullish FVG: candle[i-1].body_high < candle[i].body_low
+  - Bearish FVG: candle[i-1].body_low > candle[i].body_high
 - Freshness: if price intersects OB BODY after formation -> invalidate
 - Single Zone Logic: return ONLY ONE valid OB (most recent, closest to current price)
 """
@@ -24,11 +26,11 @@ class OBDirection(Enum):
 
 @dataclass
 class FVG:
-    """Fair Value Gap."""
-    index: int  # Index of the middle (displacement) candle
+    """Fair Value Gap (2-candle, BODY only)."""
+    index: int  # Index of the second candle (where gap forms)
     direction: OBDirection
-    gap_high: float
-    gap_low: float
+    gap_high: float  # Top of gap zone
+    gap_low: float   # Bottom of gap zone
 
 
 @dataclass
@@ -105,51 +107,50 @@ def _is_displacement(
 
 
 def _check_fvg(
-    high: np.ndarray,
-    low: np.ndarray,
     open_: np.ndarray,
     close: np.ndarray,
-    displacement_idx: int,
+    idx: int,
 ) -> Optional[FVG]:
     """
-    Check for FVG using 3-candle rule.
+    Check for FVG using 2-candle rule with BODY only.
 
-    c1 = displacement_idx - 1
-    c2 = displacement_idx (displacement candle)
-    c3 = displacement_idx + 1
+    Compares candle[idx-1] and candle[idx] (2 consecutive candles).
 
-    Bullish FVG: High(c1) < Low(c3)
-    Bearish FVG: Low(c1) > High(c3)
+    Bullish FVG: candle[idx-1].body_high < candle[idx].body_low
+      - Gap zone = candle[idx-1].body_high to candle[idx].body_low
+
+    Bearish FVG: candle[idx-1].body_low > candle[idx].body_high
+      - Gap zone = candle[idx].body_high to candle[idx-1].body_low
     """
-    c1_idx = displacement_idx - 1
-    c3_idx = displacement_idx + 1
-
-    if c1_idx < 0 or c3_idx >= len(high):
+    if idx < 1:
         return None
 
-    c1_high = high[c1_idx]
-    c1_low = low[c1_idx]
-    c3_high = high[c3_idx]
-    c3_low = low[c3_idx]
+    prev_idx = idx - 1
 
-    # Determine direction from displacement candle
-    is_bullish = _is_bullish_candle(open_[displacement_idx], close[displacement_idx])
+    # Get body boundaries for both candles
+    prev_body_high = _body_high(open_[prev_idx], close[prev_idx])
+    prev_body_low = _body_low(open_[prev_idx], close[prev_idx])
+    curr_body_high = _body_high(open_[idx], close[idx])
+    curr_body_low = _body_low(open_[idx], close[idx])
 
-    if is_bullish and c1_high < c3_low:
-        # Bullish FVG: gap between c1 high and c3 low
+    # Determine direction from current candle
+    is_bullish = _is_bullish_candle(open_[idx], close[idx])
+
+    if is_bullish and prev_body_high < curr_body_low:
+        # Bullish FVG: gap between prev body high and current body low
         return FVG(
-            index=displacement_idx,
+            index=idx,
             direction=OBDirection.BULLISH,
-            gap_high=c3_low,
-            gap_low=c1_high,
+            gap_high=curr_body_low,
+            gap_low=prev_body_high,
         )
-    elif not is_bullish and c1_low > c3_high:
-        # Bearish FVG: gap between c1 low and c3 high
+    elif not is_bullish and prev_body_low > curr_body_high:
+        # Bearish FVG: gap between current body high and prev body low
         return FVG(
-            index=displacement_idx,
+            index=idx,
             direction=OBDirection.BEARISH,
-            gap_high=c1_low,
-            gap_low=c3_high,
+            gap_high=prev_body_low,
+            gap_low=curr_body_high,
         )
 
     return None
@@ -310,12 +311,9 @@ def detect_orderblock(
         zone_top = max(ob_open, ob_close)
         zone_bottom = min(ob_open, ob_close)
 
-        # Check for FVG (need candle after displacement)
-        fvg = None
-        has_fvg = False
-        if i + 1 < n:
-            fvg = _check_fvg(high, low, open_, close, i)
-            has_fvg = fvg is not None
+        # Check for FVG between OB candle and displacement candle
+        fvg = _check_fvg(open_, close, i)
+        has_fvg = fvg is not None
 
         ob = OrderBlock(
             index=ob_idx,
@@ -397,11 +395,9 @@ def find_all_orderblocks(
         zone_top = max(ob_open, ob_close)
         zone_bottom = min(ob_open, ob_close)
 
-        fvg = None
-        has_fvg = False
-        if i + 1 < n:
-            fvg = _check_fvg(high, low, open_, close, i)
-            has_fvg = fvg is not None
+        # Check for FVG between OB candle and displacement candle
+        fvg = _check_fvg(open_, close, i)
+        has_fvg = fvg is not None
 
         ob = OrderBlock(
             index=ob_idx,

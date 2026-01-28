@@ -119,6 +119,11 @@ export function MainChart({
   const [isResizingOB, setIsResizingOB] = useState(false);
   const resizeStartRef = useRef<{ x: number; value: number }>({ x: 0, value: 0 });
 
+  // FVG adjustment state (similar to OB)
+  const [fvgRightOffset, setFvgRightOffset] = useState(0);
+  const [isResizingFVG, setIsResizingFVG] = useState(false);
+  const fvgResizeStartRef = useRef<{ x: number; value: number }>({ x: 0, value: 0 });
+
   // Ctrl+wheel zoom anchor lock (prevents jitter during zoom gesture)
   const zoomAnchorRef = useRef<{ locked: boolean; anchorLogical: number; lastWheelTime: number }>({
     locked: false,
@@ -336,22 +341,25 @@ export function MainChart({
       setObBoxPosition(prev => ({ ...prev, visible: false }));
     }
 
-    // FVG box
+    // FVG box - extends to chart right edge like OB
     if (ob.has_fvg && ob.fvg) {
       const fvg = ob.fvg;
-      const fvgStartTime = data.bars[fvg.index]?.time;
-      const fvgEndTime = data.bars[Math.min(fvg.index + 3, data.bars.length - 1)]?.time;
+      // FVG starts at the candle where gap was detected (index-1 for 2-candle rule)
+      const fvgStartIdx = Math.max(0, fvg.index - 1);
+      const fvgStartTime = data.bars[fvgStartIdx]?.time;
 
-      if (fvgStartTime && fvgEndTime) {
+      if (fvgStartTime) {
         const fvgLeftX = timeScale.timeToCoordinate(fvgStartTime as Time);
-        const fvgRightX = timeScale.timeToCoordinate(fvgEndTime as Time);
         const fvgTopY = series.priceToCoordinate(fvg.gap_high);
         const fvgBottomY = series.priceToCoordinate(fvg.gap_low);
 
-        if (fvgLeftX !== null && fvgRightX !== null && fvgTopY !== null && fvgBottomY !== null) {
+        if (fvgLeftX !== null && fvgTopY !== null && fvgBottomY !== null) {
+          // FVG extends to chart right edge, similar to OB
+          const adjustedRight = Math.max(fvgLeftX + 30, chartRightEdge + fvgRightOffset);
+
           setFvgBoxPosition({
-            left: Math.min(fvgLeftX, fvgRightX),
-            right: Math.max(fvgLeftX, fvgRightX),
+            left: fvgLeftX,
+            right: Math.min(adjustedRight, chartRightEdge + 100),
             top: Math.min(fvgTopY, fvgBottomY),
             bottom: Math.max(fvgTopY, fvgBottomY),
             visible: true,
@@ -359,11 +367,13 @@ export function MainChart({
         } else {
           setFvgBoxPosition(prev => ({ ...prev, visible: false }));
         }
+      } else {
+        setFvgBoxPosition(prev => ({ ...prev, visible: false }));
       }
     } else {
       setFvgBoxPosition(prev => ({ ...prev, visible: false }));
     }
-  }, [data, analyzeData]); // NOTE: obRightOffset is NOT a dependency - we handle it separately
+  }, [data, analyzeData]); // NOTE: offsets are NOT dependencies - we handle them separately
 
   // OB right edge resize handlers (only right side can be adjusted)
   const handleObResizeStart = useCallback((e: React.MouseEvent) => {
@@ -395,7 +405,35 @@ export function MainChart({
     setIsResizingOB(false);
   }, []);
 
-  // Attach global mouse events for resize
+  // FVG right edge resize handlers
+  const handleFvgResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingFVG(true);
+    fvgResizeStartRef.current = {
+      x: e.clientX,
+      value: fvgRightOffset,
+    };
+  }, [fvgRightOffset]);
+
+  const handleFvgResizeMove = useCallback((e: MouseEvent) => {
+    if (!isResizingFVG || !chartContainerRef.current) return;
+
+    const deltaX = e.clientX - fvgResizeStartRef.current.x;
+    const newOffset = fvgResizeStartRef.current.value + deltaX;
+
+    const chartRightEdge = chartContainerRef.current.clientWidth - 60;
+    const minOffset = -(chartRightEdge - fvgBoxPosition.left - 30);
+    const maxOffset = 100;
+
+    setFvgRightOffset(Math.max(minOffset, Math.min(maxOffset, newOffset)));
+  }, [isResizingFVG, fvgBoxPosition.left]);
+
+  const handleFvgResizeEnd = useCallback(() => {
+    setIsResizingFVG(false);
+  }, []);
+
+  // Attach global mouse events for OB resize
   useEffect(() => {
     if (isResizingOB) {
       window.addEventListener('mousemove', handleObResizeMove);
@@ -406,6 +444,18 @@ export function MainChart({
       };
     }
   }, [isResizingOB, handleObResizeMove, handleObResizeEnd]);
+
+  // Attach global mouse events for FVG resize
+  useEffect(() => {
+    if (isResizingFVG) {
+      window.addEventListener('mousemove', handleFvgResizeMove);
+      window.addEventListener('mouseup', handleFvgResizeEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleFvgResizeMove);
+        window.removeEventListener('mouseup', handleFvgResizeEnd);
+      };
+    }
+  }, [isResizingFVG, handleFvgResizeMove, handleFvgResizeEnd]);
 
   // Update OB box right edge when obRightOffset changes (smooth resize without chart recreation)
   useEffect(() => {
@@ -420,9 +470,23 @@ export function MainChart({
     }));
   }, [obRightOffset]); // Only depends on obRightOffset
 
-  // Reset OB adjustment when symbol/timeframe changes
+  // Update FVG box right edge when fvgRightOffset changes
+  useEffect(() => {
+    if (!chartContainerRef.current || !fvgBoxPosition.visible) return;
+
+    const chartRightEdge = chartContainerRef.current.clientWidth - 60;
+    const adjustedRight = Math.max(fvgBoxPosition.left + 30, chartRightEdge + fvgRightOffset);
+
+    setFvgBoxPosition(prev => ({
+      ...prev,
+      right: Math.min(adjustedRight, chartRightEdge + 100),
+    }));
+  }, [fvgRightOffset]); // Only depends on fvgRightOffset
+
+  // Reset OB and FVG adjustments when symbol/timeframe changes
   useEffect(() => {
     setObRightOffset(0);
+    setFvgRightOffset(0);
   }, [symbol, market, timeframe]);
 
   // Initialize chart
@@ -1136,29 +1200,61 @@ export function MainChart({
           </div>
         )}
 
-        {/* FVG overlay - only in non-compact mode */}
-        {!compact && showOB && fvgBoxPosition.visible && ob?.has_fvg && (
+        {/* FVG overlay - only in non-compact mode, extends to right like OB */}
+        {!compact && showOB && fvgBoxPosition.visible && ob?.has_fvg && ob.fvg && (
           <div
-            className="absolute pointer-events-none z-[4]"
+            className="absolute z-[4]"
             style={{
               left: fvgBoxPosition.left,
               top: fvgBoxPosition.top,
               width: fvgBoxPosition.right - fvgBoxPosition.left,
               height: fvgBoxPosition.bottom - fvgBoxPosition.top,
-              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.35)' : 'rgba(239, 83, 80, 0.35)',
-              border: `2px dashed ${isBullish ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)'}`,
+              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.2)' : 'rgba(239, 83, 80, 0.2)',
+              border: `2px dashed ${isBullish ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)'}`,
               borderRadius: '3px',
+              pointerEvents: 'none',
             }}
           >
+            {/* FVG label */}
             <div
-              className="absolute bottom-1 left-1 px-1.5 py-0.5 text-[11px] font-bold rounded"
+              className="absolute top-1 left-1 px-1.5 py-0.5 text-[10px] font-bold rounded"
               style={{
-                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
+                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
                 color: 'white',
                 textShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                border: `1px dashed ${isBullish ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)'}`,
               }}
             >
               FVG
+            </div>
+            {/* Price label */}
+            <div
+              className="absolute top-1 right-8 text-[9px] font-medium px-1 rounded"
+              style={{
+                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)',
+                color: 'white',
+                border: `1px dashed ${isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
+              }}
+            >
+              {ob.fvg.gap_high.toLocaleString(undefined, { maximumFractionDigits: 0 })} - {ob.fvg.gap_low.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            </div>
+            {/* Right resize handle */}
+            <div
+              className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
+              style={{
+                pointerEvents: 'auto',
+                backgroundColor: isResizingFVG ? (isBullish ? 'rgba(38, 166, 154, 0.3)' : 'rgba(239, 83, 80, 0.3)') : 'transparent',
+              }}
+              onMouseDown={handleFvgResizeStart}
+              title="좌우로 드래그하여 확장/축소"
+            >
+              <div
+                className="w-1 h-6 rounded"
+                style={{
+                  backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)',
+                  border: `1px dashed ${isBullish ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)'}`,
+                }}
+              />
             </div>
           </div>
         )}
