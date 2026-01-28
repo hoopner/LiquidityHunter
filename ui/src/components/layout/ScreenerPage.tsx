@@ -1,17 +1,49 @@
 import { useState, useEffect } from 'react';
 
-interface ScreenerResult {
+// Common fields for all screener results
+interface BaseResult {
   symbol: string;
   market: string;
-  name: string;
-  price: number;
-  change: number;
+  current_price?: number;
+  last_close?: number;
+}
+
+// OB Screener result
+interface OBResult extends BaseResult {
+  direction: string;
+  zone_top: number;
+  zone_bottom: number;
+  distance_percent: number;
+  has_fvg: boolean;
+}
+
+// EMA Cross result
+interface EMAResult extends BaseResult {
+  days_to_cross: number | null;
+  gap: number;
+  score: number;
+  ema20: number;
+  ema200: number;
+}
+
+// RSI result
+interface RSIResult extends BaseResult {
+  rsi_value: number;
   signal: string;
-  signalDate: string;
+}
+
+// Union type for display
+interface DisplayResult {
+  symbol: string;
+  market: string;
+  col1: string;  // Main signal column
+  col1Color: 'green' | 'red' | 'neutral';
+  col2: string;  // Secondary info
+  col3: string;  // Third column (optional)
 }
 
 type MarketFilter = 'all' | 'KR' | 'US';
-type ScreenerType = 'ema_cross' | 'ob_detect' | 'rsi_extreme';
+type ScreenerType = 'ob_detect' | 'ema_cross' | 'rsi_extreme';
 
 interface ScreenerPageProps {
   onStockSelect: (symbol: string, market: string) => void;
@@ -22,9 +54,87 @@ export function ScreenerPage({ onStockSelect, onBackToChart }: ScreenerPageProps
   const [searchQuery, setSearchQuery] = useState('');
   const [marketFilter, setMarketFilter] = useState<MarketFilter>('all');
   const [screenerType, setScreenerType] = useState<ScreenerType>('ob_detect');
-  const [results, setResults] = useState<ScreenerResult[]>([]);
+  const [results, setResults] = useState<DisplayResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Transform OB results to display format
+  // Columns: 종목 | 시장 | 방향 | 가격대 | 신선도
+  const transformOBResults = (data: { kr_candidates: OBResult[]; us_candidates: OBResult[] }): DisplayResult[] => {
+    const krCandidates = data.kr_candidates || [];
+    const usCandidates = data.us_candidates || [];
+
+    let allCandidates: OBResult[] = [];
+    if (marketFilter === 'all') {
+      allCandidates = [...krCandidates, ...usCandidates];
+    } else if (marketFilter === 'KR') {
+      allCandidates = krCandidates;
+    } else {
+      allCandidates = usCandidates;
+    }
+
+    return allCandidates.map((item) => ({
+      symbol: item.symbol,
+      market: item.market,
+      col1: item.direction === 'bullish' ? 'Bullish' : 'Bearish',
+      col1Color: item.direction === 'bullish' ? 'green' : 'red' as const,
+      col2: `${item.zone_bottom.toLocaleString()} ~ ${item.zone_top.toLocaleString()}`,
+      col3: item.has_fvg ? 'Fresh + FVG' : 'Fresh',
+    }));
+  };
+
+  // Transform EMA results to display format
+  // Columns: 종목 | 시장 | 갭% | 예상일
+  const transformEMAResults = (data: { kr_candidates: EMAResult[]; us_candidates: EMAResult[] }): DisplayResult[] => {
+    const krCandidates = data.kr_candidates || [];
+    const usCandidates = data.us_candidates || [];
+
+    let allCandidates: EMAResult[] = [];
+    if (marketFilter === 'all') {
+      allCandidates = [...krCandidates, ...usCandidates];
+    } else if (marketFilter === 'KR') {
+      allCandidates = krCandidates;
+    } else {
+      allCandidates = usCandidates;
+    }
+
+    return allCandidates.map((item) => {
+      const gapPercent = item.ema200 !== 0 ? (item.gap / item.ema200) * 100 : 0;
+      return {
+        symbol: item.symbol,
+        market: item.market,
+        col1: `${gapPercent.toFixed(1)}%`,
+        col1Color: 'neutral' as const,
+        col2: item.days_to_cross === 0 ? 'Crossed' : `${item.days_to_cross}일`,
+        col3: '',
+      };
+    });
+  };
+
+  // Transform RSI results to display format
+  // Columns: 종목 | 시장 | RSI | 신호
+  const transformRSIResults = (data: { kr_candidates: RSIResult[]; us_candidates: RSIResult[] }): DisplayResult[] => {
+    const krCandidates = data.kr_candidates || [];
+    const usCandidates = data.us_candidates || [];
+
+    let allCandidates: RSIResult[] = [];
+    if (marketFilter === 'all') {
+      allCandidates = [...krCandidates, ...usCandidates];
+    } else if (marketFilter === 'KR') {
+      allCandidates = krCandidates;
+    } else {
+      allCandidates = usCandidates;
+    }
+
+    return allCandidates.map((item) => ({
+      symbol: item.symbol,
+      market: item.market,
+      col1: item.rsi_value.toFixed(1),
+      col1Color: 'neutral' as const,
+      col2: item.signal === 'overbought' ? '과매수' : '과매도',
+      col3: '',
+    }));
+  };
 
   // Fetch screener results
   useEffect(() => {
@@ -33,39 +143,31 @@ export function ScreenerPage({ onStockSelect, onBackToChart }: ScreenerPageProps
       setError(null);
 
       try {
-        const params = new URLSearchParams({
-          screener_type: screenerType,
-        });
-        if (marketFilter !== 'all') {
-          params.set('market', marketFilter);
+        let endpoint = '';
+        let transformFn: (data: unknown) => DisplayResult[];
+
+        switch (screenerType) {
+          case 'ob_detect':
+            endpoint = 'http://localhost:8000/screen/ob';
+            transformFn = transformOBResults as (data: unknown) => DisplayResult[];
+            break;
+          case 'ema_cross':
+            endpoint = 'http://localhost:8000/screen_all';
+            transformFn = transformEMAResults as (data: unknown) => DisplayResult[];
+            break;
+          case 'rsi_extreme':
+            endpoint = 'http://localhost:8000/screen/rsi';
+            transformFn = transformRSIResults as (data: unknown) => DisplayResult[];
+            break;
         }
 
-        const response = await fetch(`http://localhost:8000/screen_all?${params}`);
+        const response = await fetch(endpoint);
         if (!response.ok) {
           throw new Error('Failed to fetch screener results');
         }
 
         const data = await response.json();
-
-        // Transform API response to our format
-        const transformedResults: ScreenerResult[] = data.results.map((item: {
-          symbol: string;
-          market: string;
-          current_price: number;
-          signal_type?: string;
-          ob_direction?: string;
-          ema_cross_type?: string;
-          rsi_signal?: string;
-        }) => ({
-          symbol: item.symbol,
-          market: item.market,
-          name: item.symbol, // API doesn't provide name, use symbol
-          price: item.current_price,
-          change: 0, // API doesn't provide change
-          signal: item.signal_type || item.ob_direction || item.ema_cross_type || item.rsi_signal || 'Unknown',
-          signalDate: new Date().toISOString().split('T')[0],
-        }));
-
+        const transformedResults = transformFn(data);
         setResults(transformedResults);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');
@@ -80,21 +182,31 @@ export function ScreenerPage({ onStockSelect, onBackToChart }: ScreenerPageProps
 
   // Filter results by search query
   const filteredResults = results.filter(
-    (r) =>
-      r.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.name.toLowerCase().includes(searchQuery.toLowerCase())
+    (r) => r.symbol.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleRowClick = (result: ScreenerResult) => {
+  const handleRowClick = (result: DisplayResult) => {
     onStockSelect(result.symbol, result.market);
     onBackToChart();
   };
 
-  const screenerTypes: { value: ScreenerType; label: string }[] = [
-    { value: 'ob_detect', label: 'OB 감지' },
-    { value: 'ema_cross', label: 'EMA Cross' },
-    { value: 'rsi_extreme', label: 'RSI 과매수/과매도' },
+  const screenerTypes: { value: ScreenerType; label: string; description: string }[] = [
+    { value: 'ob_detect', label: 'OB 감지', description: 'Order Block 감지' },
+    { value: 'ema_cross', label: 'EMA Cross', description: 'EMA20/200 교차 예측' },
+    { value: 'rsi_extreme', label: 'RSI 과매수/과매도', description: 'RSI > 70 또는 < 30' },
   ];
+
+  // Column headers based on screener type
+  const getColumnHeaders = (): string[] => {
+    switch (screenerType) {
+      case 'ob_detect':
+        return ['종목', '시장', '방향', '가격대', '신선도'];
+      case 'ema_cross':
+        return ['종목', '시장', '갭%', '예상일'];
+      case 'rsi_extreme':
+        return ['종목', '시장', 'RSI', '신호'];
+    }
+  };
 
   return (
     <div className="h-full flex flex-col bg-[var(--bg-primary)]">
@@ -151,6 +263,7 @@ export function ScreenerPage({ onStockSelect, onBackToChart }: ScreenerPageProps
                     ? 'bg-[var(--accent-blue)] text-white'
                     : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                 }`}
+                title={type.description}
               >
                 {type.label}
               </button>
@@ -177,17 +290,17 @@ export function ScreenerPage({ onStockSelect, onBackToChart }: ScreenerPageProps
           <table className="w-full">
             <thead>
               <tr className="text-left text-sm text-[var(--text-secondary)] border-b border-[var(--border-color)]">
-                <th className="pb-3 font-medium">종목</th>
-                <th className="pb-3 font-medium">시장</th>
-                <th className="pb-3 font-medium text-right">가격</th>
-                <th className="pb-3 font-medium">시그널</th>
-                <th className="pb-3 font-medium">날짜</th>
+                {getColumnHeaders().map((header, idx) => (
+                  <th key={idx} className="pb-3 font-medium">
+                    {header}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {filteredResults.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-8 text-center text-[var(--text-secondary)]">
+                  <td colSpan={getColumnHeaders().length} className="py-8 text-center text-[var(--text-secondary)]">
                     검색 결과가 없습니다
                   </td>
                 </tr>
@@ -212,27 +325,33 @@ export function ScreenerPage({ onStockSelect, onBackToChart }: ScreenerPageProps
                         {result.market}
                       </span>
                     </td>
-                    <td className="py-3 text-right font-mono">
-                      {result.price.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                    </td>
                     <td className="py-3">
                       <span
                         className={`text-sm font-medium ${
-                          result.signal.toLowerCase().includes('bullish') ||
-                          result.signal.toLowerCase().includes('golden') ||
-                          result.signal.toLowerCase().includes('oversold')
+                          result.col1Color === 'green'
                             ? 'text-[#26a69a]'
-                            : result.signal.toLowerCase().includes('bearish') ||
-                              result.signal.toLowerCase().includes('death') ||
-                              result.signal.toLowerCase().includes('overbought')
+                            : result.col1Color === 'red'
                             ? 'text-[#ef5350]'
                             : 'text-[var(--text-primary)]'
                         }`}
                       >
-                        {result.signal}
+                        {result.col1}
                       </span>
                     </td>
-                    <td className="py-3 text-[var(--text-secondary)] text-sm">{result.signalDate}</td>
+                    <td className="py-3 text-[var(--text-secondary)] text-sm">
+                      {screenerType === 'rsi_extreme' ? (
+                        <span className={result.col2 === '과매수' ? 'text-[#ef5350] font-medium' : 'text-[#26a69a] font-medium'}>
+                          {result.col2}
+                        </span>
+                      ) : (
+                        result.col2
+                      )}
+                    </td>
+                    {screenerType === 'ob_detect' && (
+                      <td className="py-3 text-[var(--text-secondary)] text-sm">
+                        <span className="text-[#26a69a]">{result.col3}</span>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}

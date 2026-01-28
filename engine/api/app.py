@@ -39,6 +39,10 @@ from engine.api.schemas import (
     RemoveHoldingResponse,
     VolumeProfileBin,
     VolumeProfileResponse,
+    OBScreenResult,
+    OBScreenResponse,
+    RSIScreenResult,
+    RSIScreenResponse,
 )
 from engine.core.screener import ema, rsi, macd
 
@@ -271,6 +275,146 @@ def screen_all(
     return ScreenAllResponse(
         kr_candidates=[_result_to_schema(r) for r in kr_results],
         us_candidates=[_result_to_schema(r) for r in us_results],
+    )
+
+
+# --- OB Screener endpoint ---
+
+def _get_ohlcv_for_symbol(symbol: str, market: str, tf: str = "1D") -> Optional[OHLCVData]:
+    """Get full OHLCV data for a symbol. Returns None if not available."""
+    try:
+        data_dir = f"data/{market.lower()}"
+        return load_csv(symbol, tf, data_dir=data_dir)
+    except FileNotFoundError:
+        return None
+
+
+def _screen_ob_symbol(symbol: str, market: str) -> Optional[OBScreenResult]:
+    """Screen a single symbol for Order Block."""
+    data = _get_ohlcv_for_symbol(symbol, market)
+    if data is None or len(data.close) < 50:
+        return None
+
+    ob = detect_orderblock(data.open, data.high, data.low, data.close)
+    if ob is None:
+        return None
+
+    current_price = float(data.close[-1])
+    zone_center = (ob.zone_top + ob.zone_bottom) / 2
+    distance_percent = abs(current_price - zone_center) / current_price * 100
+
+    return OBScreenResult(
+        symbol=symbol,
+        market=market,
+        direction=ob.direction.value,
+        zone_top=float(ob.zone_top),
+        zone_bottom=float(ob.zone_bottom),
+        current_price=current_price,
+        distance_percent=round(distance_percent, 2),
+        has_fvg=ob.has_fvg,
+    )
+
+
+@app.get("/screen/ob", response_model=OBScreenResponse)
+def screen_ob(
+    top_n: int = Query(20, description="Max candidates per market"),
+) -> OBScreenResponse:
+    """
+    Screen both markets for stocks with valid Order Blocks.
+
+    Returns stocks that have a fresh, untouched OB zone.
+    """
+    kr_symbols = _load_watchlist("kr_watchlist.txt")
+    us_symbols = _load_watchlist("us_watchlist.txt")
+
+    kr_results: List[OBScreenResult] = []
+    us_results: List[OBScreenResult] = []
+
+    for symbol in kr_symbols:
+        result = _screen_ob_symbol(symbol, "KR")
+        if result:
+            kr_results.append(result)
+
+    for symbol in us_symbols:
+        result = _screen_ob_symbol(symbol, "US")
+        if result:
+            us_results.append(result)
+
+    # Sort by distance_percent (closer = better)
+    kr_results.sort(key=lambda r: r.distance_percent)
+    us_results.sort(key=lambda r: r.distance_percent)
+
+    return OBScreenResponse(
+        kr_candidates=kr_results[:top_n],
+        us_candidates=us_results[:top_n],
+    )
+
+
+# --- RSI Screener endpoint ---
+
+def _screen_rsi_symbol(symbol: str, market: str) -> Optional[RSIScreenResult]:
+    """Screen a single symbol for RSI extreme."""
+    closes = _get_closes_for_symbol(symbol, market)
+    if closes is None or len(closes) < 20:
+        return None
+
+    rsi_values = rsi(closes, 14)
+    current_rsi = rsi_values[-1]
+
+    if np.isnan(current_rsi):
+        return None
+
+    # Only return if overbought (>70) or oversold (<30)
+    if current_rsi > 70:
+        signal = "overbought"
+    elif current_rsi < 30:
+        signal = "oversold"
+    else:
+        return None
+
+    return RSIScreenResult(
+        symbol=symbol,
+        market=market,
+        rsi_value=round(float(current_rsi), 1),
+        signal=signal,
+        current_price=float(closes[-1]),
+    )
+
+
+@app.get("/screen/rsi", response_model=RSIScreenResponse)
+def screen_rsi(
+    top_n: int = Query(20, description="Max candidates per market"),
+) -> RSIScreenResponse:
+    """
+    Screen both markets for RSI extreme conditions.
+
+    Returns stocks that are overbought (RSI > 70) or oversold (RSI < 30).
+    """
+    kr_symbols = _load_watchlist("kr_watchlist.txt")
+    us_symbols = _load_watchlist("us_watchlist.txt")
+
+    kr_results: List[RSIScreenResult] = []
+    us_results: List[RSIScreenResult] = []
+
+    for symbol in kr_symbols:
+        result = _screen_rsi_symbol(symbol, "KR")
+        if result:
+            kr_results.append(result)
+
+    for symbol in us_symbols:
+        result = _screen_rsi_symbol(symbol, "US")
+        if result:
+            us_results.append(result)
+
+    # Sort by RSI extremity (most extreme first)
+    # For overbought: higher RSI first. For oversold: lower RSI first.
+    # Use distance from 50 as the sort key
+    kr_results.sort(key=lambda r: abs(r.rsi_value - 50), reverse=True)
+    us_results.sort(key=lambda r: abs(r.rsi_value - 50), reverse=True)
+
+    return RSIScreenResponse(
+        kr_candidates=kr_results[:top_n],
+        us_candidates=us_results[:top_n],
     )
 
 

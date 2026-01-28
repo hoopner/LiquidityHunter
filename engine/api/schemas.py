@@ -237,3 +237,40 @@ class VolumeProfileResponse(BaseModel):
     total_volume: float
     value_area_volume: float
     histogram: List[VolumeProfileBin]
+
+
+# --- OB Screener schemas ---
+
+class OBScreenResult(BaseModel):
+    """Order Block screening result for a single symbol."""
+    symbol: str
+    market: str
+    direction: str  # "bullish" or "bearish"
+    zone_top: float
+    zone_bottom: float
+    current_price: float
+    distance_percent: float  # Distance from current price to zone center (%)
+    has_fvg: bool
+
+
+class OBScreenResponse(BaseModel):
+    """Response for /screen/ob endpoint."""
+    kr_candidates: List[OBScreenResult]
+    us_candidates: List[OBScreenResult]
+
+
+# --- RSI Screener schemas ---
+
+class RSIScreenResult(BaseModel):
+    """RSI screening result for a single symbol."""
+    symbol: str
+    market: str
+    rsi_value: float
+    signal: str  # "overbought" or "oversold"
+    current_price: float
+
+
+class RSIScreenResponse(BaseModel):
+    """Response for /screen/rsi endpoint."""
+    kr_candidates: List[RSIScreenResult]
+    us_candidates: List[RSIScreenResult]
