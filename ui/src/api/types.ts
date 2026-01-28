@@ -46,6 +46,7 @@ export interface AnalyzeResponse {
   bar_index: number;
   current_price: number;
   current_valid_ob: OrderBlock | null;
+  fvgs: FVG[];  // Independent FVGs
   validation_details: {
     has_displacement: boolean;
     has_fvg: boolean;

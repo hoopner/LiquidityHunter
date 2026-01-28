@@ -36,6 +36,7 @@ class AnalyzeResponse(BaseModel):
     bar_index: int
     current_price: float
     current_valid_ob: Optional[OrderBlockSchema] = None
+    fvgs: List[FVGSchema] = []  # Independent FVGs
     validation_details: ValidationDetails
     reason_code: Literal["OK", "NO_VALID_OB"]
 
@@ -245,7 +246,7 @@ class OBScreenResult(BaseModel):
     """Order Block screening result for a single symbol."""
     symbol: str
     market: str
-    direction: str  # "bullish" or "bearish"
+    direction: str  # "buy" or "sell"
     zone_top: float
     zone_bottom: float
     current_price: float

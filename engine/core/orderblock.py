@@ -1,19 +1,21 @@
 """
-Order Block detection with engulfing, FVG, and freshness validation.
+Order Block and Fair Value Gap detection.
 
-OB Rules (Body + Engulfing):
-- Buy OB: Strong bullish candle's BODY completely engulfs previous red candle's BODY
-  - bullish_body_high >= red_body_high AND bullish_body_low <= red_body_low
-- Sell OB: Strong bearish candle's BODY completely engulfs previous green candle's BODY
-  - bearish_body_high >= green_body_high AND bearish_body_low <= green_body_low
+OB Rules (Body Engulfing):
+- Buy OB: Bullish candle's BODY completely engulfs previous bearish candle's BODY
+  - OB zone = the bearish (red) candle's body
+- Sell OB: Bearish candle's BODY completely engulfs previous bullish candle's BODY
+  - OB zone = the bullish (green) candle's body
 
-FVG Rules (3 candles, Body based):
-- Buy FVG: candle[i].body_low > candle[i-2].body_high
-  - Gap zone = candle[i-2].body_high to candle[i].body_low
-- Sell FVG: candle[i].body_high < candle[i-2].body_low
-  - Gap zone = candle[i].body_high to candle[i-2].body_low
+FVG Rules (3 candles, HIGH/LOW based, INDEPENDENT from OB):
+- Buy FVG: 3 consecutive bullish candles, candle[i].low > candle[i-2].high
+  - Gap zone = candle[i-2].high (bottom) to candle[i].low (top)
+- Sell FVG: 3 consecutive bearish candles, candle[i].high < candle[i-2].low
+  - Gap zone = candle[i].high (bottom) to candle[i-2].low (top)
 
-Freshness: OB invalidated if price touches zone after formation.
+Freshness:
+- OB invalidated if price touches the zone after formation
+- FVG invalidated if price fills the gap after formation
 """
 
 from dataclasses import dataclass
@@ -90,7 +92,7 @@ def _is_strong_candle(
     open_: np.ndarray,
     close: np.ndarray,
     idx: int,
-    threshold: float = 1.5,
+    threshold: float = 1.2,
     lookback: int = 20,
 ) -> bool:
     """
@@ -129,22 +131,16 @@ def _check_ob(
     open_: np.ndarray,
     close: np.ndarray,
     idx: int,
-    threshold: float = 1.5,
-    lookback: int = 20,
 ) -> Optional[Tuple[int, OBDirection]]:
     """
     Check if there's an Order Block at idx.
 
-    Buy OB: Strong bullish candle at idx engulfs previous bearish (red) candle
-    Sell OB: Strong bearish candle at idx engulfs previous bullish (green) candle
+    Buy OB: Bullish candle at idx engulfs previous bearish (red) candle
+    Sell OB: Bearish candle at idx engulfs previous bullish (green) candle
 
     Returns: (engulfed_candle_index, direction) or None
     """
     if idx < 1:
-        return None
-
-    # Check if current candle is strong
-    if not _is_strong_candle(open_, close, idx, threshold, lookback):
         return None
 
     curr_open = open_[idx]
@@ -152,12 +148,12 @@ def _check_ob(
     prev_open = open_[idx - 1]
     prev_close = close[idx - 1]
 
-    # Buy OB: Strong bullish engulfs previous bearish
+    # Buy OB: Bullish engulfs previous bearish
     if _is_bullish_candle(curr_open, curr_close) and _is_bearish_candle(prev_open, prev_close):
         if _is_body_engulfing(curr_open, curr_close, prev_open, prev_close):
             return (idx - 1, OBDirection.BUY)
 
-    # Sell OB: Strong bearish engulfs previous bullish
+    # Sell OB: Bearish engulfs previous bullish
     if _is_bearish_candle(curr_open, curr_close) and _is_bullish_candle(prev_open, prev_close):
         if _is_body_engulfing(curr_open, curr_close, prev_open, prev_close):
             return (idx - 1, OBDirection.SELL)
@@ -167,45 +163,63 @@ def _check_ob(
 
 def _check_fvg(
     open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
     close: np.ndarray,
     idx: int,
 ) -> Optional[FVG]:
     """
-    Check for FVG using 3-candle rule with BODY.
+    Check for FVG using 3-candle rule with HIGH/LOW (wicks included).
+    All 3 candles must be the SAME direction.
 
-    Compares candle[idx] and candle[idx-2] (skipping the middle candle).
+    Buy FVG:
+      - All 3 candles must be bullish (green)
+      - candle[idx].low > candle[idx-2].high (no overlap)
+      - Gap zone = candle[idx-2].high (bottom) to candle[idx].low (top)
 
-    Buy FVG: candle[idx].body_low > candle[idx-2].body_high
-      - Gap zone = candle[idx-2].body_high to candle[idx].body_low
-
-    Sell FVG: candle[idx].body_high < candle[idx-2].body_low
-      - Gap zone = candle[idx].body_high to candle[idx-2].body_low
+    Sell FVG:
+      - All 3 candles must be bearish (red)
+      - candle[idx].high < candle[idx-2].low (no overlap)
+      - Gap zone = candle[idx].high (bottom) to candle[idx-2].low (top)
     """
     if idx < 2:
         return None
 
-    # Get body boundaries for candle[idx] and candle[idx-2]
-    curr_body_high = _body_high(open_[idx], close[idx])
-    curr_body_low = _body_low(open_[idx], close[idx])
-    prev2_body_high = _body_high(open_[idx - 2], close[idx - 2])
-    prev2_body_low = _body_low(open_[idx - 2], close[idx - 2])
+    # Check if all 3 candles are bullish
+    all_bullish = (
+        _is_bullish_candle(open_[idx - 2], close[idx - 2]) and
+        _is_bullish_candle(open_[idx - 1], close[idx - 1]) and
+        _is_bullish_candle(open_[idx], close[idx])
+    )
 
-    # Buy FVG: current body_low > prev2 body_high (gap above)
-    if curr_body_low > prev2_body_high:
+    # Check if all 3 candles are bearish
+    all_bearish = (
+        _is_bearish_candle(open_[idx - 2], close[idx - 2]) and
+        _is_bearish_candle(open_[idx - 1], close[idx - 1]) and
+        _is_bearish_candle(open_[idx], close[idx])
+    )
+
+    curr_high = high[idx]
+    curr_low = low[idx]
+    prev2_high = high[idx - 2]
+    prev2_low = low[idx - 2]
+
+    # Buy FVG: all bullish + current low > prev2 high (gap above)
+    if all_bullish and curr_low > prev2_high:
         return FVG(
             index=idx,
             direction=OBDirection.BUY,
-            gap_high=curr_body_low,
-            gap_low=prev2_body_high,
+            gap_high=curr_low,      # top of gap = candle[i].low
+            gap_low=prev2_high,     # bottom of gap = candle[i-2].high
         )
 
-    # Sell FVG: current body_high < prev2 body_low (gap below)
-    if curr_body_high < prev2_body_low:
+    # Sell FVG: all bearish + current high < prev2 low (gap below)
+    if all_bearish and curr_high < prev2_low:
         return FVG(
             index=idx,
             direction=OBDirection.SELL,
-            gap_high=prev2_body_low,
-            gap_low=curr_body_high,
+            gap_high=prev2_low,     # top of gap = candle[i-2].low
+            gap_low=curr_high,      # bottom of gap = candle[i].high
         )
 
     return None
@@ -233,13 +247,65 @@ def _is_ob_fresh(
     return True
 
 
+def _is_fvg_fresh(
+    high: np.ndarray,
+    low: np.ndarray,
+    fvg: FVG,
+    to_idx: int,
+) -> bool:
+    """
+    Check if FVG is still fresh (unfilled).
+    FVG is invalidated if price fills the gap after formation.
+    """
+    for i in range(fvg.index + 1, to_idx):
+        bar_high = high[i]
+        bar_low = low[i]
+
+        # Check if price fills the gap
+        if bar_low <= fvg.gap_high and bar_high >= fvg.gap_low:
+            return False
+
+    return True
+
+
+def find_all_fvgs(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    fresh_only: bool = True,
+) -> List[FVG]:
+    """
+    Find all Fair Value Gaps independently (not tied to OB).
+
+    FVG Rules:
+    - Buy FVG: 3 bullish candles, candle[i].low > candle[i-2].high
+    - Sell FVG: 3 bearish candles, candle[i].high < candle[i-2].low
+    """
+    n = len(close)
+    if n < 3:
+        return []
+
+    fvgs: List[FVG] = []
+
+    for i in range(2, n):
+        fvg = _check_fvg(open_, high, low, close, i)
+        if fvg is None:
+            continue
+
+        if fresh_only and not _is_fvg_fresh(high, low, fvg, n):
+            continue
+
+        fvgs.append(fvg)
+
+    return fvgs
+
+
 def detect_orderblock(
     open_: np.ndarray,
     high: np.ndarray,
     low: np.ndarray,
     close: np.ndarray,
-    displacement_threshold: float = 1.5,
-    lookback: int = 20,
 ) -> Optional[OrderBlock]:
     """
     Detect the single most valid order block.
@@ -254,7 +320,7 @@ def detect_orderblock(
 
     # Scan for OB patterns
     for i in range(1, n):
-        ob_result = _check_ob(open_, close, i, displacement_threshold, lookback)
+        ob_result = _check_ob(open_, close, i)
         if ob_result is None:
             continue
 
@@ -266,12 +332,20 @@ def detect_orderblock(
         zone_top = _body_high(ob_open, ob_close)
         zone_bottom = _body_low(ob_open, ob_close)
 
-        # Check for FVG (look at engulfing candle and beyond)
+        # Check for FVG in a window around the OB (5 bars before to 5 bars after)
+        # Search backward first (most recent FVG near OB), then forward
         fvg = None
         has_fvg = False
-        if i + 1 < n:
-            fvg = _check_fvg(open_, close, i + 1)
-            has_fvg = fvg is not None
+        search_start = max(2, ob_idx - 5)
+        search_end = min(i + 6, n)
+        for fvg_idx in range(search_end - 1, search_start - 1, -1):  # Search backward
+            candidate_fvg = _check_fvg(open_, high, low, close, fvg_idx)
+            if candidate_fvg is not None:
+                # Match FVG direction with OB direction
+                if candidate_fvg.direction == direction:
+                    fvg = candidate_fvg
+                    has_fvg = True
+                    break
 
         ob = OrderBlock(
             index=ob_idx,
@@ -307,8 +381,6 @@ def find_all_orderblocks(
     high: np.ndarray,
     low: np.ndarray,
     close: np.ndarray,
-    displacement_threshold: float = 1.5,
-    lookback: int = 20,
     fresh_only: bool = True,
 ) -> List[OrderBlock]:
     """
@@ -321,7 +393,7 @@ def find_all_orderblocks(
     orderblocks: List[OrderBlock] = []
 
     for i in range(1, n):
-        ob_result = _check_ob(open_, close, i, displacement_threshold, lookback)
+        ob_result = _check_ob(open_, close, i)
         if ob_result is None:
             continue
 
@@ -332,11 +404,18 @@ def find_all_orderblocks(
         zone_top = _body_high(ob_open, ob_close)
         zone_bottom = _body_low(ob_open, ob_close)
 
+        # Check for FVG in a window around the OB (5 bars before to 5 bars after)
         fvg = None
         has_fvg = False
-        if i + 1 < n:
-            fvg = _check_fvg(open_, close, i + 1)
-            has_fvg = fvg is not None
+        search_start = max(2, ob_idx - 5)
+        search_end = min(i + 6, n)
+        for fvg_idx in range(search_end - 1, search_start - 1, -1):
+            candidate_fvg = _check_fvg(open_, high, low, close, fvg_idx)
+            if candidate_fvg is not None:
+                if candidate_fvg.direction == direction:
+                    fvg = candidate_fvg
+                    has_fvg = True
+                    break
 
         ob = OrderBlock(
             index=ob_idx,

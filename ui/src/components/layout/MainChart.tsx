@@ -111,18 +111,14 @@ export function MainChart({
   const [analyzeData, setAnalyzeData] = useState<AnalyzeResponse | null>(null);
   const [showOB, setShowOB] = useState(true);
   const [obBoxPosition, setObBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
-  const [fvgBoxPosition, setFvgBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
+  // FVG positions - now supports multiple independent FVGs
+  const [fvgBoxPositions, setFvgBoxPositions] = useState<(BoxPosition & { direction: string })[]>([]);
 
   // OB adjustment state (user can resize horizontally - RIGHT SIDE ONLY)
   // rightOffset: pixels to extend (positive) or shorten (negative) the right edge
   const [obRightOffset, setObRightOffset] = useState(0);
   const [isResizingOB, setIsResizingOB] = useState(false);
   const resizeStartRef = useRef<{ x: number; value: number }>({ x: 0, value: 0 });
-
-  // FVG adjustment state (similar to OB)
-  const [fvgRightOffset, setFvgRightOffset] = useState(0);
-  const [isResizingFVG, setIsResizingFVG] = useState(false);
-  const fvgResizeStartRef = useRef<{ x: number; value: number }>({ x: 0, value: 0 });
 
   // Ctrl+wheel zoom anchor lock (prevents jitter during zoom gesture)
   const zoomAnchorRef = useRef<{ locked: boolean; anchorLogical: number; lastWheelTime: number }>({
@@ -290,88 +286,82 @@ export function MainChart({
   // Store OB base position (without user adjustment) - calculated from chart coordinates
   const obBaseRightRef = useRef<number>(0);
 
-  // Calculate box positions for OB and FVG (does NOT depend on obRightOffset)
+  // Calculate box positions for OB and FVGs
   const updateBoxPositions = useCallback(() => {
-    if (!chartRef.current || !candlestickSeriesRef.current || !chartContainerRef.current || !data || !analyzeData?.current_valid_ob) {
+    if (!chartRef.current || !candlestickSeriesRef.current || !chartContainerRef.current || !data) {
       setObBoxPosition(prev => ({ ...prev, visible: false }));
-      setFvgBoxPosition(prev => ({ ...prev, visible: false }));
+      setFvgBoxPositions([]);
       return;
     }
 
     const chart = chartRef.current;
     const series = candlestickSeriesRef.current;
     const container = chartContainerRef.current;
-    const ob = analyzeData.current_valid_ob;
-
-    // Get time values for OB
-    const obStartTime = data.bars[ob.index]?.time;
-
-    if (!obStartTime) {
-      setObBoxPosition(prev => ({ ...prev, visible: false }));
-      return;
-    }
-
-    // Convert coordinates
     const timeScale = chart.timeScale();
-    const leftX = timeScale.timeToCoordinate(obStartTime as Time);
-    const topY = series.priceToCoordinate(ob.zone_top);
-    const bottomY = series.priceToCoordinate(ob.zone_bottom);
-
-    // Chart right edge (minus the price scale width ~60px)
     const chartRightEdge = container.clientWidth - 60;
 
-    if (leftX !== null && topY !== null && bottomY !== null) {
-      // Store base right position (chart right edge by default)
-      obBaseRightRef.current = chartRightEdge;
+    // Handle OB
+    if (analyzeData?.current_valid_ob) {
+      const ob = analyzeData.current_valid_ob;
+      const obStartTime = data.bars[ob.index]?.time;
 
-      // Left edge is FIXED at the OB candle position
-      const fixedLeft = leftX;
-      // Right edge extends to chart edge by default, but can be adjusted
-      // Minimum right = fixedLeft + 30px (at least some width)
-      const adjustedRight = Math.max(fixedLeft + 30, chartRightEdge + obRightOffset);
+      if (obStartTime) {
+        const leftX = timeScale.timeToCoordinate(obStartTime as Time);
+        const topY = series.priceToCoordinate(ob.zone_top);
+        const bottomY = series.priceToCoordinate(ob.zone_bottom);
 
-      setObBoxPosition({
-        left: fixedLeft,
-        right: Math.min(adjustedRight, chartRightEdge + 100), // Max extend 100px beyond chart
-        top: Math.min(topY, bottomY),
-        bottom: Math.max(topY, bottomY),
-        visible: true,
-      });
+        if (leftX !== null && topY !== null && bottomY !== null) {
+          obBaseRightRef.current = chartRightEdge;
+          const adjustedRight = Math.max(leftX + 30, chartRightEdge + obRightOffset);
+
+          setObBoxPosition({
+            left: leftX,
+            right: Math.min(adjustedRight, chartRightEdge + 100),
+            top: Math.min(topY, bottomY),
+            bottom: Math.max(topY, bottomY),
+            visible: true,
+          });
+        } else {
+          setObBoxPosition(prev => ({ ...prev, visible: false }));
+        }
+      } else {
+        setObBoxPosition(prev => ({ ...prev, visible: false }));
+      }
     } else {
       setObBoxPosition(prev => ({ ...prev, visible: false }));
     }
 
-    // FVG box - extends to chart right edge like OB
-    if (ob.has_fvg && ob.fvg) {
-      const fvg = ob.fvg;
-      // FVG uses 3-candle rule: gap between candle[i-2] and candle[i], starts at candle[i-2]
-      const fvgStartIdx = Math.max(0, fvg.index - 2);
+    // Handle independent FVGs - only show the most recent one
+    if (analyzeData?.fvgs && analyzeData.fvgs.length > 0) {
+      // Get the most recent FVG (last in the array, which has the highest index)
+      const mostRecentFvg = analyzeData.fvgs[analyzeData.fvgs.length - 1];
+
+      // FVG starts at the middle candle (i-1) where the gap becomes apparent
+      const fvgStartIdx = Math.max(0, mostRecentFvg.index - 1);
       const fvgStartTime = data.bars[fvgStartIdx]?.time;
 
       if (fvgStartTime) {
         const fvgLeftX = timeScale.timeToCoordinate(fvgStartTime as Time);
-        const fvgTopY = series.priceToCoordinate(fvg.gap_high);
-        const fvgBottomY = series.priceToCoordinate(fvg.gap_low);
+        const fvgTopY = series.priceToCoordinate(mostRecentFvg.gap_high);
+        const fvgBottomY = series.priceToCoordinate(mostRecentFvg.gap_low);
 
         if (fvgLeftX !== null && fvgTopY !== null && fvgBottomY !== null) {
-          // FVG extends to chart right edge, similar to OB
-          const adjustedRight = Math.max(fvgLeftX + 30, chartRightEdge + fvgRightOffset);
-
-          setFvgBoxPosition({
+          setFvgBoxPositions([{
             left: fvgLeftX,
-            right: Math.min(adjustedRight, chartRightEdge + 100),
+            right: chartRightEdge,
             top: Math.min(fvgTopY, fvgBottomY),
             bottom: Math.max(fvgTopY, fvgBottomY),
             visible: true,
-          });
+            direction: mostRecentFvg.direction,
+          }]);
         } else {
-          setFvgBoxPosition(prev => ({ ...prev, visible: false }));
+          setFvgBoxPositions([]);
         }
       } else {
-        setFvgBoxPosition(prev => ({ ...prev, visible: false }));
+        setFvgBoxPositions([]);
       }
     } else {
-      setFvgBoxPosition(prev => ({ ...prev, visible: false }));
+      setFvgBoxPositions([]);
     }
   }, [data, analyzeData]); // NOTE: offsets are NOT dependencies - we handle them separately
 
@@ -405,34 +395,6 @@ export function MainChart({
     setIsResizingOB(false);
   }, []);
 
-  // FVG right edge resize handlers
-  const handleFvgResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizingFVG(true);
-    fvgResizeStartRef.current = {
-      x: e.clientX,
-      value: fvgRightOffset,
-    };
-  }, [fvgRightOffset]);
-
-  const handleFvgResizeMove = useCallback((e: MouseEvent) => {
-    if (!isResizingFVG || !chartContainerRef.current) return;
-
-    const deltaX = e.clientX - fvgResizeStartRef.current.x;
-    const newOffset = fvgResizeStartRef.current.value + deltaX;
-
-    const chartRightEdge = chartContainerRef.current.clientWidth - 60;
-    const minOffset = -(chartRightEdge - fvgBoxPosition.left - 30);
-    const maxOffset = 100;
-
-    setFvgRightOffset(Math.max(minOffset, Math.min(maxOffset, newOffset)));
-  }, [isResizingFVG, fvgBoxPosition.left]);
-
-  const handleFvgResizeEnd = useCallback(() => {
-    setIsResizingFVG(false);
-  }, []);
-
   // Attach global mouse events for OB resize
   useEffect(() => {
     if (isResizingOB) {
@@ -444,18 +406,6 @@ export function MainChart({
       };
     }
   }, [isResizingOB, handleObResizeMove, handleObResizeEnd]);
-
-  // Attach global mouse events for FVG resize
-  useEffect(() => {
-    if (isResizingFVG) {
-      window.addEventListener('mousemove', handleFvgResizeMove);
-      window.addEventListener('mouseup', handleFvgResizeEnd);
-      return () => {
-        window.removeEventListener('mousemove', handleFvgResizeMove);
-        window.removeEventListener('mouseup', handleFvgResizeEnd);
-      };
-    }
-  }, [isResizingFVG, handleFvgResizeMove, handleFvgResizeEnd]);
 
   // Update OB box right edge when obRightOffset changes (smooth resize without chart recreation)
   useEffect(() => {
@@ -470,23 +420,9 @@ export function MainChart({
     }));
   }, [obRightOffset]); // Only depends on obRightOffset
 
-  // Update FVG box right edge when fvgRightOffset changes
-  useEffect(() => {
-    if (!chartContainerRef.current || !fvgBoxPosition.visible) return;
-
-    const chartRightEdge = chartContainerRef.current.clientWidth - 60;
-    const adjustedRight = Math.max(fvgBoxPosition.left + 30, chartRightEdge + fvgRightOffset);
-
-    setFvgBoxPosition(prev => ({
-      ...prev,
-      right: Math.min(adjustedRight, chartRightEdge + 100),
-    }));
-  }, [fvgRightOffset]); // Only depends on fvgRightOffset
-
-  // Reset OB and FVG adjustments when symbol/timeframe changes
+  // Reset OB adjustment when symbol/timeframe changes
   useEffect(() => {
     setObRightOffset(0);
-    setFvgRightOffset(0);
   }, [symbol, market, timeframe]);
 
   // Initialize chart
@@ -524,6 +460,16 @@ export function MainChart({
         borderColor: '#2a2e39',
         timeVisible: true,
         secondsVisible: false,
+      },
+      handleScale: {
+        // Make default wheel zoom more gradual
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: true,
+      },
+      kineticScroll: {
+        mouse: true,
+        touch: true,
       },
     });
 
@@ -571,36 +517,10 @@ export function MainChart({
     chart.timeScale().subscribeVisibleLogicalRangeChange(updateBoxPositions);
 
     // Wheel zoom handlers:
+    // - Normal wheel: Gentle horizontal zoom (centered)
     // - Ctrl + wheel: Horizontal zoom (X-axis) - right edge fixed
-    // - Shift + wheel: Vertical zoom (Y-axis) - price scale
     const handleWheel = (e: WheelEvent) => {
-      // Shift + wheel: Vertical zoom (Y-axis)
-      if (e.shiftKey && !e.ctrlKey) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        const priceScale = chart.priceScale('right');
-        if (!priceScale) return;
-
-        // Zoom direction: scroll up = zoom in, scroll down = zoom out
-        const zoomFactor = e.deltaY < 0 ? 0.9 : 1.1;
-
-        // Get current price scale options and adjust
-        const options = priceScale.options();
-        const currentTop = options.scaleMargins?.top ?? 0.1;
-        const currentBottom = options.scaleMargins?.bottom ?? 0.1;
-
-        // Adjust margins to zoom (smaller margins = zoom in, larger = zoom out)
-        const newTop = Math.max(0.01, Math.min(0.4, currentTop * zoomFactor));
-        const newBottom = Math.max(0.01, Math.min(0.4, currentBottom * zoomFactor));
-
-        priceScale.applyOptions({
-          scaleMargins: { top: newTop, bottom: newBottom },
-        });
-        return;
-      }
-
-      // Ctrl + wheel: Horizontal zoom (X-axis)
+      // Ctrl + wheel: Horizontal zoom with right edge fixed
       if (e.ctrlKey && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -627,7 +547,8 @@ export function MainChart({
         }, 200);
 
         // Zoom direction: scroll up = zoom in, scroll down = zoom out
-        const zoomFactor = e.deltaY < 0 ? 0.85 : 1.18;
+        // Use gentler zoom factors for smoother experience
+        const zoomFactor = e.deltaY < 0 ? 0.95 : 1.05;
         const currentWidth = currentRange.to - currentRange.from;
         const newWidth = currentWidth * zoomFactor;
         const clampedWidth = Math.max(5, Math.min(500, newWidth));
@@ -640,7 +561,27 @@ export function MainChart({
         return;
       }
 
-      // No modifier - reset anchor lock
+      // No modifier - apply gentler horizontal zoom (override default behavior)
+      e.preventDefault();
+      e.stopPropagation();
+
+      const timeScale = chart.timeScale();
+      const currentRange = timeScale.getVisibleLogicalRange();
+      if (!currentRange) return;
+
+      // Gentler zoom for normal wheel (no modifier)
+      const zoomFactor = e.deltaY < 0 ? 0.97 : 1.03;
+      const currentWidth = currentRange.to - currentRange.from;
+      const newWidth = currentWidth * zoomFactor;
+      const clampedWidth = Math.max(10, Math.min(500, newWidth));
+
+      // Zoom centered on visible range
+      const center = (currentRange.from + currentRange.to) / 2;
+      const newFrom = center - clampedWidth / 2;
+      const newTo = center + clampedWidth / 2;
+
+      timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
+
       zoomAnchorRef.current.locked = false;
     };
 
@@ -681,14 +622,21 @@ export function MainChart({
       return;
     }
 
-    // Convert bars to candlestick data
-    const candlestickData: CandlestickData<Time>[] = data.bars.map((bar) => ({
-      time: bar.time as Time,
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-    }));
+    // Convert bars to candlestick data with explicit colors
+    // close > open = UP (green), close < open = DOWN (red)
+    const candlestickData: CandlestickData<Time>[] = data.bars.map((bar) => {
+      const isUp = bar.close > bar.open;
+      return {
+        time: bar.time as Time,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        color: isUp ? '#26a69a' : '#ef5350',
+        borderColor: isUp ? '#26a69a' : '#ef5350',
+        wickColor: isUp ? '#26a69a' : '#ef5350',
+      };
+    });
 
     // Convert EMA data to line data (skip zeros/NaN at the beginning)
     const ema20Data: LineData<Time>[] = data.bars
@@ -1218,64 +1166,37 @@ export function MainChart({
           </div>
         )}
 
-        {/* FVG overlay - only in non-compact mode, extends to right like OB */}
-        {!compact && showOB && fvgBoxPosition.visible && ob?.has_fvg && ob.fvg && (
-          <div
-            className="absolute z-[4]"
-            style={{
-              left: fvgBoxPosition.left,
-              top: fvgBoxPosition.top,
-              width: fvgBoxPosition.right - fvgBoxPosition.left,
-              height: fvgBoxPosition.bottom - fvgBoxPosition.top,
-              backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.2)' : 'rgba(239, 83, 80, 0.2)',
-              border: `2px dashed ${isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)'}`,
-              borderRadius: '3px',
-              pointerEvents: 'none',
-            }}
-          >
-            {/* FVG label */}
+        {/* FVG overlays - independent from OB, multiple FVGs supported */}
+        {!compact && showOB && fvgBoxPositions.map((fvgPos, idx) => {
+          const isBuyFVG = fvgPos.direction === 'buy';
+          return (
             <div
-              className="absolute top-1 left-1 px-1.5 py-0.5 text-[10px] font-bold rounded"
+              key={`fvg-${idx}`}
+              className="absolute z-[4]"
               style={{
-                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
-                color: 'white',
-                textShadow: '0 1px 2px rgba(0,0,0,0.3)',
-                border: `1px dashed ${isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)'}`,
+                left: fvgPos.left,
+                top: fvgPos.top,
+                width: fvgPos.right - fvgPos.left,
+                height: fvgPos.bottom - fvgPos.top,
+                backgroundColor: isBuyFVG ? 'rgba(38, 166, 154, 0.15)' : 'rgba(239, 83, 80, 0.15)',
+                border: `1px dashed ${isBuyFVG ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)'}`,
+                borderRadius: '2px',
+                pointerEvents: 'none',
               }}
             >
-              FVG
-            </div>
-            {/* Price label */}
-            <div
-              className="absolute top-1 right-8 text-[9px] font-medium px-1 rounded"
-              style={{
-                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)',
-                color: 'white',
-                border: `1px dashed ${isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
-              }}
-            >
-              {ob.fvg.gap_high.toLocaleString(undefined, { maximumFractionDigits: 0 })} - {ob.fvg.gap_low.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            </div>
-            {/* Right resize handle */}
-            <div
-              className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
-              style={{
-                pointerEvents: 'auto',
-                backgroundColor: isResizingFVG ? (isBuyOB ? 'rgba(38, 166, 154, 0.3)' : 'rgba(239, 83, 80, 0.3)') : 'transparent',
-              }}
-              onMouseDown={handleFvgResizeStart}
-              title="좌우로 드래그하여 확장/축소"
-            >
+              {/* FVG label */}
               <div
-                className="w-1 h-6 rounded"
+                className="absolute top-0 left-1 px-1 py-0.5 text-[9px] font-bold rounded"
                 style={{
-                  backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)',
-                  border: `1px dashed ${isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)'}`,
+                  backgroundColor: isBuyFVG ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
+                  color: 'white',
                 }}
-              />
+              >
+                FVG
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })}
 
         {/* Volume Profile overlay - only in non-compact mode */}
         {!compact && showVP && volumeProfile && chartRef.current && candlestickSeriesRef.current && (

@@ -7,7 +7,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from engine.core.orderblock import detect_orderblock, OrderBlock
+from engine.core.orderblock import detect_orderblock, find_all_fvgs, OrderBlock, FVG
 from engine.core.screener import screen_watchlist, ScreenResult
 from engine.core.volume_profile import calculate_volume_profile
 from engine.api.data import load_csv, OHLCVData
@@ -84,9 +84,19 @@ def _ob_to_schema(ob: OrderBlock) -> OrderBlockSchema:
     )
 
 
+def _fvg_to_schema(fvg: FVG) -> FVGSchema:
+    """Convert FVG dataclass to Pydantic schema."""
+    return FVGSchema(
+        index=fvg.index,
+        direction=fvg.direction.value,
+        gap_high=fvg.gap_high,
+        gap_low=fvg.gap_low,
+    )
+
+
 def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
     """
-    Analyze order block at a specific bar index.
+    Analyze order block and FVGs at a specific bar index.
 
     This is the core analysis function used by both /analyze and /replay.
 
@@ -112,14 +122,19 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
     # Detect order block
     ob = detect_orderblock(open_, high, low, close)
 
+    # Detect FVGs independently
+    fvgs = find_all_fvgs(open_, high, low, close, fresh_only=True)
+    fvg_schemas = [_fvg_to_schema(fvg) for fvg in fvgs]
+
     if ob is None:
         return AnalyzeResponse(
             bar_index=bar_index,
             current_price=current_price,
             current_valid_ob=None,
+            fvgs=fvg_schemas,
             validation_details=ValidationDetails(
                 has_displacement=False,
-                has_fvg=False,
+                has_fvg=len(fvgs) > 0,
                 is_fresh=False,
             ),
             reason_code="NO_VALID_OB",
@@ -129,9 +144,10 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
         bar_index=bar_index,
         current_price=current_price,
         current_valid_ob=_ob_to_schema(ob),
+        fvgs=fvg_schemas,
         validation_details=ValidationDetails(
             has_displacement=True,
-            has_fvg=ob.has_fvg,
+            has_fvg=len(fvgs) > 0,
             is_fresh=True,  # If OB is returned, it passed freshness check
         ),
         reason_code="OK",
