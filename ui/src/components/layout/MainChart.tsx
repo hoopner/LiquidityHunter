@@ -519,8 +519,10 @@ export function MainChart({
       const cursorLogical = timeScale.coordinateToLogical(cursorX);
       if (cursorLogical === null) return;
 
-      // Calculate zoom direction and amount
-      const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9; // Scroll down = zoom out, scroll up = zoom in
+      // Calculate zoom direction and amount (flipped for intuitive behavior)
+      // Scroll up (deltaY < 0) = zoom in = smaller width (candles spread out)
+      // Scroll down (deltaY > 0) = zoom out = larger width (candles compress)
+      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
 
       // Current visible width
       const currentWidth = currentRange.to - currentRange.from;

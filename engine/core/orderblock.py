@@ -155,6 +155,35 @@ def _check_fvg(
     return None
 
 
+def _body_high(open_: float, close: float) -> float:
+    """Get the high of the candle body (max of open, close)."""
+    return max(open_, close)
+
+
+def _body_low(open_: float, close: float) -> float:
+    """Get the low of the candle body (min of open, close)."""
+    return min(open_, close)
+
+
+def _is_body_engulfing(
+    disp_open: float, disp_close: float,
+    ob_open: float, ob_close: float,
+) -> bool:
+    """
+    Check if displacement candle's BODY engulfs OB candle's BODY.
+
+    Engulfing: displacement body completely contains OB body.
+    - disp_body_high >= ob_body_high
+    - disp_body_low <= ob_body_low
+    """
+    disp_body_high = _body_high(disp_open, disp_close)
+    disp_body_low = _body_low(disp_open, disp_close)
+    ob_body_high = _body_high(ob_open, ob_close)
+    ob_body_low = _body_low(ob_open, ob_close)
+
+    return disp_body_high >= ob_body_high and disp_body_low <= ob_body_low
+
+
 def _find_ob_candle(
     open_: np.ndarray,
     close: np.ndarray,
@@ -162,24 +191,33 @@ def _find_ob_candle(
     direction: OBDirection,
 ) -> Optional[int]:
     """
-    Find the last opposite-direction candle before displacement.
+    Find the last opposite-direction candle before displacement that is engulfed.
 
     For bullish OB: find last bearish candle before bullish displacement
     For bearish OB: find last bullish candle before bearish displacement
+
+    Additional rule: displacement candle's BODY must engulf OB candle's BODY.
     """
     if displacement_idx < 1:
         return None
+
+    disp_open = open_[displacement_idx]
+    disp_close = close[displacement_idx]
 
     # Search backwards from displacement candle
     for i in range(displacement_idx - 1, -1, -1):
         if direction == OBDirection.BULLISH:
             # Looking for bearish candle (last down candle before up move)
             if _is_bearish_candle(open_[i], close[i]):
-                return i
+                # Check if displacement body engulfs this candle's body
+                if _is_body_engulfing(disp_open, disp_close, open_[i], close[i]):
+                    return i
         else:
             # Looking for bullish candle (last up candle before down move)
             if _is_bullish_candle(open_[i], close[i]):
-                return i
+                # Check if displacement body engulfs this candle's body
+                if _is_body_engulfing(disp_open, disp_close, open_[i], close[i]):
+                    return i
 
     return None
 
