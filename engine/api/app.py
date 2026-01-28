@@ -7,7 +7,14 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from engine.core.orderblock import detect_orderblock, find_all_fvgs, OrderBlock, FVG
+from engine.core.orderblock import (
+    detect_orderblock,
+    find_all_fvgs,
+    OrderBlock,
+    FVG,
+    calculate_confluence,
+    calculate_atr,
+)
 from engine.core.screener import screen_watchlist, ScreenResult
 from engine.core.volume_profile import calculate_volume_profile
 from engine.api.data import load_csv, OHLCVData
@@ -17,6 +24,7 @@ from engine.api.schemas import (
     OrderBlockSchema,
     FVGSchema,
     ValidationDetails,
+    ConfluenceSchema,
     ScreenResultSchema,
     ScreenResponse,
     ScreenAllResponse,
@@ -126,6 +134,25 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
     fvgs = find_all_fvgs(open_, high, low, close, fresh_only=True)
     fvg_schemas = [_fvg_to_schema(fvg) for fvg in fvgs]
 
+    # Calculate ATR for confluence scoring
+    atr_value = calculate_atr(high, low, close, period=14)
+
+    # Get most recent FVG for confluence calculation
+    most_recent_fvg = fvgs[-1] if fvgs else None
+
+    # Calculate confluence score
+    confluence_result = calculate_confluence(ob, most_recent_fvg, current_price, atr_value)
+    confluence_schema = ConfluenceSchema(
+        has_confluence=confluence_result.has_confluence,
+        score=confluence_result.score,
+        ob_score=confluence_result.ob_score,
+        fvg_score=confluence_result.fvg_score,
+        overlap_bonus=confluence_result.overlap_bonus,
+        proximity_bonus=confluence_result.proximity_bonus,
+        reason=confluence_result.reason,
+        details=confluence_result.details,
+    )
+
     if ob is None:
         return AnalyzeResponse(
             bar_index=bar_index,
@@ -138,6 +165,8 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
                 is_fresh=False,
             ),
             reason_code="NO_VALID_OB",
+            confluence=confluence_schema,
+            atr=atr_value,
         )
 
     return AnalyzeResponse(
@@ -151,6 +180,8 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
             is_fresh=True,  # If OB is returned, it passed freshness check
         ),
         reason_code="OK",
+        confluence=confluence_schema,
+        atr=atr_value,
     )
 
 

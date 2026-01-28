@@ -910,6 +910,16 @@ export function MainChart({
                 <span className={`w-3 h-3 rounded ${isBuyOB ? 'bg-[#26a69a]' : 'bg-[#ef5350]'} opacity-40`}></span>
                 {isBuyOB ? 'Buy' : 'Sell'} OB
                 {ob.has_fvg && ' + FVG'}
+                {analyzeData?.confluence && (
+                  <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                    analyzeData.confluence.score >= 80
+                      ? 'bg-yellow-400 text-black'
+                      : 'bg-gray-600 text-white'
+                  }`}>
+                    {analyzeData.confluence.score >= 80 && '★ '}
+                    {analyzeData.confluence.score}점
+                  </span>
+                )}
               </span>
             )}
             <span className="flex items-center gap-1">
@@ -1110,61 +1120,100 @@ export function MainChart({
         )}
 
         {/* Order Block overlay - only in non-compact mode */}
-        {!compact && showOB && obBoxPosition.visible && ob && (
-          <div
-            className="absolute z-[5]"
-            style={{
-              left: obBoxPosition.left,
-              top: obBoxPosition.top,
-              width: obBoxPosition.right - obBoxPosition.left,
-              height: obBoxPosition.bottom - obBoxPosition.top,
-              backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.35)' : 'rgba(239, 83, 80, 0.35)',
-              border: `2px solid ${isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
-              borderRadius: '3px',
-              boxShadow: `0 0 8px ${isBuyOB ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'}`,
-              pointerEvents: 'none',
-            }}
-          >
-            {/* OB label */}
+        {!compact && showOB && obBoxPosition.visible && ob && (() => {
+          const confluenceScore = analyzeData?.confluence?.score ?? 0;
+          const isHighConfluence = confluenceScore >= 80;
+          const borderWidth = isHighConfluence ? '3px' : '2px';
+          const glowIntensity = isHighConfluence ? '12px' : '8px';
+
+          return (
             <div
-              className="absolute top-1 left-1 px-1.5 py-0.5 text-xs font-black rounded"
+              className="absolute z-[5]"
               style={{
-                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
-                color: 'white',
-                textShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                left: obBoxPosition.left,
+                top: obBoxPosition.top,
+                width: obBoxPosition.right - obBoxPosition.left,
+                height: obBoxPosition.bottom - obBoxPosition.top,
+                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.35)' : 'rgba(239, 83, 80, 0.35)',
+                border: `${borderWidth} solid ${isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
+                borderRadius: '3px',
+                boxShadow: isHighConfluence
+                  ? `0 0 ${glowIntensity} ${isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)'}, 0 0 20px rgba(255, 215, 0, 0.4)`
+                  : `0 0 ${glowIntensity} ${isBuyOB ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'}`,
+                pointerEvents: 'none',
               }}
             >
-              OB
-            </div>
-            {/* Price label */}
-            <div
-              className="absolute top-1 right-8 text-[10px] font-medium px-1 rounded"
-              style={{
-                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
-                color: 'white',
-              }}
-            >
-              {ob.zone_top.toLocaleString(undefined, { maximumFractionDigits: 0 })} - {ob.zone_bottom.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            </div>
-            {/* Right resize handle ONLY - drag to extend/shorten forward in time */}
-            <div
-              className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
-              style={{
-                pointerEvents: 'auto',
-                backgroundColor: isResizingOB ? (isBuyOB ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)') : 'transparent',
-              }}
-              onMouseDown={handleObResizeStart}
-              title="좌우로 드래그하여 확장/축소"
-            >
+              {/* OB label with optional gold star for high confluence */}
+              <div className="absolute top-1 left-1 flex items-center gap-1">
+                <div
+                  className="px-1.5 py-0.5 text-xs font-black rounded"
+                  style={{
+                    backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
+                    color: 'white',
+                    textShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                  }}
+                >
+                  OB
+                </div>
+                {/* Gold star for high confluence */}
+                {isHighConfluence && (
+                  <div
+                    className="px-1.5 py-0.5 text-xs font-bold rounded flex items-center gap-0.5"
+                    style={{
+                      backgroundColor: 'rgba(255, 215, 0, 0.9)',
+                      color: '#1a1a1a',
+                      textShadow: '0 1px 1px rgba(255,255,255,0.3)',
+                    }}
+                    title={`High Confluence: ${confluenceScore}점`}
+                  >
+                    <span>★</span>
+                    <span>{confluenceScore}</span>
+                  </div>
+                )}
+                {/* Normal score badge (50-79) */}
+                {!isHighConfluence && confluenceScore >= 50 && (
+                  <div
+                    className="px-1 py-0.5 text-[10px] font-medium rounded"
+                    style={{
+                      backgroundColor: 'rgba(100, 100, 100, 0.8)',
+                      color: 'white',
+                    }}
+                    title={`Confluence Score: ${confluenceScore}점`}
+                  >
+                    {confluenceScore}
+                  </div>
+                )}
+              </div>
+              {/* Price label */}
               <div
-                className="w-1 h-8 rounded"
+                className="absolute top-1 right-8 text-[10px] font-medium px-1 rounded"
                 style={{
                   backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
+                  color: 'white',
                 }}
-              />
+              >
+                {ob.zone_top.toLocaleString(undefined, { maximumFractionDigits: 0 })} - {ob.zone_bottom.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </div>
+              {/* Right resize handle ONLY - drag to extend/shorten forward in time */}
+              <div
+                className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
+                style={{
+                  pointerEvents: 'auto',
+                  backgroundColor: isResizingOB ? (isBuyOB ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)') : 'transparent',
+                }}
+                onMouseDown={handleObResizeStart}
+                title="좌우로 드래그하여 확장/축소"
+              >
+                <div
+                  className="w-1 h-8 rounded"
+                  style={{
+                    backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
+                  }}
+                />
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* FVG overlays - independent from OB, multiple FVGs supported */}
         {!compact && showOB && fvgBoxPositions.map((fvgPos, idx) => {

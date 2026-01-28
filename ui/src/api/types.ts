@@ -42,6 +42,17 @@ export interface OrderBlock {
   fvg: FVG | null;
 }
 
+export interface ConfluenceData {
+  has_confluence: boolean;
+  score: number;  // 0-100
+  ob_score: number;
+  fvg_score: number;
+  overlap_bonus: number;
+  proximity_bonus: number;
+  reason: string;
+  details: Record<string, unknown>;
+}
+
 export interface AnalyzeResponse {
   bar_index: number;
   current_price: number;
@@ -53,6 +64,8 @@ export interface AnalyzeResponse {
     is_fresh: boolean;
   };
   reason_code: 'OK' | 'NO_VALID_OB';
+  confluence: ConfluenceData | null;
+  atr: number | null;
 }
 
 // Portfolio types

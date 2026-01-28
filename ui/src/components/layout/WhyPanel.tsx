@@ -199,10 +199,41 @@ export function WhyPanel({ symbol, market, timeframe = '1D' }: WhyPanelProps) {
     };
   };
 
+  // Get Confluence analysis
+  const getConfluenceAnalysis = () => {
+    if (!state.analyze?.confluence) {
+      return { text: '합류점 없음', color: 'text-[var(--text-secondary)]', score: 0 };
+    }
+
+    const conf = state.analyze.confluence;
+    const score = conf.score;
+
+    if (score >= 80) {
+      return {
+        text: `★ 고확률 합류점 ${score}점`,
+        color: 'text-yellow-400',
+        score
+      };
+    } else if (score >= 50) {
+      return {
+        text: `합류점 ${score}점`,
+        color: 'text-[var(--accent-blue)]',
+        score
+      };
+    } else {
+      return {
+        text: `약한 신호 ${score}점`,
+        color: 'text-[var(--text-secondary)]',
+        score
+      };
+    }
+  };
+
   const emaAnalysis = getEmaAnalysis();
   const obAnalysis = getObAnalysis();
   const fvgAnalysis = getFvgAnalysis();
   const bosAnalysis = getBosAnalysis();
+  const confluenceAnalysis = getConfluenceAnalysis();
 
   return (
     <div className="h-full bg-[var(--bg-secondary)] border-t border-[var(--border-color)] px-4 py-2">
@@ -226,6 +257,11 @@ export function WhyPanel({ symbol, market, timeframe = '1D' }: WhyPanelProps) {
         </div>
       ) : (
         <div className="text-sm flex flex-wrap items-center gap-x-1">
+          {/* Confluence Score - first for prominence */}
+          <span className={confluenceAnalysis.color}>●</span>
+          <span className={confluenceAnalysis.color}>{confluenceAnalysis.text}</span>
+          <span className="text-[var(--text-secondary)] mx-1">|</span>
+
           {/* EMA Status */}
           <span className={emaAnalysis.color}>●</span>
           <span className={emaAnalysis.color}>{emaAnalysis.text}</span>

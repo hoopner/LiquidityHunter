@@ -18,7 +18,7 @@ Freshness:
 - FVG invalidated if price fills the gap after formation
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional, Tuple
 
@@ -49,6 +49,19 @@ class OrderBlock:
     displacement_index: int  # Index of engulfing candle
     has_fvg: bool  # Whether FVG is present
     fvg: Optional[FVG] = None
+
+
+@dataclass
+class ConfluenceResult:
+    """Result of confluence analysis between OB and FVG."""
+    has_confluence: bool
+    score: int  # 0-100
+    ob_score: int  # Base score from OB (0 or 50)
+    fvg_score: int  # Base score from fresh FVG (0 or 30)
+    overlap_bonus: int  # Bonus for zone overlap (0 or 30)
+    proximity_bonus: int  # Bonus for price near zone (0 or 20)
+    reason: str  # Human-readable explanation
+    details: dict = field(default_factory=dict)  # Detailed breakdown
 
 
 def _body_high(open_: float, close: float) -> float:
@@ -434,3 +447,203 @@ def find_all_orderblocks(
 
     orderblocks.sort(key=lambda ob: ob.index)
     return orderblocks
+
+
+def calculate_atr(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    period: int = 14,
+) -> float:
+    """
+    Calculate Average True Range (ATR).
+
+    Args:
+        high: High prices
+        low: Low prices
+        close: Close prices
+        period: ATR period (default 14)
+
+    Returns:
+        Current ATR value
+    """
+    n = len(close)
+    if n < 2:
+        return 0.0
+
+    # Calculate True Range for each bar
+    tr = np.zeros(n)
+    tr[0] = high[0] - low[0]
+
+    for i in range(1, n):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i - 1])
+        lc = abs(low[i] - close[i - 1])
+        tr[i] = max(hl, hc, lc)
+
+    # Calculate ATR using simple moving average
+    if n < period:
+        return float(np.mean(tr))
+
+    return float(np.mean(tr[-period:]))
+
+
+def zones_overlap(
+    zone1_top: float,
+    zone1_bottom: float,
+    zone2_top: float,
+    zone2_bottom: float,
+    min_overlap_percent: float = 0.3,
+) -> Tuple[bool, float]:
+    """
+    Check if two zones overlap by at least min_overlap_percent.
+
+    Args:
+        zone1_top, zone1_bottom: First zone boundaries
+        zone2_top, zone2_bottom: Second zone boundaries
+        min_overlap_percent: Minimum overlap percentage (0.3 = 30%)
+
+    Returns:
+        Tuple of (has_overlap, overlap_percentage)
+    """
+    # Calculate overlap
+    overlap_top = min(zone1_top, zone2_top)
+    overlap_bottom = max(zone1_bottom, zone2_bottom)
+
+    if overlap_bottom >= overlap_top:
+        # No overlap
+        return False, 0.0
+
+    overlap_size = overlap_top - overlap_bottom
+
+    # Calculate overlap as percentage of smaller zone
+    zone1_size = zone1_top - zone1_bottom
+    zone2_size = zone2_top - zone2_bottom
+    smaller_zone = min(zone1_size, zone2_size)
+
+    if smaller_zone <= 0:
+        return False, 0.0
+
+    overlap_percent = overlap_size / smaller_zone
+
+    return overlap_percent >= min_overlap_percent, overlap_percent
+
+
+def calculate_confluence(
+    ob: Optional[OrderBlock],
+    fvg: Optional[FVG],
+    current_price: float,
+    atr: float,
+) -> ConfluenceResult:
+    """
+    Calculate confluence score between OB and FVG.
+
+    Scoring:
+    - base_ob = 50 if ob is valid
+    - base_fvg = 30 if fvg is fresh (not mitigated)
+    - overlap_bonus = 30 if zones overlap > 30% or close proximity
+    - price_proximity = 20 if price is within ATR of zone center
+
+    Args:
+        ob: Order Block (or None)
+        fvg: Fair Value Gap (or None)
+        current_price: Current close price
+        atr: Average True Range value
+
+    Returns:
+        ConfluenceResult with scoring details
+    """
+    ob_score = 0
+    fvg_score = 0
+    overlap_bonus = 0
+    proximity_bonus = 0
+    reasons = []
+    details = {}
+
+    # Base OB score
+    if ob is not None:
+        ob_score = 50
+        reasons.append("Valid OB")
+        details["ob_zone"] = f"{ob.zone_bottom:.2f}-{ob.zone_top:.2f}"
+        details["ob_direction"] = ob.direction.value
+
+    # Base FVG score (only fresh FVGs)
+    if fvg is not None:
+        fvg_score = 30
+        reasons.append("Fresh FVG")
+        details["fvg_zone"] = f"{fvg.gap_low:.2f}-{fvg.gap_high:.2f}"
+        details["fvg_direction"] = fvg.direction.value
+
+    # Overlap bonus - check if OB and FVG zones overlap
+    if ob is not None and fvg is not None:
+        # Check for zone overlap
+        has_overlap, overlap_pct = zones_overlap(
+            ob.zone_top, ob.zone_bottom,
+            fvg.gap_high, fvg.gap_low,
+            min_overlap_percent=0.3
+        )
+
+        if has_overlap:
+            overlap_bonus = 30
+            reasons.append(f"Zones overlap ({overlap_pct*100:.0f}%)")
+            details["overlap_percent"] = f"{overlap_pct*100:.1f}%"
+        else:
+            # Check for proximity (within ATR * 0.5)
+            ob_center = (ob.zone_top + ob.zone_bottom) / 2
+            fvg_center = (fvg.gap_high + fvg.gap_low) / 2
+            distance = abs(ob_center - fvg_center)
+
+            if atr > 0 and distance < atr * 0.5:
+                overlap_bonus = 30
+                reasons.append(f"Zones close (within 0.5 ATR)")
+                details["zone_distance"] = f"{distance:.2f}"
+
+        # Check direction alignment
+        if ob.direction == fvg.direction:
+            details["direction_aligned"] = True
+        else:
+            details["direction_aligned"] = False
+
+    # Proximity bonus - is price near the zone?
+    zone_center = None
+    if ob is not None:
+        zone_center = (ob.zone_top + ob.zone_bottom) / 2
+    elif fvg is not None:
+        zone_center = (fvg.gap_high + fvg.gap_low) / 2
+
+    if zone_center is not None and atr > 0:
+        price_distance = abs(current_price - zone_center)
+        if price_distance < atr:
+            proximity_bonus = 20
+            reasons.append("Price near zone")
+            details["price_distance_atr"] = f"{price_distance/atr:.2f} ATR"
+
+    # Calculate total score
+    total_score = min(100, ob_score + fvg_score + overlap_bonus + proximity_bonus)
+
+    # Build reason string
+    if not reasons:
+        reason_str = "No confluence signals"
+    else:
+        reason_str = " + ".join(reasons)
+
+    # Determine if this is a high confluence zone
+    has_confluence = total_score >= 80
+
+    details["score_breakdown"] = {
+        "ob": ob_score,
+        "fvg": fvg_score,
+        "overlap": overlap_bonus,
+        "proximity": proximity_bonus,
+    }
+
+    return ConfluenceResult(
+        has_confluence=has_confluence,
+        score=total_score,
+        ob_score=ob_score,
+        fvg_score=fvg_score,
+        overlap_bonus=overlap_bonus,
+        proximity_bonus=proximity_bonus,
+        reason=reason_str,
+        details=details,
+    )

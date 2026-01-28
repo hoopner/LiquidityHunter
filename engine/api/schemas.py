@@ -31,6 +31,18 @@ class ValidationDetails(BaseModel):
     is_fresh: bool
 
 
+class ConfluenceSchema(BaseModel):
+    """Confluence analysis result."""
+    has_confluence: bool
+    score: int  # 0-100
+    ob_score: int
+    fvg_score: int
+    overlap_bonus: int
+    proximity_bonus: int
+    reason: str
+    details: dict = {}
+
+
 class AnalyzeResponse(BaseModel):
     """Response schema for /analyze endpoint."""
     bar_index: int
@@ -39,6 +51,9 @@ class AnalyzeResponse(BaseModel):
     fvgs: List[FVGSchema] = []  # Independent FVGs
     validation_details: ValidationDetails
     reason_code: Literal["OK", "NO_VALID_OB"]
+    # Confluence scoring
+    confluence: Optional[ConfluenceSchema] = None
+    atr: Optional[float] = None
 
 
 class ReplayResponse(BaseModel):
