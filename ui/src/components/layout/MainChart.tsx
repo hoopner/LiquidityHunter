@@ -113,14 +113,13 @@ export function MainChart({
   const [obBoxPosition, setObBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
   const [fvgBoxPosition, setFvgBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
 
-  // OB adjustment state (user can resize)
+  // OB adjustment state (user can resize horizontally)
   const [obAdjustment, setObAdjustment] = useState<{
-    topOffset: number;
-    bottomOffset: number;
-    rightExtend: number; // How much to extend beyond chart right edge
-  }>({ topOffset: 0, bottomOffset: 0, rightExtend: 0 });
-  const [isResizingOB, setIsResizingOB] = useState<'top' | 'bottom' | 'right' | null>(null);
-  const resizeStartRef = useRef<{ y: number; value: number }>({ y: 0, value: 0 });
+    leftOffset: number;  // Pixels to move left edge (positive = move right, negative = move left)
+    rightOffset: number; // Pixels to extend/shorten right edge (positive = extend, negative = shorten)
+  }>({ leftOffset: 0, rightOffset: 0 });
+  const [isResizingOB, setIsResizingOB] = useState<'left' | 'right' | null>(null);
+  const resizeStartRef = useRef<{ x: number; value: number }>({ x: 0, value: 0 });
 
   // Volume Profile state
   const [volumeProfile, setVolumeProfile] = useState<VolumeProfileResponse | null>(null);
@@ -301,17 +300,20 @@ export function MainChart({
     // Convert coordinates
     const timeScale = chart.timeScale();
     const leftX = timeScale.timeToCoordinate(obStartTime as Time);
-    // Apply user adjustments to zone boundaries
-    const topY = series.priceToCoordinate(ob.zone_top + obAdjustment.topOffset);
-    const bottomY = series.priceToCoordinate(ob.zone_bottom + obAdjustment.bottomOffset);
+    const topY = series.priceToCoordinate(ob.zone_top);
+    const bottomY = series.priceToCoordinate(ob.zone_bottom);
 
-    // Extend to right edge of chart container (minus the price scale width ~60px)
+    // Chart right edge (minus the price scale width ~60px)
     const chartRightEdge = container.clientWidth - 60;
 
     if (leftX !== null && topY !== null && bottomY !== null) {
+      // Apply horizontal adjustments
+      const adjustedLeft = Math.max(0, leftX + obAdjustment.leftOffset);
+      const adjustedRight = Math.min(chartRightEdge + 50, chartRightEdge + obAdjustment.rightOffset);
+
       setObBoxPosition({
-        left: Math.min(leftX, chartRightEdge),
-        right: chartRightEdge, // Extend to right edge of chart
+        left: Math.min(adjustedLeft, adjustedRight - 20), // Ensure minimum width
+        right: Math.max(adjustedRight, adjustedLeft + 20),
         top: Math.min(topY, bottomY),
         bottom: Math.max(topY, bottomY),
         visible: true,
@@ -349,49 +351,36 @@ export function MainChart({
     }
   }, [data, analyzeData, obAdjustment]);
 
-  // OB resize handlers
-  const handleObResizeStart = useCallback((edge: 'top' | 'bottom', e: React.MouseEvent) => {
+  // OB horizontal resize handlers
+  const handleObResizeStart = useCallback((edge: 'left' | 'right', e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsResizingOB(edge);
     resizeStartRef.current = {
-      y: e.clientY,
-      value: edge === 'top' ? obAdjustment.topOffset : obAdjustment.bottomOffset,
+      x: e.clientX,
+      value: edge === 'left' ? obAdjustment.leftOffset : obAdjustment.rightOffset,
     };
   }, [obAdjustment]);
 
   const handleObResizeMove = useCallback((e: MouseEvent) => {
-    if (!isResizingOB || !candlestickSeriesRef.current || !analyzeData?.current_valid_ob) return;
+    if (!isResizingOB) return;
 
-    const series = candlestickSeriesRef.current;
-    const ob = analyzeData.current_valid_ob;
-    const deltaY = e.clientY - resizeStartRef.current.y;
+    const deltaX = e.clientX - resizeStartRef.current.x;
 
-    // Convert pixel delta to price delta
-    // Estimate price per pixel based on zone height
-    const topY = series.priceToCoordinate(ob.zone_top);
-    const bottomY = series.priceToCoordinate(ob.zone_bottom);
-    if (topY === null || bottomY === null) return;
-
-    const pixelHeight = Math.abs(bottomY - topY);
-    const priceRange = Math.abs(ob.zone_top - ob.zone_bottom);
-    const pricePerPixel = priceRange / (pixelHeight || 1);
-
-    // Since Y increases downward but prices increase upward
-    const priceDelta = -deltaY * pricePerPixel;
-
-    if (isResizingOB === 'top') {
+    if (isResizingOB === 'left') {
+      // Moving left edge: positive delta moves right (shrinks), negative moves left (extends back)
       setObAdjustment(prev => ({
         ...prev,
-        topOffset: resizeStartRef.current.value + priceDelta,
+        leftOffset: resizeStartRef.current.value + deltaX,
       }));
-    } else if (isResizingOB === 'bottom') {
+    } else if (isResizingOB === 'right') {
+      // Moving right edge: positive delta extends, negative shortens
       setObAdjustment(prev => ({
         ...prev,
-        bottomOffset: resizeStartRef.current.value + priceDelta,
+        rightOffset: resizeStartRef.current.value + deltaX,
       }));
     }
-  }, [isResizingOB, analyzeData]);
+  }, [isResizingOB]);
 
   const handleObResizeEnd = useCallback(() => {
     setIsResizingOB(null);
@@ -411,7 +400,7 @@ export function MainChart({
 
   // Reset OB adjustment when symbol/timeframe changes
   useEffect(() => {
-    setObAdjustment({ topOffset: 0, bottomOffset: 0, rightExtend: 0 });
+    setObAdjustment({ leftOffset: 0, rightOffset: 0 });
   }, [symbol, market, timeframe]);
 
   // Initialize chart
@@ -761,9 +750,9 @@ export function MainChart({
             >
               OB
             </button>
-            {showOB && (obAdjustment.topOffset !== 0 || obAdjustment.bottomOffset !== 0) && (
+            {showOB && (obAdjustment.leftOffset !== 0 || obAdjustment.rightOffset !== 0) && (
               <button
-                onClick={() => setObAdjustment({ topOffset: 0, bottomOffset: 0, rightExtend: 0 })}
+                onClick={() => setObAdjustment({ leftOffset: 0, rightOffset: 0 })}
                 className="px-2 py-1 text-xs font-medium bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded-r border-l border-[var(--border-color)]"
                 title="OB 영역 초기화"
               >
@@ -1017,47 +1006,47 @@ export function MainChart({
             >
               OB
             </div>
-            {/* Price label on right */}
+            {/* Price label */}
             <div
-              className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] font-medium px-1 rounded"
+              className="absolute top-1 right-8 text-[10px] font-medium px-1 rounded"
               style={{
                 backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
                 color: 'white',
               }}
             >
-              {(ob.zone_top + obAdjustment.topOffset).toLocaleString(undefined, { maximumFractionDigits: 0 })} - {(ob.zone_bottom + obAdjustment.bottomOffset).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              {ob.zone_top.toLocaleString(undefined, { maximumFractionDigits: 0 })} - {ob.zone_bottom.toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </div>
-            {/* Top resize handle */}
+            {/* Left resize handle - drag to move start point */}
             <div
-              className="absolute -top-1.5 left-0 right-0 h-3 cursor-ns-resize"
+              className="absolute -left-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
               style={{
                 pointerEvents: 'auto',
-                backgroundColor: isResizingOB === 'top' ? (isBullish ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)') : 'transparent',
+                backgroundColor: isResizingOB === 'left' ? (isBullish ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)') : 'transparent',
               }}
-              onMouseDown={(e) => handleObResizeStart('top', e)}
-              title="드래그하여 상단 조절"
+              onMouseDown={(e) => handleObResizeStart('left', e)}
+              title="좌우로 드래그하여 시작점 조절"
             >
               <div
-                className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 w-8 h-1 rounded"
+                className="w-1 h-8 rounded"
                 style={{
-                  backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
+                  backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
                 }}
               />
             </div>
-            {/* Bottom resize handle */}
+            {/* Right resize handle - drag to extend/shorten */}
             <div
-              className="absolute -bottom-1.5 left-0 right-0 h-3 cursor-ns-resize"
+              className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
               style={{
                 pointerEvents: 'auto',
-                backgroundColor: isResizingOB === 'bottom' ? (isBullish ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)') : 'transparent',
+                backgroundColor: isResizingOB === 'right' ? (isBullish ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)') : 'transparent',
               }}
-              onMouseDown={(e) => handleObResizeStart('bottom', e)}
-              title="드래그하여 하단 조절"
+              onMouseDown={(e) => handleObResizeStart('right', e)}
+              title="좌우로 드래그하여 확장/축소"
             >
               <div
-                className="absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 w-8 h-1 rounded"
+                className="w-1 h-8 rounded"
                 style={{
-                  backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
+                  backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
                 }}
               />
             </div>
