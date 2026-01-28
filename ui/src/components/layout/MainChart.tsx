@@ -498,11 +498,59 @@ export function MainChart({
     // Subscribe to visible range changes to update box positions
     chart.timeScale().subscribeVisibleLogicalRangeChange(updateBoxPositions);
 
+    // Ctrl + mouse wheel zoom with cursor as RIGHT anchor
+    const handleCtrlWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return; // Only handle when Ctrl is held
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const timeScale = chart.timeScale();
+      const currentRange = timeScale.getVisibleLogicalRange();
+      if (!currentRange) return;
+
+      // Get cursor position relative to chart
+      const rect = chartContainerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const cursorX = e.clientX - rect.left;
+
+      // Convert cursor X to logical index (this is our right anchor point)
+      const cursorLogical = timeScale.coordinateToLogical(cursorX);
+      if (cursorLogical === null) return;
+
+      // Calculate zoom direction and amount
+      const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9; // Scroll down = zoom out, scroll up = zoom in
+
+      // Current visible width
+      const currentWidth = currentRange.to - currentRange.from;
+      const newWidth = currentWidth * zoomFactor;
+
+      // Clamp width (min 5 bars, max 500 bars)
+      const clampedWidth = Math.max(5, Math.min(500, newWidth));
+
+      // New range: cursor position is the RIGHT edge
+      // So new range is from (cursor - width) to cursor
+      const newFrom = cursorLogical - clampedWidth;
+      const newTo = cursorLogical;
+
+      timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
+    };
+
+    // Add wheel listener to chart container
+    const container = chartContainerRef.current;
+    if (container) {
+      container.addEventListener('wheel', handleCtrlWheel, { passive: false });
+    }
+
     window.addEventListener('resize', handleResize);
     handleResize();
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      if (container) {
+        container.removeEventListener('wheel', handleCtrlWheel);
+      }
       chart.remove();
     };
   }, [updateBoxPositions]);
