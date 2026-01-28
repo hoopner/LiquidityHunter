@@ -1,15 +1,19 @@
 """
-Order Block detection with displacement, FVG, and freshness validation.
+Order Block detection with engulfing, FVG, and freshness validation.
 
-Rules:
-- OB: last opposite-direction candle before displacement
-- Zone = BODY only (open to close)
-- Displacement: body_size >= 1.5 * median_body_size(last 20 bars)
-- FVG (2-candle rule, BODY only):
-  - Bullish FVG: candle[i-1].body_high < candle[i].body_low
-  - Bearish FVG: candle[i-1].body_low > candle[i].body_high
-- Freshness: if price intersects OB BODY after formation -> invalidate
-- Single Zone Logic: return ONLY ONE valid OB (most recent, closest to current price)
+OB Rules (Body + Engulfing):
+- Buy OB: Strong bullish candle's BODY completely engulfs previous red candle's BODY
+  - bullish_body_high >= red_body_high AND bullish_body_low <= red_body_low
+- Sell OB: Strong bearish candle's BODY completely engulfs previous green candle's BODY
+  - bearish_body_high >= green_body_high AND bearish_body_low <= green_body_low
+
+FVG Rules (3 candles, Body based):
+- Buy FVG: candle[i].body_low > candle[i-2].body_high
+  - Gap zone = candle[i-2].body_high to candle[i].body_low
+- Sell FVG: candle[i].body_high < candle[i-2].body_low
+  - Gap zone = candle[i].body_high to candle[i-2].body_low
+
+Freshness: OB invalidated if price touches zone after formation.
 """
 
 from dataclasses import dataclass
@@ -20,14 +24,14 @@ import numpy as np
 
 
 class OBDirection(Enum):
-    BULLISH = "bullish"
-    BEARISH = "bearish"
+    BUY = "buy"
+    SELL = "sell"
 
 
 @dataclass
 class FVG:
-    """Fair Value Gap (2-candle, BODY only)."""
-    index: int  # Index of the second candle (where gap forms)
+    """Fair Value Gap (3-candle, BODY based)."""
+    index: int  # Index of the third candle (candle[i])
     direction: OBDirection
     gap_high: float  # Top of gap zone
     gap_low: float   # Bottom of gap zone
@@ -36,18 +40,28 @@ class FVG:
 @dataclass
 class OrderBlock:
     """Represents an order block zone."""
-    index: int  # Bar index where OB formed
+    index: int  # Bar index of the engulfed candle (OB zone)
     direction: OBDirection
-    zone_top: float  # Top of OB zone (max of open, close)
-    zone_bottom: float  # Bottom of OB zone (min of open, close)
-    displacement_index: int  # Index of displacement candle
+    zone_top: float  # Top of OB zone (body_high)
+    zone_bottom: float  # Bottom of OB zone (body_low)
+    displacement_index: int  # Index of engulfing candle
     has_fvg: bool  # Whether FVG is present
     fvg: Optional[FVG] = None
 
 
+def _body_high(open_: float, close: float) -> float:
+    """Get the high of the candle body (max of open, close)."""
+    return max(open_, close)
+
+
+def _body_low(open_: float, close: float) -> float:
+    """Get the low of the candle body (min of open, close)."""
+    return min(open_, close)
+
+
 def _is_bullish_candle(open_: float, close: float) -> bool:
-    """Check if candle is bullish (close >= open)."""
-    return close >= open_
+    """Check if candle is bullish (close > open)."""
+    return close > open_
 
 
 def _is_bearish_candle(open_: float, close: float) -> bool:
@@ -63,15 +77,6 @@ def _body_size(open_: float, close: float) -> float:
 def _median_body_size(open_: np.ndarray, close: np.ndarray, end_idx: int, lookback: int = 20) -> float:
     """
     Calculate median body size of last `lookback` bars ending at end_idx (exclusive).
-
-    Args:
-        open_: Array of open prices
-        close: Array of close prices
-        end_idx: End index (exclusive)
-        lookback: Number of bars to look back
-
-    Returns:
-        Median body size, or 0.0 if not enough data
     """
     start_idx = max(0, end_idx - lookback)
     if start_idx >= end_idx:
@@ -81,7 +86,7 @@ def _median_body_size(open_: np.ndarray, close: np.ndarray, end_idx: int, lookba
     return float(np.median(bodies))
 
 
-def _is_displacement(
+def _is_strong_candle(
     open_: np.ndarray,
     close: np.ndarray,
     idx: int,
@@ -89,9 +94,8 @@ def _is_displacement(
     lookback: int = 20,
 ) -> bool:
     """
-    Check if candle at idx is a displacement candle.
-
-    Displacement: body_size >= threshold * median_body_size(last lookback bars)
+    Check if candle at idx is a strong (displacement) candle.
+    Strong: body_size >= threshold * median_body_size(last lookback bars)
     """
     if idx < 1:
         return False
@@ -100,10 +104,65 @@ def _is_displacement(
     median = _median_body_size(open_, close, idx, lookback)
 
     if median == 0.0:
-        # If median is 0 (e.g., doji candles), only consider displacement if body > 0
         return body > 0
 
     return body >= threshold * median
+
+
+def _is_body_engulfing(
+    engulfing_open: float, engulfing_close: float,
+    engulfed_open: float, engulfed_close: float,
+) -> bool:
+    """
+    Check if engulfing candle's BODY completely contains engulfed candle's BODY.
+    Condition: engulfing_body_high >= engulfed_body_high AND engulfing_body_low <= engulfed_body_low
+    """
+    eng_body_high = _body_high(engulfing_open, engulfing_close)
+    eng_body_low = _body_low(engulfing_open, engulfing_close)
+    target_body_high = _body_high(engulfed_open, engulfed_close)
+    target_body_low = _body_low(engulfed_open, engulfed_close)
+
+    return eng_body_high >= target_body_high and eng_body_low <= target_body_low
+
+
+def _check_ob(
+    open_: np.ndarray,
+    close: np.ndarray,
+    idx: int,
+    threshold: float = 1.5,
+    lookback: int = 20,
+) -> Optional[Tuple[int, OBDirection]]:
+    """
+    Check if there's an Order Block at idx.
+
+    Buy OB: Strong bullish candle at idx engulfs previous bearish (red) candle
+    Sell OB: Strong bearish candle at idx engulfs previous bullish (green) candle
+
+    Returns: (engulfed_candle_index, direction) or None
+    """
+    if idx < 1:
+        return None
+
+    # Check if current candle is strong
+    if not _is_strong_candle(open_, close, idx, threshold, lookback):
+        return None
+
+    curr_open = open_[idx]
+    curr_close = close[idx]
+    prev_open = open_[idx - 1]
+    prev_close = close[idx - 1]
+
+    # Buy OB: Strong bullish engulfs previous bearish
+    if _is_bullish_candle(curr_open, curr_close) and _is_bearish_candle(prev_open, prev_close):
+        if _is_body_engulfing(curr_open, curr_close, prev_open, prev_close):
+            return (idx - 1, OBDirection.BUY)
+
+    # Sell OB: Strong bearish engulfs previous bullish
+    if _is_bearish_candle(curr_open, curr_close) and _is_bullish_candle(prev_open, prev_close):
+        if _is_body_engulfing(curr_open, curr_close, prev_open, prev_close):
+            return (idx - 1, OBDirection.SELL)
+
+    return None
 
 
 def _check_fvg(
@@ -112,113 +171,42 @@ def _check_fvg(
     idx: int,
 ) -> Optional[FVG]:
     """
-    Check for FVG using 2-candle rule with BODY only.
+    Check for FVG using 3-candle rule with BODY.
 
-    Compares candle[idx-1] and candle[idx] (2 consecutive candles).
+    Compares candle[idx] and candle[idx-2] (skipping the middle candle).
 
-    Bullish FVG: candle[idx-1].body_high < candle[idx].body_low
-      - Gap zone = candle[idx-1].body_high to candle[idx].body_low
+    Buy FVG: candle[idx].body_low > candle[idx-2].body_high
+      - Gap zone = candle[idx-2].body_high to candle[idx].body_low
 
-    Bearish FVG: candle[idx-1].body_low > candle[idx].body_high
-      - Gap zone = candle[idx].body_high to candle[idx-1].body_low
+    Sell FVG: candle[idx].body_high < candle[idx-2].body_low
+      - Gap zone = candle[idx].body_high to candle[idx-2].body_low
     """
-    if idx < 1:
+    if idx < 2:
         return None
 
-    prev_idx = idx - 1
-
-    # Get body boundaries for both candles
-    prev_body_high = _body_high(open_[prev_idx], close[prev_idx])
-    prev_body_low = _body_low(open_[prev_idx], close[prev_idx])
+    # Get body boundaries for candle[idx] and candle[idx-2]
     curr_body_high = _body_high(open_[idx], close[idx])
     curr_body_low = _body_low(open_[idx], close[idx])
+    prev2_body_high = _body_high(open_[idx - 2], close[idx - 2])
+    prev2_body_low = _body_low(open_[idx - 2], close[idx - 2])
 
-    # Determine direction from current candle
-    is_bullish = _is_bullish_candle(open_[idx], close[idx])
-
-    if is_bullish and prev_body_high < curr_body_low:
-        # Bullish FVG: gap between prev body high and current body low
+    # Buy FVG: current body_low > prev2 body_high (gap above)
+    if curr_body_low > prev2_body_high:
         return FVG(
             index=idx,
-            direction=OBDirection.BULLISH,
+            direction=OBDirection.BUY,
             gap_high=curr_body_low,
-            gap_low=prev_body_high,
+            gap_low=prev2_body_high,
         )
-    elif not is_bullish and prev_body_low > curr_body_high:
-        # Bearish FVG: gap between current body high and prev body low
+
+    # Sell FVG: current body_high < prev2 body_low (gap below)
+    if curr_body_high < prev2_body_low:
         return FVG(
             index=idx,
-            direction=OBDirection.BEARISH,
-            gap_high=prev_body_low,
+            direction=OBDirection.SELL,
+            gap_high=prev2_body_low,
             gap_low=curr_body_high,
         )
-
-    return None
-
-
-def _body_high(open_: float, close: float) -> float:
-    """Get the high of the candle body (max of open, close)."""
-    return max(open_, close)
-
-
-def _body_low(open_: float, close: float) -> float:
-    """Get the low of the candle body (min of open, close)."""
-    return min(open_, close)
-
-
-def _is_body_engulfing(
-    disp_open: float, disp_close: float,
-    ob_open: float, ob_close: float,
-) -> bool:
-    """
-    Check if displacement candle's BODY engulfs OB candle's BODY.
-
-    Engulfing: displacement body completely contains OB body.
-    - disp_body_high >= ob_body_high
-    - disp_body_low <= ob_body_low
-    """
-    disp_body_high = _body_high(disp_open, disp_close)
-    disp_body_low = _body_low(disp_open, disp_close)
-    ob_body_high = _body_high(ob_open, ob_close)
-    ob_body_low = _body_low(ob_open, ob_close)
-
-    return disp_body_high >= ob_body_high and disp_body_low <= ob_body_low
-
-
-def _find_ob_candle(
-    open_: np.ndarray,
-    close: np.ndarray,
-    displacement_idx: int,
-    direction: OBDirection,
-) -> Optional[int]:
-    """
-    Find the last opposite-direction candle before displacement that is engulfed.
-
-    For bullish OB: find last bearish candle before bullish displacement
-    For bearish OB: find last bullish candle before bearish displacement
-
-    Additional rule: displacement candle's BODY must engulf OB candle's BODY.
-    """
-    if displacement_idx < 1:
-        return None
-
-    disp_open = open_[displacement_idx]
-    disp_close = close[displacement_idx]
-
-    # Search backwards from displacement candle
-    for i in range(displacement_idx - 1, -1, -1):
-        if direction == OBDirection.BULLISH:
-            # Looking for bearish candle (last down candle before up move)
-            if _is_bearish_candle(open_[i], close[i]):
-                # Check if displacement body engulfs this candle's body
-                if _is_body_engulfing(disp_open, disp_close, open_[i], close[i]):
-                    return i
-        else:
-            # Looking for bullish candle (last up candle before down move)
-            if _is_bullish_candle(open_[i], close[i]):
-                # Check if displacement body engulfs this candle's body
-                if _is_body_engulfing(disp_open, disp_close, open_[i], close[i]):
-                    return i
 
     return None
 
@@ -232,26 +220,13 @@ def _is_ob_fresh(
 ) -> bool:
     """
     Check if OB is still fresh (untouched).
-
     OB is invalidated if price intersects the OB BODY zone after formation.
-
-    Args:
-        high: Array of high prices
-        low: Array of low prices
-        ob: The order block to check
-        from_idx: Start index for checking (exclusive, usually OB formation index)
-        to_idx: End index for checking (exclusive)
-
-    Returns:
-        True if OB is fresh (never touched), False if invalidated
     """
-    # Check each bar after OB formation
     for i in range(from_idx + 1, to_idx):
         bar_high = high[i]
         bar_low = low[i]
 
         # Check if price intersects the OB body zone
-        # Intersection occurs if bar range overlaps with OB zone
         if bar_low <= ob.zone_top and bar_high >= ob.zone_bottom:
             return False
 
@@ -268,52 +243,35 @@ def detect_orderblock(
 ) -> Optional[OrderBlock]:
     """
     Detect the single most valid order block.
-
     Returns the most recent, closest to current price valid OB.
-
-    Args:
-        open_: Array of open prices
-        high: Array of high prices
-        low: Array of low prices
-        close: Array of close prices
-        displacement_threshold: Multiplier for displacement detection
-        lookback: Bars to look back for median body calculation
-
-    Returns:
-        Single OrderBlock if found, None otherwise
     """
     n = len(close)
     if n < 3:
         return None
 
     current_price = close[-1]
-    candidates: List[Tuple[OrderBlock, float]] = []  # (OB, distance_to_price)
+    candidates: List[Tuple[OrderBlock, float]] = []
 
-    # Scan for displacement candles and build OB candidates
+    # Scan for OB patterns
     for i in range(1, n):
-        if not _is_displacement(open_, close, i, displacement_threshold, lookback):
+        ob_result = _check_ob(open_, close, i, displacement_threshold, lookback)
+        if ob_result is None:
             continue
 
-        # Determine direction from displacement candle
-        if _is_bullish_candle(open_[i], close[i]):
-            direction = OBDirection.BULLISH
-        else:
-            direction = OBDirection.BEARISH
+        ob_idx, direction = ob_result
 
-        # Find the OB candle (last opposite-direction candle)
-        ob_idx = _find_ob_candle(open_, close, i, direction)
-        if ob_idx is None:
-            continue
-
-        # Create OB zone from BODY only
+        # Create OB zone from engulfed candle's BODY
         ob_open = open_[ob_idx]
         ob_close = close[ob_idx]
-        zone_top = max(ob_open, ob_close)
-        zone_bottom = min(ob_open, ob_close)
+        zone_top = _body_high(ob_open, ob_close)
+        zone_bottom = _body_low(ob_open, ob_close)
 
-        # Check for FVG between OB candle and displacement candle
-        fvg = _check_fvg(open_, close, i)
-        has_fvg = fvg is not None
+        # Check for FVG (look at engulfing candle and beyond)
+        fvg = None
+        has_fvg = False
+        if i + 1 < n:
+            fvg = _check_fvg(open_, close, i + 1)
+            has_fvg = fvg is not None
 
         ob = OrderBlock(
             index=ob_idx,
@@ -326,11 +284,10 @@ def detect_orderblock(
         )
 
         # Check freshness: OB must not be touched after formation
-        # We check from the displacement candle onwards
         if not _is_ob_fresh(high, low, ob, i, n):
             continue
 
-        # Calculate distance to current price (center of OB zone)
+        # Calculate distance to current price
         zone_center = (zone_top + zone_bottom) / 2
         distance = abs(current_price - zone_center)
 
@@ -340,8 +297,6 @@ def detect_orderblock(
         return None
 
     # Sort by recency (higher index = more recent), then by distance (closer = better)
-    # Primary: most recent (highest displacement_index)
-    # Secondary: closest to current price
     candidates.sort(key=lambda x: (-x[0].displacement_index, x[1]))
 
     return candidates[0][0]
@@ -358,18 +313,6 @@ def find_all_orderblocks(
 ) -> List[OrderBlock]:
     """
     Find all order blocks (utility function for testing/analysis).
-
-    Args:
-        open_: Array of open prices
-        high: Array of high prices
-        low: Array of low prices
-        close: Array of close prices
-        displacement_threshold: Multiplier for displacement detection
-        lookback: Bars to look back for median body calculation
-        fresh_only: If True, only return fresh (untouched) OBs
-
-    Returns:
-        List of OrderBlock objects sorted by index
     """
     n = len(close)
     if n < 3:
@@ -378,26 +321,22 @@ def find_all_orderblocks(
     orderblocks: List[OrderBlock] = []
 
     for i in range(1, n):
-        if not _is_displacement(open_, close, i, displacement_threshold, lookback):
+        ob_result = _check_ob(open_, close, i, displacement_threshold, lookback)
+        if ob_result is None:
             continue
 
-        if _is_bullish_candle(open_[i], close[i]):
-            direction = OBDirection.BULLISH
-        else:
-            direction = OBDirection.BEARISH
-
-        ob_idx = _find_ob_candle(open_, close, i, direction)
-        if ob_idx is None:
-            continue
+        ob_idx, direction = ob_result
 
         ob_open = open_[ob_idx]
         ob_close = close[ob_idx]
-        zone_top = max(ob_open, ob_close)
-        zone_bottom = min(ob_open, ob_close)
+        zone_top = _body_high(ob_open, ob_close)
+        zone_bottom = _body_low(ob_open, ob_close)
 
-        # Check for FVG between OB candle and displacement candle
-        fvg = _check_fvg(open_, close, i)
-        has_fvg = fvg is not None
+        fvg = None
+        has_fvg = False
+        if i + 1 < n:
+            fvg = _check_fvg(open_, close, i + 1)
+            has_fvg = fvg is not None
 
         ob = OrderBlock(
             index=ob_idx,

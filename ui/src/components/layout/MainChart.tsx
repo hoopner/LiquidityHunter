@@ -344,8 +344,8 @@ export function MainChart({
     // FVG box - extends to chart right edge like OB
     if (ob.has_fvg && ob.fvg) {
       const fvg = ob.fvg;
-      // FVG starts at the candle where gap was detected (index-1 for 2-candle rule)
-      const fvgStartIdx = Math.max(0, fvg.index - 1);
+      // FVG uses 3-candle rule: gap between candle[i-2] and candle[i], starts at candle[i-2]
+      const fvgStartIdx = Math.max(0, fvg.index - 2);
       const fvgStartTime = data.bars[fvgStartIdx]?.time;
 
       if (fvgStartTime) {
@@ -570,60 +570,78 @@ export function MainChart({
     // Subscribe to visible range changes to update box positions
     chart.timeScale().subscribeVisibleLogicalRangeChange(updateBoxPositions);
 
-    // Ctrl + mouse wheel zoom: RIGHT edge stays fixed, LEFT side changes
-    // Uses locked anchor to prevent jitter during zoom gesture
-    const handleCtrlWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) {
-        // Ctrl released - reset anchor lock
-        zoomAnchorRef.current.locked = false;
+    // Wheel zoom handlers:
+    // - Ctrl + wheel: Horizontal zoom (X-axis) - right edge fixed
+    // - Shift + wheel: Vertical zoom (Y-axis) - price scale
+    const handleWheel = (e: WheelEvent) => {
+      // Shift + wheel: Vertical zoom (Y-axis)
+      if (e.shiftKey && !e.ctrlKey) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const priceScale = chart.priceScale('right');
+        if (!priceScale) return;
+
+        // Zoom direction: scroll up = zoom in, scroll down = zoom out
+        const zoomFactor = e.deltaY < 0 ? 0.9 : 1.1;
+
+        // Get current price scale options and adjust
+        const options = priceScale.options();
+        const currentTop = options.scaleMargins?.top ?? 0.1;
+        const currentBottom = options.scaleMargins?.bottom ?? 0.1;
+
+        // Adjust margins to zoom (smaller margins = zoom in, larger = zoom out)
+        const newTop = Math.max(0.01, Math.min(0.4, currentTop * zoomFactor));
+        const newBottom = Math.max(0.01, Math.min(0.4, currentBottom * zoomFactor));
+
+        priceScale.applyOptions({
+          scaleMargins: { top: newTop, bottom: newBottom },
+        });
         return;
       }
 
-      e.preventDefault();
-      e.stopPropagation();
+      // Ctrl + wheel: Horizontal zoom (X-axis)
+      if (e.ctrlKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
 
-      const timeScale = chart.timeScale();
-      const currentRange = timeScale.getVisibleLogicalRange();
-      if (!currentRange) return;
+        const timeScale = chart.timeScale();
+        const currentRange = timeScale.getVisibleLogicalRange();
+        if (!currentRange) return;
 
-      const now = Date.now();
+        const now = Date.now();
 
-      // Lock the anchor point at the start of zoom gesture
-      // Only update anchor if: not locked, or more than 300ms since last wheel event
-      if (!zoomAnchorRef.current.locked || (now - zoomAnchorRef.current.lastWheelTime > 300)) {
-        zoomAnchorRef.current.locked = true;
-        zoomAnchorRef.current.anchorLogical = currentRange.to; // Lock to current right edge
+        // Lock the anchor point at the start of zoom gesture
+        if (!zoomAnchorRef.current.locked || (now - zoomAnchorRef.current.lastWheelTime > 300)) {
+          zoomAnchorRef.current.locked = true;
+          zoomAnchorRef.current.anchorLogical = currentRange.to;
+        }
+        zoomAnchorRef.current.lastWheelTime = now;
+
+        if (zoomResetTimerRef.current) {
+          clearTimeout(zoomResetTimerRef.current);
+        }
+
+        zoomResetTimerRef.current = setTimeout(() => {
+          zoomAnchorRef.current.locked = false;
+        }, 200);
+
+        // Zoom direction: scroll up = zoom in, scroll down = zoom out
+        const zoomFactor = e.deltaY < 0 ? 0.85 : 1.18;
+        const currentWidth = currentRange.to - currentRange.from;
+        const newWidth = currentWidth * zoomFactor;
+        const clampedWidth = Math.max(5, Math.min(500, newWidth));
+
+        const rightAnchor = zoomAnchorRef.current.anchorLogical;
+        const newFrom = rightAnchor - clampedWidth;
+        const newTo = rightAnchor;
+
+        timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
+        return;
       }
-      zoomAnchorRef.current.lastWheelTime = now;
 
-      // Clear existing reset timer
-      if (zoomResetTimerRef.current) {
-        clearTimeout(zoomResetTimerRef.current);
-      }
-
-      // Set timer to reset anchor lock after 200ms of no scrolling
-      zoomResetTimerRef.current = setTimeout(() => {
-        zoomAnchorRef.current.locked = false;
-      }, 200);
-
-      // Zoom direction:
-      // Scroll up (deltaY < 0) = zoom IN = spread candles = show FEWER bars = width DECREASES
-      // Scroll down (deltaY > 0) = zoom OUT = compress candles = show MORE bars = width INCREASES
-      const zoomFactor = e.deltaY < 0 ? 0.85 : 1.18;
-
-      // Current visible width
-      const currentWidth = currentRange.to - currentRange.from;
-      const newWidth = currentWidth * zoomFactor;
-
-      // Clamp width (min 5 bars, max 500 bars)
-      const clampedWidth = Math.max(5, Math.min(500, newWidth));
-
-      // Use LOCKED anchor point (prevents jitter as chart moves during zoom)
-      const rightAnchor = zoomAnchorRef.current.anchorLogical;
-      const newFrom = rightAnchor - clampedWidth;
-      const newTo = rightAnchor;
-
-      timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
+      // No modifier - reset anchor lock
+      zoomAnchorRef.current.locked = false;
     };
 
     // Reset anchor lock when Ctrl key is released
@@ -636,7 +654,7 @@ export function MainChart({
     // Add wheel listener to chart container
     const container = chartContainerRef.current;
     if (container) {
-      container.addEventListener('wheel', handleCtrlWheel, { passive: false });
+      container.addEventListener('wheel', handleWheel, { passive: false });
     }
 
     // Add keyup listener to reset anchor lock when Ctrl is released
@@ -651,7 +669,7 @@ export function MainChart({
         clearTimeout(zoomResetTimerRef.current);
       }
       if (container) {
-        container.removeEventListener('wheel', handleCtrlWheel);
+        container.removeEventListener('wheel', handleWheel);
       }
       chart.remove();
     };
@@ -710,7 +728,7 @@ export function MainChart({
   const priceChangePercent = prevBar ? (priceChange / prevBar.close) * 100 : 0;
 
   const ob = analyzeData?.current_valid_ob;
-  const isBullish = ob?.direction === 'bullish';
+  const isBuyOB = ob?.direction === 'buy';
 
   return (
     <div
@@ -940,9 +958,9 @@ export function MainChart({
 
           <div className="ml-auto flex items-center gap-4 text-xs text-[var(--text-secondary)]">
             {ob && showOB && (
-              <span className={`flex items-center gap-1 ${isBullish ? 'text-[#26a69a]' : 'text-[#ef5350]'}`}>
-                <span className={`w-3 h-3 rounded ${isBullish ? 'bg-[#26a69a]' : 'bg-[#ef5350]'} opacity-40`}></span>
-                {isBullish ? 'Bullish' : 'Bearish'} OB
+              <span className={`flex items-center gap-1 ${isBuyOB ? 'text-[#26a69a]' : 'text-[#ef5350]'}`}>
+                <span className={`w-3 h-3 rounded ${isBuyOB ? 'bg-[#26a69a]' : 'bg-[#ef5350]'} opacity-40`}></span>
+                {isBuyOB ? 'Buy' : 'Sell'} OB
                 {ob.has_fvg && ' + FVG'}
               </span>
             )}
@@ -1152,10 +1170,10 @@ export function MainChart({
               top: obBoxPosition.top,
               width: obBoxPosition.right - obBoxPosition.left,
               height: obBoxPosition.bottom - obBoxPosition.top,
-              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.35)' : 'rgba(239, 83, 80, 0.35)',
-              border: `2px solid ${isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
+              backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.35)' : 'rgba(239, 83, 80, 0.35)',
+              border: `2px solid ${isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
               borderRadius: '3px',
-              boxShadow: `0 0 8px ${isBullish ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'}`,
+              boxShadow: `0 0 8px ${isBuyOB ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'}`,
               pointerEvents: 'none',
             }}
           >
@@ -1163,7 +1181,7 @@ export function MainChart({
             <div
               className="absolute top-1 left-1 px-1.5 py-0.5 text-xs font-black rounded"
               style={{
-                backgroundColor: isBullish ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
+                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
                 color: 'white',
                 textShadow: '0 1px 2px rgba(0,0,0,0.3)',
               }}
@@ -1174,7 +1192,7 @@ export function MainChart({
             <div
               className="absolute top-1 right-8 text-[10px] font-medium px-1 rounded"
               style={{
-                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
+                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
                 color: 'white',
               }}
             >
@@ -1185,7 +1203,7 @@ export function MainChart({
               className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
               style={{
                 pointerEvents: 'auto',
-                backgroundColor: isResizingOB ? (isBullish ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)') : 'transparent',
+                backgroundColor: isResizingOB ? (isBuyOB ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)') : 'transparent',
               }}
               onMouseDown={handleObResizeStart}
               title="좌우로 드래그하여 확장/축소"
@@ -1193,7 +1211,7 @@ export function MainChart({
               <div
                 className="w-1 h-8 rounded"
                 style={{
-                  backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
+                  backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
                 }}
               />
             </div>
@@ -1209,8 +1227,8 @@ export function MainChart({
               top: fvgBoxPosition.top,
               width: fvgBoxPosition.right - fvgBoxPosition.left,
               height: fvgBoxPosition.bottom - fvgBoxPosition.top,
-              backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.2)' : 'rgba(239, 83, 80, 0.2)',
-              border: `2px dashed ${isBullish ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)'}`,
+              backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.2)' : 'rgba(239, 83, 80, 0.2)',
+              border: `2px dashed ${isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)'}`,
               borderRadius: '3px',
               pointerEvents: 'none',
             }}
@@ -1219,10 +1237,10 @@ export function MainChart({
             <div
               className="absolute top-1 left-1 px-1.5 py-0.5 text-[10px] font-bold rounded"
               style={{
-                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
+                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
                 color: 'white',
                 textShadow: '0 1px 2px rgba(0,0,0,0.3)',
-                border: `1px dashed ${isBullish ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)'}`,
+                border: `1px dashed ${isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)'}`,
               }}
             >
               FVG
@@ -1231,9 +1249,9 @@ export function MainChart({
             <div
               className="absolute top-1 right-8 text-[9px] font-medium px-1 rounded"
               style={{
-                backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)',
+                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)',
                 color: 'white',
-                border: `1px dashed ${isBullish ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
+                border: `1px dashed ${isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
               }}
             >
               {ob.fvg.gap_high.toLocaleString(undefined, { maximumFractionDigits: 0 })} - {ob.fvg.gap_low.toLocaleString(undefined, { maximumFractionDigits: 0 })}
@@ -1243,7 +1261,7 @@ export function MainChart({
               className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
               style={{
                 pointerEvents: 'auto',
-                backgroundColor: isResizingFVG ? (isBullish ? 'rgba(38, 166, 154, 0.3)' : 'rgba(239, 83, 80, 0.3)') : 'transparent',
+                backgroundColor: isResizingFVG ? (isBuyOB ? 'rgba(38, 166, 154, 0.3)' : 'rgba(239, 83, 80, 0.3)') : 'transparent',
               }}
               onMouseDown={handleFvgResizeStart}
               title="좌우로 드래그하여 확장/축소"
@@ -1251,8 +1269,8 @@ export function MainChart({
               <div
                 className="w-1 h-6 rounded"
                 style={{
-                  backgroundColor: isBullish ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)',
-                  border: `1px dashed ${isBullish ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)'}`,
+                  backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)',
+                  border: `1px dashed ${isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)'}`,
                 }}
               />
             </div>

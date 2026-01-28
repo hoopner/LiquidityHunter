@@ -76,8 +76,8 @@ export function ScreenerPage({ onStockSelect, onBackToChart }: ScreenerPageProps
     return allCandidates.map((item) => ({
       symbol: item.symbol,
       market: item.market,
-      col1: item.direction === 'bullish' ? 'Bullish' : 'Bearish',
-      col1Color: item.direction === 'bullish' ? 'green' : 'red' as const,
+      col1: item.direction === 'buy' ? 'Buy' : 'Sell',
+      col1Color: item.direction === 'buy' ? 'green' : 'red' as const,
       col2: `${item.zone_bottom.toLocaleString()} ~ ${item.zone_top.toLocaleString()}`,
       col3: item.has_fvg ? 'Fresh + FVG' : 'Fresh',
     }));
