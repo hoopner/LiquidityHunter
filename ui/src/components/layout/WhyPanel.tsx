@@ -199,6 +199,36 @@ export function WhyPanel({ symbol, market, timeframe = '1D' }: WhyPanelProps) {
     };
   };
 
+  // Get Volume Strength analysis
+  const getVolumeAnalysis = () => {
+    if (!state.analyze?.current_valid_ob) {
+      return { text: '볼륨 분석 없음', color: 'text-[var(--text-secondary)]' };
+    }
+
+    const ob = state.analyze.current_valid_ob;
+    const volStrength = ob.volume_strength || 'normal';
+    const volRatio = ob.volume_ratio || 1.0;
+
+    const strengthKr = volStrength === 'strong' ? '강함' : volStrength === 'weak' ? '약함' : '보통';
+
+    if (volStrength === 'strong') {
+      return {
+        text: `OB 강도: ${strengthKr} (${volRatio.toFixed(1)}x)`,
+        color: 'text-green-400'
+      };
+    } else if (volStrength === 'weak') {
+      return {
+        text: `OB 강도: ${strengthKr} (${volRatio.toFixed(1)}x)`,
+        color: 'text-gray-400'
+      };
+    } else {
+      return {
+        text: `OB 강도: ${strengthKr} (${volRatio.toFixed(1)}x)`,
+        color: 'text-[var(--text-secondary)]'
+      };
+    }
+  };
+
   // Get Confluence analysis
   const getConfluenceAnalysis = () => {
     if (!state.analyze?.confluence) {
@@ -233,6 +263,7 @@ export function WhyPanel({ symbol, market, timeframe = '1D' }: WhyPanelProps) {
   const obAnalysis = getObAnalysis();
   const fvgAnalysis = getFvgAnalysis();
   const bosAnalysis = getBosAnalysis();
+  const volumeAnalysis = getVolumeAnalysis();
   const confluenceAnalysis = getConfluenceAnalysis();
 
   return (
@@ -270,6 +301,11 @@ export function WhyPanel({ symbol, market, timeframe = '1D' }: WhyPanelProps) {
           {/* Order Block */}
           <span className={obAnalysis.color}>●</span>
           <span className={obAnalysis.color}>{obAnalysis.text}</span>
+          <span className="text-[var(--text-secondary)] mx-1">|</span>
+
+          {/* Volume Strength */}
+          <span className={volumeAnalysis.color}>●</span>
+          <span className={volumeAnalysis.color}>{volumeAnalysis.text}</span>
           <span className="text-[var(--text-secondary)] mx-1">|</span>
 
           {/* FVG */}

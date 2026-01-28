@@ -128,13 +128,15 @@ export async function fetchAnalyze(
   symbol: string,
   market: string,
   timeframe: string,
-  barIndex: number
+  barIndex: number,
+  filterWeak: boolean = false
 ): Promise<AnalyzeResponse> {
   const params = new URLSearchParams({
     symbol,
     market,
     tf: timeframe,
     bar_index: barIndex.toString(),
+    filter_weak: filterWeak.toString(),
   });
 
   const response = await fetch(`${BASE_URL}/analyze?${params}`);

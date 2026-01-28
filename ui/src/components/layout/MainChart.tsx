@@ -133,6 +133,9 @@ export function MainChart({
   const [showVP, setShowVP] = useState(false);
   const [vpLoading, setVpLoading] = useState(false);
 
+  // Volume filter state - hide weak OBs
+  const [hideWeakOB, setHideWeakOB] = useState(false);
+
   // Watchlist state
   const [isWatchlistLoading, setIsWatchlistLoading] = useState(false);
   const [watchlistAdded, setWatchlistAdded] = useState(false);
@@ -259,10 +262,10 @@ export function MainChart({
     if (!data || data.bars.length === 0) return;
 
     const barIndex = data.bars.length - 1;
-    fetchAnalyze(symbol, market, timeframe, barIndex)
+    fetchAnalyze(symbol, market, timeframe, barIndex, hideWeakOB)
       .then(setAnalyzeData)
       .catch(() => setAnalyzeData(null));
-  }, [data, symbol, market, timeframe]);
+  }, [data, symbol, market, timeframe, hideWeakOB]);
 
   // Fetch Volume Profile when enabled
   useEffect(() => {
@@ -880,6 +883,19 @@ export function MainChart({
             >
               OB
             </button>
+            {showOB && (
+              <button
+                onClick={() => setHideWeakOB(!hideWeakOB)}
+                className={`px-2 py-1 text-xs font-medium transition-colors border-l border-[var(--border-color)] ${
+                  hideWeakOB
+                    ? 'bg-orange-500 text-white'
+                    : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title={hideWeakOB ? '약한 OB 표시하기' : '약한 OB 숨기기'}
+              >
+                {hideWeakOB ? '강함만' : '전체'}
+              </button>
+            )}
             {showOB && obRightOffset !== 0 && (
               <button
                 onClick={() => setObRightOffset(0)}
@@ -910,6 +926,16 @@ export function MainChart({
                 <span className={`w-3 h-3 rounded ${isBuyOB ? 'bg-[#26a69a]' : 'bg-[#ef5350]'} opacity-40`}></span>
                 {isBuyOB ? 'Buy' : 'Sell'} OB
                 {ob.has_fvg && ' + FVG'}
+                {/* Volume strength badge */}
+                <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                  ob.volume_strength === 'strong'
+                    ? 'bg-green-500 text-white'
+                    : ob.volume_strength === 'weak'
+                    ? 'bg-gray-400 text-white'
+                    : 'bg-gray-600 text-white'
+                }`} title={`볼륨: ${ob.volume_ratio?.toFixed(1) || '1.0'}x 평균`}>
+                  {ob.volume_ratio?.toFixed(1) || '1.0'}x
+                </span>
                 {analyzeData?.confluence && (
                   <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${
                     analyzeData.confluence.score >= 80
@@ -920,6 +946,12 @@ export function MainChart({
                     {analyzeData.confluence.score}점
                   </span>
                 )}
+              </span>
+            )}
+            {/* Show filtered count if any */}
+            {analyzeData && analyzeData.filtered_weak_obs > 0 && hideWeakOB && (
+              <span className="text-gray-400 text-[10px]">
+                ({analyzeData.filtered_weak_obs}개 약한 OB 숨김)
               </span>
             )}
             <span className="flex items-center gap-1">
@@ -1123,8 +1155,27 @@ export function MainChart({
         {!compact && showOB && obBoxPosition.visible && ob && (() => {
           const confluenceScore = analyzeData?.confluence?.score ?? 0;
           const isHighConfluence = confluenceScore >= 80;
-          const borderWidth = isHighConfluence ? '3px' : '2px';
-          const glowIntensity = isHighConfluence ? '12px' : '8px';
+
+          // Volume-based styling
+          const volStrength = ob.volume_strength || 'normal';
+          const volRatio = ob.volume_ratio || 1.0;
+          const isStrong = volStrength === 'strong';
+          const isWeak = volStrength === 'weak';
+
+          // Strong: 3px border, full opacity
+          // Normal: 2px border, normal opacity
+          // Weak: 1px border, 0.3 opacity
+          const borderWidth = isStrong ? '3px' : isWeak ? '1px' : '2px';
+          const bgOpacity = isWeak ? 0.15 : 0.35;
+          const borderOpacity = isWeak ? 0.4 : 0.9;
+          const glowIntensity = isHighConfluence ? '12px' : isStrong ? '10px' : '6px';
+
+          const bgColor = isBuyOB
+            ? `rgba(38, 166, 154, ${bgOpacity})`
+            : `rgba(239, 83, 80, ${bgOpacity})`;
+          const borderColor = isBuyOB
+            ? `rgba(38, 166, 154, ${borderOpacity})`
+            : `rgba(239, 83, 80, ${borderOpacity})`;
 
           return (
             <div
@@ -1134,14 +1185,16 @@ export function MainChart({
                 top: obBoxPosition.top,
                 width: obBoxPosition.right - obBoxPosition.left,
                 height: obBoxPosition.bottom - obBoxPosition.top,
-                backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.35)' : 'rgba(239, 83, 80, 0.35)',
-                border: `${borderWidth} solid ${isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)'}`,
+                backgroundColor: bgColor,
+                border: `${borderWidth} solid ${borderColor}`,
                 borderRadius: '3px',
                 boxShadow: isHighConfluence
                   ? `0 0 ${glowIntensity} ${isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)'}, 0 0 20px rgba(255, 215, 0, 0.4)`
-                  : `0 0 ${glowIntensity} ${isBuyOB ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'}`,
+                  : `0 0 ${glowIntensity} ${isBuyOB ? `rgba(38, 166, 154, ${isWeak ? 0.2 : 0.5})` : `rgba(239, 83, 80, ${isWeak ? 0.2 : 0.5})`}`,
                 pointerEvents: 'none',
+                opacity: isWeak ? 0.6 : 1,
               }}
+              title={`볼륨: ${volRatio.toFixed(1)}x 평균 (${volStrength === 'strong' ? '강함' : volStrength === 'weak' ? '약함' : '보통'})`}
             >
               {/* OB label with optional gold star for high confluence */}
               <div className="absolute top-1 left-1 flex items-center gap-1">
@@ -1151,9 +1204,21 @@ export function MainChart({
                     backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
                     color: 'white',
                     textShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                    opacity: isWeak ? 0.6 : 1,
                   }}
                 >
                   OB
+                </div>
+                {/* Volume strength badge */}
+                <div
+                  className="px-1 py-0.5 text-[9px] font-bold rounded"
+                  style={{
+                    backgroundColor: isStrong ? 'rgba(34, 197, 94, 0.9)' : isWeak ? 'rgba(156, 163, 175, 0.7)' : 'rgba(100, 100, 100, 0.7)',
+                    color: 'white',
+                  }}
+                  title={`볼륨: ${volRatio.toFixed(1)}x 평균`}
+                >
+                  {volRatio.toFixed(1)}x
                 </div>
                 {/* Gold star for high confluence */}
                 {isHighConfluence && (
@@ -1190,6 +1255,7 @@ export function MainChart({
                 style={{
                   backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
                   color: 'white',
+                  opacity: isWeak ? 0.6 : 1,
                 }}
               >
                 {ob.zone_top.toLocaleString(undefined, { maximumFractionDigits: 0 })} - {ob.zone_bottom.toLocaleString(undefined, { maximumFractionDigits: 0 })}

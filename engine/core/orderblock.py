@@ -39,6 +39,13 @@ class FVG:
     gap_low: float   # Bottom of gap zone
 
 
+class VolumeStrength(Enum):
+    """Volume strength classification."""
+    STRONG = "strong"
+    NORMAL = "normal"
+    WEAK = "weak"
+
+
 @dataclass
 class OrderBlock:
     """Represents an order block zone."""
@@ -49,6 +56,9 @@ class OrderBlock:
     displacement_index: int  # Index of engulfing candle
     has_fvg: bool  # Whether FVG is present
     fvg: Optional[FVG] = None
+    # Volume analysis
+    volume_strength: VolumeStrength = VolumeStrength.NORMAL
+    volume_ratio: float = 1.0  # displacement_volume / avg_volume
 
 
 @dataclass
@@ -122,6 +132,74 @@ def _is_strong_candle(
         return body > 0
 
     return body >= threshold * median
+
+
+def _calculate_volume_sma(
+    volume: Optional[np.ndarray],
+    end_idx: int,
+    period: int = 20,
+) -> float:
+    """
+    Calculate Simple Moving Average of volume.
+
+    Args:
+        volume: Volume array
+        end_idx: End index (exclusive) for calculation
+        period: SMA period (default 20)
+
+    Returns:
+        Volume SMA value, or 0.0 if not enough data
+    """
+    if volume is None or len(volume) == 0:
+        return 0.0
+
+    start_idx = max(0, end_idx - period)
+    if start_idx >= end_idx:
+        return 0.0
+
+    return float(np.mean(volume[start_idx:end_idx]))
+
+
+def _calculate_volume_strength(
+    volume: Optional[np.ndarray],
+    displacement_idx: int,
+    strong_threshold: float = 1.5,
+    weak_threshold: float = 0.8,
+) -> Tuple[VolumeStrength, float]:
+    """
+    Calculate volume strength for an OB based on displacement candle volume.
+
+    Args:
+        volume: Volume array
+        displacement_idx: Index of the displacement (engulfing) candle
+        strong_threshold: Ratio above which volume is considered strong (default 1.5)
+        weak_threshold: Ratio below which volume is considered weak (default 0.8)
+
+    Returns:
+        Tuple of (VolumeStrength, volume_ratio)
+    """
+    if volume is None or len(volume) == 0 or displacement_idx < 1:
+        return VolumeStrength.NORMAL, 1.0
+
+    # Get displacement candle volume
+    disp_vol = float(volume[displacement_idx])
+
+    # Calculate average volume (20-period SMA up to displacement candle)
+    avg_vol = _calculate_volume_sma(volume, displacement_idx, period=20)
+
+    if avg_vol <= 0:
+        return VolumeStrength.NORMAL, 1.0
+
+    # Calculate ratio
+    volume_ratio = disp_vol / avg_vol
+
+    # Classify strength
+    if volume_ratio > strong_threshold:
+        return VolumeStrength.STRONG, volume_ratio
+    elif volume_ratio < weak_threshold:
+        return VolumeStrength.WEAK, volume_ratio
+    else:
+        return VolumeStrength.NORMAL, volume_ratio
 
 
 def _is_body_engulfing(
@@ -319,17 +397,31 @@ def detect_orderblock(
     high: np.ndarray,
     low: np.ndarray,
     close: np.ndarray,
-) -> Optional[OrderBlock]:
+    volume: Optional[np.ndarray] = None,
+    filter_weak: bool = False,
+) -> Tuple[Optional[OrderBlock], int]:
     """
     Detect the single most valid order block.
     Returns the most recent, closest to current price valid OB.
+
+    Args:
+        open_: Open prices
+        high: High prices
+        low: Low prices
+        close: Close prices
+        volume: Volume data (optional, for volume strength analysis)
+        filter_weak: If True, exclude weak volume OBs from consideration
+
+    Returns:
+        Tuple of (OrderBlock or None, filtered_weak_count)
     """
     n = len(close)
     if n < 3:
-        return None
+        return None, 0
 
     current_price = close[-1]
     candidates: List[Tuple[OrderBlock, float]] = []
+    filtered_weak_count = 0
 
     # Scan for OB patterns
     for i in range(1, n):
@@ -344,6 +436,9 @@ def detect_orderblock(
         ob_close = close[ob_idx]
         zone_top = _body_high(ob_open, ob_close)
         zone_bottom = _body_low(ob_open, ob_close)
+
+        # Calculate volume strength
+        vol_strength, vol_ratio = _calculate_volume_strength(volume, i)
 
         # Check for FVG in a window around the OB (5 bars before to 5 bars after)
         # Search backward first (most recent FVG near OB), then forward
@@ -368,10 +463,17 @@ def detect_orderblock(
             displacement_index=i,
             has_fvg=has_fvg,
             fvg=fvg,
+            volume_strength=vol_strength,
+            volume_ratio=vol_ratio,
         )
 
         # Check freshness: OB must not be touched after formation
         if not _is_ob_fresh(high, low, ob, i, n):
+            continue
+
+        # Filter weak OBs if requested
+        if filter_weak and vol_strength == VolumeStrength.WEAK:
+            filtered_weak_count += 1
             continue
 
         # Calculate distance to current price
@@ -381,12 +483,12 @@ def detect_orderblock(
         candidates.append((ob, distance))
 
     if not candidates:
-        return None
+        return None, filtered_weak_count
 
     # Sort by recency (higher index = more recent), then by distance (closer = better)
     candidates.sort(key=lambda x: (-x[0].displacement_index, x[1]))
 
-    return candidates[0][0]
+    return candidates[0][0], filtered_weak_count
 
 
 def find_all_orderblocks(
@@ -394,16 +496,31 @@ def find_all_orderblocks(
     high: np.ndarray,
     low: np.ndarray,
     close: np.ndarray,
+    volume: Optional[np.ndarray] = None,
     fresh_only: bool = True,
-) -> List[OrderBlock]:
+    filter_weak: bool = False,
+) -> Tuple[List[OrderBlock], int]:
     """
     Find all order blocks (utility function for testing/analysis).
+
+    Args:
+        open_: Open prices
+        high: High prices
+        low: Low prices
+        close: Close prices
+        volume: Volume data (optional, for volume strength analysis)
+        fresh_only: If True, only return fresh (untouched) OBs
+        filter_weak: If True, exclude weak volume OBs
+
+    Returns:
+        Tuple of (list of OrderBlocks, filtered_weak_count)
     """
     n = len(close)
     if n < 3:
-        return []
+        return [], 0
 
     orderblocks: List[OrderBlock] = []
+    filtered_weak_count = 0
 
     for i in range(1, n):
         ob_result = _check_ob(open_, close, i)
@@ -416,6 +533,9 @@ def find_all_orderblocks(
         ob_close = close[ob_idx]
         zone_top = _body_high(ob_open, ob_close)
         zone_bottom = _body_low(ob_open, ob_close)
+
+        # Calculate volume strength
+        vol_strength, vol_ratio = _calculate_volume_strength(volume, i)
 
         # Check for FVG in a window around the OB (5 bars before to 5 bars after)
         fvg = None
@@ -438,15 +558,22 @@ def find_all_orderblocks(
             displacement_index=i,
             has_fvg=has_fvg,
             fvg=fvg,
+            volume_strength=vol_strength,
+            volume_ratio=vol_ratio,
         )
 
         if fresh_only and not _is_ob_fresh(high, low, ob, i, n):
             continue
 
+        # Filter weak OBs if requested
+        if filter_weak and vol_strength == VolumeStrength.WEAK:
+            filtered_weak_count += 1
+            continue
+
         orderblocks.append(ob)
 
     orderblocks.sort(key=lambda ob: ob.index)
-    return orderblocks
+    return orderblocks, filtered_weak_count
 
 
 def calculate_atr(

@@ -89,6 +89,8 @@ def _ob_to_schema(ob: OrderBlock) -> OrderBlockSchema:
         displacement_index=ob.displacement_index,
         has_fvg=ob.has_fvg,
         fvg=fvg_schema,
+        volume_strength=ob.volume_strength.value,
+        volume_ratio=round(ob.volume_ratio, 2),
     )
 
 
@@ -102,7 +104,7 @@ def _fvg_to_schema(fvg: FVG) -> FVGSchema:
     )
 
 
-def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
+def analyze_at_bar(data: OHLCVData, bar_index: int, filter_weak: bool = False) -> AnalyzeResponse:
     """
     Analyze order block and FVGs at a specific bar index.
 
@@ -111,6 +113,7 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
     Args:
         data: OHLCV data
         bar_index: Bar index to analyze up to (inclusive)
+        filter_weak: If True, exclude weak volume OBs
 
     Returns:
         AnalyzeResponse with analysis results
@@ -124,11 +127,16 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
     high = data.high[:end]
     low = data.low[:end]
     close = data.close[:end]
+    volume = data.volume[:end] if data.volume is not None else None
 
     current_price = float(close[-1])
 
-    # Detect order block
-    ob = detect_orderblock(open_, high, low, close)
+    # Detect order block with volume analysis
+    ob, filtered_weak_count = detect_orderblock(
+        open_, high, low, close,
+        volume=volume,
+        filter_weak=filter_weak,
+    )
 
     # Detect FVGs independently
     fvgs = find_all_fvgs(open_, high, low, close, fresh_only=True)
@@ -167,6 +175,7 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
             reason_code="NO_VALID_OB",
             confluence=confluence_schema,
             atr=atr_value,
+            filtered_weak_obs=filtered_weak_count,
         )
 
     return AnalyzeResponse(
@@ -182,6 +191,7 @@ def analyze_at_bar(data: OHLCVData, bar_index: int) -> AnalyzeResponse:
         reason_code="OK",
         confluence=confluence_schema,
         atr=atr_value,
+        filtered_weak_obs=filtered_weak_count,
     )
 
 
@@ -191,11 +201,13 @@ def analyze(
     tf: str = Query(..., description="Timeframe"),
     bar_index: int = Query(..., description="Bar index to analyze"),
     market: str = Query("", description="Market (KR/US) for data directory"),
+    filter_weak: bool = Query(False, description="Filter out weak volume OBs"),
 ) -> AnalyzeResponse:
     """
     Analyze order block at a specific bar index.
 
     Returns the current valid order block (if any) and validation details.
+    Set filter_weak=true to exclude OBs with weak volume (< 0.8x avg volume).
     """
     try:
         data_dir = f"data/{market.lower()}" if market else "data"
@@ -204,7 +216,7 @@ def analyze(
         raise HTTPException(status_code=404, detail=str(e))
 
     try:
-        return analyze_at_bar(data, bar_index)
+        return analyze_at_bar(data, bar_index, filter_weak=filter_weak)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

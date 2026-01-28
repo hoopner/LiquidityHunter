@@ -40,6 +40,9 @@ export interface OrderBlock {
   displacement_index: number;
   has_fvg: boolean;
   fvg: FVG | null;
+  // Volume analysis
+  volume_strength: 'strong' | 'normal' | 'weak';
+  volume_ratio: number;  // displacement_volume / avg_volume
 }
 
 export interface ConfluenceData {
@@ -66,6 +69,7 @@ export interface AnalyzeResponse {
   reason_code: 'OK' | 'NO_VALID_OB';
   confluence: ConfluenceData | null;
   atr: number | null;
+  filtered_weak_obs: number;  // Count of weak OBs filtered out
 }
 
 // Portfolio types

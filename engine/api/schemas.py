@@ -22,6 +22,9 @@ class OrderBlockSchema(BaseModel):
     displacement_index: int
     has_fvg: bool
     fvg: Optional[FVGSchema] = None
+    # Volume analysis
+    volume_strength: str = "normal"  # "strong", "normal", "weak"
+    volume_ratio: float = 1.0  # displacement_volume / avg_volume
 
 
 class ValidationDetails(BaseModel):
@@ -54,6 +57,8 @@ class AnalyzeResponse(BaseModel):
     # Confluence scoring
     confluence: Optional[ConfluenceSchema] = None
     atr: Optional[float] = None
+    # Volume filtering
+    filtered_weak_obs: int = 0  # Count of weak OBs filtered out
 
 
 class ReplayResponse(BaseModel):
