@@ -498,7 +498,8 @@ export function MainChart({
     // Subscribe to visible range changes to update box positions
     chart.timeScale().subscribeVisibleLogicalRangeChange(updateBoxPositions);
 
-    // Ctrl + mouse wheel zoom with cursor as RIGHT anchor
+    // Ctrl + mouse wheel zoom: RIGHT edge stays fixed, LEFT side changes
+    // This lets you zoom into history while keeping the "present" (right edge) fixed
     const handleCtrlWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return; // Only handle when Ctrl is held
 
@@ -509,20 +510,10 @@ export function MainChart({
       const currentRange = timeScale.getVisibleLogicalRange();
       if (!currentRange) return;
 
-      // Get cursor position relative to chart
-      const rect = chartContainerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-
-      const cursorX = e.clientX - rect.left;
-
-      // Convert cursor X to logical index (this is our right anchor point)
-      const cursorLogical = timeScale.coordinateToLogical(cursorX);
-      if (cursorLogical === null) return;
-
-      // Calculate zoom direction and amount (flipped for intuitive behavior)
-      // Scroll up (deltaY < 0) = zoom in = smaller width (candles spread out)
-      // Scroll down (deltaY > 0) = zoom out = larger width (candles compress)
-      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+      // Zoom direction:
+      // Scroll up (deltaY < 0) = zoom IN = spread candles = show FEWER bars = width DECREASES
+      // Scroll down (deltaY > 0) = zoom OUT = compress candles = show MORE bars = width INCREASES
+      const zoomFactor = e.deltaY < 0 ? 0.85 : 1.18;
 
       // Current visible width
       const currentWidth = currentRange.to - currentRange.from;
@@ -531,10 +522,11 @@ export function MainChart({
       // Clamp width (min 5 bars, max 500 bars)
       const clampedWidth = Math.max(5, Math.min(500, newWidth));
 
-      // New range: cursor position is the RIGHT edge
-      // So new range is from (cursor - width) to cursor
-      const newFrom = cursorLogical - clampedWidth;
-      const newTo = cursorLogical;
+      // RIGHT edge is the fixed anchor (current right edge stays in place)
+      // Only the LEFT side changes
+      const rightAnchor = currentRange.to;
+      const newFrom = rightAnchor - clampedWidth;
+      const newTo = rightAnchor;
 
       timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
     };
