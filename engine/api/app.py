@@ -12,12 +12,24 @@ from engine.core.orderblock import (
     find_all_fvgs,
     OrderBlock,
     FVG,
+    OBAgeStatus,
     calculate_confluence,
     calculate_atr,
 )
+from engine.strategy.volumatic_strategy import (
+    calculate_volumatic_score,
+    calculate_ob_age,
+    is_fvg_mitigated,
+    backtest_volumatic_strategy,
+    VolumaticSignal,
+)
+from engine.core.retest_detector import detect_retest, RetestSignal
+from engine.core.mtf_resampler import analyze_mtf, project_htf_zones_to_ltf, get_htf_for_ltf
+from engine.indicators.williams_r import calculate_williams_r, get_wr_signal, analyze_wr_confluence
+from engine.indicators.dynamic_manager import DynamicIndicatorManager
 from engine.core.screener import screen_watchlist, ScreenResult
 from engine.core.volume_profile import calculate_volume_profile
-from engine.api.data import load_csv, OHLCVData
+from engine.api.data import load_csv, load_with_refresh, OHLCVData
 from engine.api.schemas import (
     AnalyzeResponse,
     ReplayResponse,
@@ -51,8 +63,28 @@ from engine.api.schemas import (
     OBScreenResponse,
     RSIScreenResult,
     RSIScreenResponse,
+    VolumaticSignalSchema,
+    VolumaticBacktestResponse,
+    RetestSignalSchema,
+    ActiveSignalSchema,
+    HTFOrderBlockSchema,
+    HTFFVGSchema,
+    MTFAnalyzeResponse,
+    WilliamsRSignal,
+    DynamicIndicatorsResponse,
+    WilliamsRIndicator,
+    RSIIndicator,
+    IndicatorColors,
+    BacktestResponse,
+    BacktestMetricsSchema,
+    BacktestTradeSchema,
+    EquityPointSchema,
+    AlertSettingsSchema,
+    AlertTestResponse,
+    AlertSettingsResponse,
 )
 from engine.core.screener import ema, rsi, macd
+from engine.strategy.backtest import run_backtest
 
 app = FastAPI(
     title="LiquidityHunter",
@@ -63,15 +95,24 @@ app = FastAPI(
 # Add CORS middleware for frontend development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-def _ob_to_schema(ob: OrderBlock) -> OrderBlockSchema:
-    """Convert OrderBlock dataclass to Pydantic schema."""
+def _ob_to_schema(
+    ob: OrderBlock,
+    current_index: int = 0,
+    high: Optional[np.ndarray] = None,
+    low: Optional[np.ndarray] = None,
+    close: Optional[np.ndarray] = None,
+    volume: Optional[np.ndarray] = None,
+    current_price: float = 0.0,
+    current_volume: float = 0.0,
+) -> OrderBlockSchema:
+    """Convert OrderBlock dataclass to Pydantic schema with volumatic analysis and retest detection."""
     fvg_schema = None
     if ob.fvg is not None:
         fvg_schema = FVGSchema(
@@ -80,6 +121,51 @@ def _ob_to_schema(ob: OrderBlock) -> OrderBlockSchema:
             gap_high=ob.fvg.gap_high,
             gap_low=ob.fvg.gap_low,
         )
+
+    # Calculate volumatic fields
+    age_candles = 0
+    age_status = "fresh"
+    fvg_fresh = False
+    volumatic_score = 0
+
+    if current_index > 0:
+        age_candles, age_status_enum = calculate_ob_age(ob, current_index)
+        age_status = age_status_enum.value
+
+        # Check FVG freshness
+        if ob.fvg is not None and high is not None and low is not None:
+            mitigated, _ = is_fvg_mitigated(ob.fvg, high, low, ob.fvg.index, current_index)
+            fvg_fresh = not mitigated
+
+        # Calculate volumatic score
+        if high is not None and low is not None:
+            volumatic_score = calculate_volumatic_score(
+                ob, ob.fvg if fvg_fresh else None, current_index, high, low
+            )
+
+    # Detect retest signal
+    retest_signal_schema = None
+    if high is not None and low is not None and close is not None and current_price > 0:
+        retest_result = detect_retest(
+            ob=ob,
+            current_price=current_price,
+            current_volume=current_volume,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume,
+            volumatic_score=volumatic_score,
+        )
+        if retest_result.retest_active:
+            retest_signal_schema = RetestSignalSchema(
+                retest_active=True,
+                direction=retest_result.direction,
+                distance_pct=retest_result.distance_pct,
+                volume_confirm=retest_result.volume_confirm,
+                entry_price=retest_result.entry_price,
+                ob_strength=retest_result.ob_strength,
+                signal_type=retest_result.signal_type,
+            )
 
     return OrderBlockSchema(
         index=ob.index,
@@ -91,6 +177,11 @@ def _ob_to_schema(ob: OrderBlock) -> OrderBlockSchema:
         fvg=fvg_schema,
         volume_strength=ob.volume_strength.value,
         volume_ratio=round(ob.volume_ratio, 2),
+        age_candles=age_candles,
+        age_status=age_status,
+        fvg_fresh=fvg_fresh,
+        volumatic_score=volumatic_score,
+        retest_signal=retest_signal_schema,
     )
 
 
@@ -130,6 +221,7 @@ def analyze_at_bar(data: OHLCVData, bar_index: int, filter_weak: bool = False) -
     volume = data.volume[:end] if data.volume is not None else None
 
     current_price = float(close[-1])
+    current_volume = float(volume[-1]) if volume is not None and len(volume) > 0 else 0.0
 
     # Detect order block with volume analysis
     ob, filtered_weak_count = detect_orderblock(
@@ -161,6 +253,40 @@ def analyze_at_bar(data: OHLCVData, bar_index: int, filter_weak: bool = False) -
         details=confluence_result.details,
     )
 
+    # Calculate Williams %R signal
+    williams_r_signal = None
+    if len(high) >= 14:
+        wr_values = calculate_williams_r(high, low, close, 14)
+        wr_signal = get_wr_signal(wr_values)
+        ob_direction = ob.direction.value if ob else None
+        ob_bonus = 0
+        if ob_direction:
+            from engine.indicators.williams_r import calculate_wr_bonus
+            ob_bonus = calculate_wr_bonus(wr_signal, ob_direction)
+
+        # Build summary
+        summary_parts = []
+        zone_name = wr_signal.zone.value
+        if "extreme" in zone_name:
+            summary_parts.append(zone_name.upper().replace("_", " "))
+        elif zone_name in ("overbought", "oversold"):
+            summary_parts.append(zone_name.upper())
+        if wr_signal.divergence:
+            summary_parts.append(f"{wr_signal.divergence.upper()} DIV")
+        if wr_signal.cross_direction:
+            summary_parts.append(f"Cross {wr_signal.cross_direction.upper()}")
+
+        williams_r_signal = WilliamsRSignal(
+            value=round(wr_signal.value, 2),
+            zone=wr_signal.zone.value,
+            signal=wr_signal.signal,
+            strength=round(wr_signal.strength, 2),
+            divergence=wr_signal.divergence,
+            cross_direction=wr_signal.cross_direction,
+            ob_bonus=ob_bonus,
+            summary=" | ".join(summary_parts) if summary_parts else "Neutral",
+        )
+
     if ob is None:
         return AnalyzeResponse(
             bar_index=bar_index,
@@ -176,12 +302,38 @@ def analyze_at_bar(data: OHLCVData, bar_index: int, filter_weak: bool = False) -
             confluence=confluence_schema,
             atr=atr_value,
             filtered_weak_obs=filtered_weak_count,
+            signals=[],
+            williams_r=williams_r_signal,
         )
+
+    # Convert OB to schema with retest detection
+    ob_schema = _ob_to_schema(
+        ob=ob,
+        current_index=bar_index,
+        high=high,
+        low=low,
+        close=close,
+        volume=volume,
+        current_price=current_price,
+        current_volume=current_volume,
+    )
+
+    # Collect active signals
+    active_signals: List[ActiveSignalSchema] = []
+    if ob_schema.retest_signal and ob_schema.retest_signal.retest_active:
+        retest = ob_schema.retest_signal
+        active_signals.append(ActiveSignalSchema(
+            type=retest.signal_type,
+            price=retest.entry_price,
+            ob_strength=retest.ob_strength,
+            volume_confirm=retest.volume_confirm,
+            direction=retest.direction,
+        ))
 
     return AnalyzeResponse(
         bar_index=bar_index,
         current_price=current_price,
-        current_valid_ob=_ob_to_schema(ob),
+        current_valid_ob=ob_schema,
         fvgs=fvg_schemas,
         validation_details=ValidationDetails(
             has_displacement=True,
@@ -192,6 +344,8 @@ def analyze_at_bar(data: OHLCVData, bar_index: int, filter_weak: bool = False) -
         confluence=confluence_schema,
         atr=atr_value,
         filtered_weak_obs=filtered_weak_count,
+        signals=active_signals,
+        williams_r=williams_r_signal,
     )
 
 
@@ -483,28 +637,75 @@ def screen_rsi(
 def get_ohlcv(
     symbol: str = Query(..., description="Symbol name"),
     market: str = Query("KR", description="Market: KR or US"),
-    tf: str = Query("1D", description="Timeframe"),
+    tf: str = Query("1D", description="Timeframe: 1m, 5m, 15m, 1h, 1D, 1W, 1M"),
+    refresh: bool = Query(False, description="Force refresh from yfinance"),
+    limit: int = Query(0, description="Max bars to return (0=auto based on timeframe)"),
 ) -> OHLCVResponse:
     """
-    Get OHLCV data with EMA indicators for charting.
+    Get OHLCV data with indicators for charting.
 
-    Returns bars array with dates and EMA20/EMA200 values.
+    Supports all timeframes: 1m, 5m, 15m, 1h, 1D, 1W, 1M
+    Data is automatically fetched from yfinance if not cached.
+
+    Returns bars array with dates and indicator values.
     """
     market = market.upper()
     if market not in ("KR", "US"):
         raise HTTPException(status_code=400, detail="Market must be KR or US")
 
     try:
-        data_dir = f"data/{market.lower()}"
-        data = load_csv(symbol, tf, data_dir=data_dir)
+        # Use load_with_refresh for dynamic data fetching
+        data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=refresh)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+    # Apply default limits based on timeframe to prevent browser crashes
+    default_limits = {
+        "1m": 500,   # ~1 day of trading
+        "5m": 500,   # ~2 days
+        "15m": 500,  # ~5 days
+        "30m": 500,  # ~10 days
+        "1h": 500,   # ~3 weeks
+        "1H": 500,
+        "4h": 500,   # ~3 months
+        "4H": 500,
+        "1D": 1500,  # ~6 years
+        "1d": 1500,
+        "1W": 0,     # No limit for weekly
+        "1w": 0,
+        "1M": 0,     # No limit for monthly
+        "1mo": 0,
+    }
+
+    max_bars = limit if limit > 0 else default_limits.get(tf, 1000)
+
+    # Slice data to most recent bars if limit applies
+    total_bars = len(data.close)
+    if max_bars > 0 and total_bars > max_bars:
+        start_idx = total_bars - max_bars
+        data.timestamps = data.timestamps[start_idx:]
+        data.open = data.open[start_idx:]
+        data.high = data.high[start_idx:]
+        data.low = data.low[start_idx:]
+        data.close = data.close[start_idx:]
+        data.volume = data.volume[start_idx:]
+
     # Build bars list
+    # For intraday timeframes, convert to Unix timestamp (lightweight-charts requirement)
+    is_intraday = tf in ("1m", "5m", "15m", "30m", "1h", "1H", "4h", "4H")
     bars = []
     for i in range(len(data.close)):
+        time_val = data.timestamps[i]
+        # Convert intraday datetime strings to Unix timestamp
+        if is_intraday and " " in time_val:
+            from datetime import datetime
+            try:
+                dt = datetime.strptime(time_val, "%Y-%m-%d %H:%M:%S")
+                time_val = int(dt.timestamp())
+            except ValueError:
+                pass  # Keep original if parsing fails
         bars.append(OHLCVBar(
-            time=data.timestamps[i],
+            time=time_val,
             open=float(data.open[i]),
             high=float(data.high[i]),
             low=float(data.low[i]),
@@ -522,13 +723,86 @@ def get_ohlcv(
     # Calculate MACD
     macd_line_values, macd_signal_values, macd_histogram_values = macd(data.close, 12, 26, 9)
 
-    # Convert to list, replacing NaN with 0 for JSON
-    ema20_list = [float(v) if not np.isnan(v) else 0 for v in ema20_values]
-    ema200_list = [float(v) if not np.isnan(v) else 0 for v in ema200_values]
-    rsi_list = [float(v) if not np.isnan(v) else 0 for v in rsi_values]
+    # Stochastic calculation function with full parameters
+    def stochastic(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+                   fastk_period: int, slowk_period: int, slowd_period: int) -> tuple:
+        """
+        Calculate Stochastic Oscillator with smoothing.
+
+        Args:
+            fastk_period: %K lookback period (e.g., 20, 10, 5)
+            slowk_period: %K smoothing period (e.g., 12, 6, 3)
+            slowd_period: %D smoothing period (e.g., 12, 6, 3)
+
+        Returns:
+            (slow_k, slow_d) arrays
+        """
+        n = len(close)
+
+        # Fast %K (raw stochastic)
+        fast_k = np.full(n, np.nan)
+        for i in range(fastk_period - 1, n):
+            period_high = np.max(high[i - fastk_period + 1:i + 1])
+            period_low = np.min(low[i - fastk_period + 1:i + 1])
+            if period_high != period_low:
+                fast_k[i] = 100 * (close[i] - period_low) / (period_high - period_low)
+            else:
+                fast_k[i] = 50
+
+        # Slow %K = SMA of Fast %K
+        slow_k = np.full(n, np.nan)
+        for i in range(fastk_period - 1 + slowk_period - 1, n):
+            window = fast_k[i - slowk_period + 1:i + 1]
+            valid = window[~np.isnan(window)]
+            if len(valid) == slowk_period:
+                slow_k[i] = np.mean(valid)
+
+        # Slow %D = SMA of Slow %K
+        slow_d = np.full(n, np.nan)
+        for i in range(fastk_period - 1 + slowk_period - 1 + slowd_period - 1, n):
+            window = slow_k[i - slowd_period + 1:i + 1]
+            valid = window[~np.isnan(window)]
+            if len(valid) == slowd_period:
+                slow_d[i] = np.mean(valid)
+
+        return slow_k, slow_d
+
+    # Calculate 3 Stochastic indicators
+    # Stoch Slow (20, 12, 12) - Long-term trend
+    stoch_slow_k, stoch_slow_d = stochastic(data.high, data.low, data.close, 20, 12, 12)
+    # Stoch Medium (10, 6, 6) - Medium-term trend
+    stoch_med_k, stoch_med_d = stochastic(data.high, data.low, data.close, 10, 6, 6)
+    # Stoch Fast (5, 3, 3) - Short-term signals
+    stoch_fast_k, stoch_fast_d = stochastic(data.high, data.low, data.close, 5, 3, 3)
+
+    # Calculate Signal(9) lines - SMA of indicator values
+    def sma(values: np.ndarray, period: int) -> np.ndarray:
+        """Calculate Simple Moving Average."""
+        result = np.full(len(values), np.nan)
+        for i in range(period - 1, len(values)):
+            window = values[i - period + 1:i + 1]
+            valid = window[~np.isnan(window)]
+            if len(valid) >= period // 2:  # Require at least half valid values
+                result[i] = np.mean(valid)
+        return result
+
+    rsi_signal_values = sma(rsi_values, 9)
+
+    # Convert to list, replacing NaN with None for EMAs (so frontend skips them)
+    ema20_list = [float(v) if not np.isnan(v) else None for v in ema20_values]
+    ema200_list = [float(v) if not np.isnan(v) else None for v in ema200_values]
+    rsi_list = [float(v) if not np.isnan(v) else 50 for v in rsi_values]
+    rsi_signal_list = [float(v) if not np.isnan(v) else 50 for v in rsi_signal_values]
     macd_line_list = [float(v) if not np.isnan(v) else 0 for v in macd_line_values]
     macd_signal_list = [float(v) if not np.isnan(v) else 0 for v in macd_signal_values]
     macd_histogram_list = [float(v) if not np.isnan(v) else 0 for v in macd_histogram_values]
+    # 3 Stochastics
+    stoch_slow_k_list = [float(v) if not np.isnan(v) else 50 for v in stoch_slow_k]
+    stoch_slow_d_list = [float(v) if not np.isnan(v) else 50 for v in stoch_slow_d]
+    stoch_med_k_list = [float(v) if not np.isnan(v) else 50 for v in stoch_med_k]
+    stoch_med_d_list = [float(v) if not np.isnan(v) else 50 for v in stoch_med_d]
+    stoch_fast_k_list = [float(v) if not np.isnan(v) else 50 for v in stoch_fast_k]
+    stoch_fast_d_list = [float(v) if not np.isnan(v) else 50 for v in stoch_fast_d]
 
     return OHLCVResponse(
         symbol=symbol,
@@ -538,9 +812,16 @@ def get_ohlcv(
         ema20=ema20_list,
         ema200=ema200_list,
         rsi=rsi_list,
+        rsi_signal=rsi_signal_list,
         macd_line=macd_line_list,
         macd_signal=macd_signal_list,
         macd_histogram=macd_histogram_list,
+        stoch_slow_k=stoch_slow_k_list,
+        stoch_slow_d=stoch_slow_d_list,
+        stoch_med_k=stoch_med_k_list,
+        stoch_med_d=stoch_med_d_list,
+        stoch_fast_k=stoch_fast_k_list,
+        stoch_fast_d=stoch_fast_d_list,
     )
 
 
@@ -970,3 +1251,595 @@ def get_volume_profile(
         value_area_volume=result.value_area_volume,
         histogram=histogram_bins,
     )
+
+
+# --- Strategy Backtest endpoint ---
+
+@app.get("/strategy/backtest", response_model=VolumaticBacktestResponse)
+def strategy_backtest(
+    symbol: str = Query(..., description="Symbol name"),
+    market: str = Query("KR", description="Market: KR or US"),
+    tf: str = Query("1D", description="Timeframe"),
+    lookback: int = Query(1000, description="Number of bars to backtest"),
+) -> VolumaticBacktestResponse:
+    """
+    Backtest the Volumatic FVG Strategy on historical data.
+
+    Returns backtest metrics including win rate, profit factor, and signals.
+    """
+    market = market.upper()
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    try:
+        data_dir = f"data/{market.lower()}"
+        data = load_csv(symbol, tf, data_dir=data_dir)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Limit to lookback period
+    total_bars = len(data.close)
+    if total_bars < 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough data for backtest. Need at least 100 bars, got {total_bars}"
+        )
+
+    start_idx = max(0, total_bars - lookback)
+    open_arr = data.open[start_idx:]
+    high_arr = data.high[start_idx:]
+    low_arr = data.low[start_idx:]
+    close_arr = data.close[start_idx:]
+    volume_arr = data.volume[start_idx:] if data.volume is not None else None
+
+    # Run backtest
+    result = backtest_volumatic_strategy(
+        open_arr, high_arr, low_arr, close_arr, volume_arr
+    )
+
+    # Convert signals to schema
+    signal_schemas = [
+        VolumaticSignalSchema(
+            signal_type=sig.signal_type,
+            bar_index=sig.bar_index,
+            entry_price=sig.entry_price,
+            stop_loss=sig.stop_loss,
+            take_profit=sig.take_profit,
+            risk_reward=sig.risk_reward,
+            ob_index=sig.ob_index,
+            fvg_index=sig.fvg_index,
+            volumatic_score=sig.volumatic_score,
+            rsi_value=sig.rsi_value,
+            reason=sig.reason,
+        )
+        for sig in result.signals
+    ]
+
+    return VolumaticBacktestResponse(
+        symbol=symbol,
+        market=market,
+        timeframe=tf,
+        total_trades=result.total_trades,
+        wins=result.wins,
+        losses=result.losses,
+        win_rate=round(result.win_rate, 2),
+        profit_factor=round(result.profit_factor, 2),
+        total_profit_r=round(result.total_profit_r, 2),
+        avg_win_r=round(result.avg_win_r, 2),
+        avg_loss_r=round(result.avg_loss_r, 2),
+        max_drawdown_r=round(result.max_drawdown_r, 2),
+        sharpe_ratio=round(result.sharpe_ratio, 2),
+        signals=signal_schemas,
+        equity_curve=result.equity_curve,
+    )
+
+
+# --- MTF (Multi-Timeframe) Analysis endpoint ---
+
+@app.get("/mtf/analyze", response_model=MTFAnalyzeResponse)
+def mtf_analyze(
+    symbol: str = Query(..., description="Symbol name"),
+    market: str = Query("KR", description="Market: KR or US"),
+    ltf: str = Query("1H", description="Lower timeframe (chart TF)"),
+    htf: str = Query("", description="Higher timeframe (auto if empty)"),
+    lookback: int = Query(20, description="HTF bars to analyze"),
+    fresh_only: bool = Query(True, description="Only return unmitigated zones"),
+) -> MTFAnalyzeResponse:
+    """
+    Multi-Timeframe Order Block & FVG Analysis.
+
+    Detects HTF (Higher Timeframe) OBs and FVGs and projects them to LTF chart.
+    Use this to see where important HTF zones appear on your LTF chart.
+
+    Example: View 4H OBs on a 1H chart to find high-probability entry zones.
+    """
+    market = market.upper()
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    try:
+        data_dir = f"data/{market.lower()}"
+        data = load_csv(symbol, ltf, data_dir=data_dir)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if len(data.close) < 50:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough data for MTF analysis. Need at least 50 bars, got {len(data.close)}"
+        )
+
+    # Auto-select HTF if not provided
+    actual_htf = htf if htf else get_htf_for_ltf(ltf)
+
+    # Run MTF analysis
+    mtf_result = analyze_mtf(
+        open_=data.open,
+        high=data.high,
+        low=data.low,
+        close=data.close,
+        volume=data.volume,
+        ltf=ltf,
+        htf=actual_htf,
+        lookback=lookback,
+        fresh_only=fresh_only,
+    )
+
+    # Project to LTF coordinates
+    projected = project_htf_zones_to_ltf(mtf_result, data.close)
+
+    # Convert to schema
+    htf_ob_schemas = [
+        HTFOrderBlockSchema(
+            htf_index=ob["htf_index"],
+            direction=ob["direction"],
+            zone_top=ob["zone_top"],
+            zone_bottom=ob["zone_bottom"],
+            htf_timeframe=ob["htf_timeframe"],
+            ltf_start=ob["ltf_start"],
+            ltf_end=ob["ltf_end"],
+            volume_strength=ob["volume_strength"],
+            displacement_pct=ob["displacement_pct"],
+            distance_from_price_pct=ob["distance_from_price_pct"],
+            price_in_zone=ob["price_in_zone"],
+        )
+        for ob in projected["htf_obs"]
+    ]
+
+    htf_fvg_schemas = [
+        HTFFVGSchema(
+            htf_index=fvg["htf_index"],
+            direction=fvg["direction"],
+            gap_high=fvg["gap_high"],
+            gap_low=fvg["gap_low"],
+            htf_timeframe=fvg["htf_timeframe"],
+            ltf_start=fvg["ltf_start"],
+            ltf_end=fvg["ltf_end"],
+            is_fresh=fvg["is_fresh"],
+            fill_percentage=fvg["fill_percentage"],
+            distance_from_price_pct=fvg["distance_from_price_pct"],
+            price_in_gap=fvg["price_in_gap"],
+        )
+        for fvg in projected["htf_fvgs"]
+    ]
+
+    # Calculate summary stats
+    bull_obs = [ob for ob in htf_ob_schemas if ob.direction == "buy"]
+    bear_obs = [ob for ob in htf_ob_schemas if ob.direction == "sell"]
+    bull_fvgs = [fvg for fvg in htf_fvg_schemas if fvg.direction == "buy"]
+    bear_fvgs = [fvg for fvg in htf_fvg_schemas if fvg.direction == "sell"]
+
+    # Find nearest zones
+    nearest_bull = None
+    nearest_bear = None
+
+    bull_zones = [(ob.distance_from_price_pct, ob.zone_bottom) for ob in bull_obs] + \
+                 [(fvg.distance_from_price_pct, fvg.gap_low) for fvg in bull_fvgs]
+    bear_zones = [(ob.distance_from_price_pct, ob.zone_top) for ob in bear_obs] + \
+                 [(fvg.distance_from_price_pct, fvg.gap_high) for fvg in bear_fvgs]
+
+    if bull_zones:
+        nearest_bull = min(z[0] for z in bull_zones)
+    if bear_zones:
+        nearest_bear = min(z[0] for z in bear_zones)
+
+    return MTFAnalyzeResponse(
+        symbol=symbol,
+        market=market,
+        ltf_timeframe=ltf,
+        htf_timeframe=actual_htf,
+        current_price=projected["current_price"],
+        htf_bar_count=projected["htf_bar_count"],
+        ltf_bar_count=len(data.close),
+        htf_obs=htf_ob_schemas,
+        htf_fvgs=htf_fvg_schemas,
+        bull_obs_count=len(bull_obs),
+        bear_obs_count=len(bear_obs),
+        bull_fvgs_count=len(bull_fvgs),
+        bear_fvgs_count=len(bear_fvgs),
+        nearest_bull_zone=nearest_bull,
+        nearest_bear_zone=nearest_bear,
+    )
+
+
+# --- Dynamic Indicators endpoint ---
+
+@app.get("/indicators/dynamic", response_model=DynamicIndicatorsResponse)
+def get_dynamic_indicators(
+    symbol: str = Query(..., description="Symbol name"),
+    market: str = Query("KR", description="Market: KR or US"),
+    tf: str = Query("1D", description="Timeframe"),
+    selected: str = Query("wr", description="Comma-separated indicator list: wr,rsi"),
+) -> DynamicIndicatorsResponse:
+    """
+    Get dynamic indicators with signal lines for subchart display.
+
+    Available indicators:
+    - wr: Williams %R (14) with Signal(9) line
+    - rsi: RSI (14) with Fibonacci Signal(9) line
+
+    Returns crossover signals when indicator crosses its signal line.
+    """
+    market = market.upper()
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    try:
+        data_dir = f"data/{market.lower()}"
+        data = load_csv(symbol, tf, data_dir=data_dir)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if len(data.close) < 20:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough data for indicators. Need at least 20 bars, got {len(data.close)}"
+        )
+
+    # Parse selected indicators
+    selected_list = [s.strip().lower() for s in selected.split(",")]
+
+    # Create indicator manager
+    manager = DynamicIndicatorManager(
+        open_=data.open,
+        high=data.high,
+        low=data.low,
+        close=data.close,
+        volume=data.volume,
+    )
+
+    # Get indicators
+    indicators = manager.get_indicators(selected_list)
+
+    # Build response
+    wr_data = None
+    rsi_data = None
+
+    if "wr" in indicators:
+        wr = indicators["wr"]
+        wr_data = WilliamsRIndicator(
+            name=wr["name"],
+            label=wr["label"],
+            wr=wr["wr"],
+            wr_signal=wr["wr_signal"],
+            oversold=wr["oversold"],
+            overbought=wr["overbought"],
+            min_value=wr["min_value"],
+            max_value=wr["max_value"],
+            current_value=wr["current_value"],
+            current_signal=wr["current_signal"],
+            crossover=wr["crossover"],
+            colors=IndicatorColors(**wr["colors"]),
+        )
+
+    if "rsi" in indicators:
+        rsi = indicators["rsi"]
+        rsi_data = RSIIndicator(
+            name=rsi["name"],
+            label=rsi["label"],
+            rsi=rsi["rsi"],
+            rsi_signal=rsi["rsi_signal"],
+            oversold=rsi["oversold"],
+            overbought=rsi["overbought"],
+            min_value=rsi["min_value"],
+            max_value=rsi["max_value"],
+            current_value=rsi["current_value"],
+            current_signal=rsi["current_signal"],
+            crossover=rsi["crossover"],
+            colors=IndicatorColors(**rsi["colors"]),
+        )
+
+    return DynamicIndicatorsResponse(
+        symbol=symbol,
+        market=market,
+        timeframe=tf,
+        bar_count=len(data.close),
+        wr=wr_data,
+        rsi=rsi_data,
+    )
+
+
+# --- Backtest endpoint ---
+
+@app.get("/backtest", response_model=BacktestResponse)
+def backtest(
+    symbol: str,
+    market: str = "KR",
+    tf: str = "1D",
+    days: int = 90,
+    min_score: int = 85,
+    risk_reward: float = 3.0,
+) -> BacktestResponse:
+    """
+    Run complete backtest with all strategy features.
+
+    Integrates:
+    - Order Block detection
+    - FVG detection
+    - Confluence scoring (OB + FVG overlap)
+    - Williams %R signals
+    - RSI confirmation
+    - Volume confirmation
+
+    Market-specific costs:
+    - KR: 0.015% commission, 0.1% slippage, 100M KRW initial
+    - US: 0% commission, 0.05% slippage, $100K USD initial
+    """
+    # Load price data using existing function
+    data = _get_ohlcv_for_symbol(symbol, market, tf)
+    if data is None or len(data.close) < 100:
+        raise HTTPException(status_code=404, detail="Not enough data for backtest (need 100+ bars)")
+
+    # Convert to numpy arrays
+    times = list(data.timestamps)
+    open_arr = np.array(data.open)
+    high = np.array(data.high)
+    low = np.array(data.low)
+    close = np.array(data.close)
+    volume = np.array(data.volume)
+
+    # Run backtest
+    result = run_backtest(
+        times=times,
+        open_arr=open_arr,
+        high=high,
+        low=low,
+        close=close,
+        volume=volume,
+        symbol=symbol,
+        market=market,
+        timeframe=tf,
+        min_score=min_score,
+        risk_reward=risk_reward,
+    )
+
+    # Convert to response schema
+    metrics = BacktestMetricsSchema(
+        total_trades=result.metrics.total_trades,
+        wins=result.metrics.wins,
+        losses=result.metrics.losses,
+        win_rate=result.metrics.win_rate,
+        profit_factor=result.metrics.profit_factor,
+        sharpe_ratio=result.metrics.sharpe_ratio,
+        total_return=result.metrics.total_return,
+        max_drawdown=result.metrics.max_drawdown,
+        avg_win=result.metrics.avg_win,
+        avg_loss=result.metrics.avg_loss,
+        max_consecutive_wins=result.metrics.max_consecutive_wins,
+        max_consecutive_losses=result.metrics.max_consecutive_losses,
+        avg_hold_bars=result.metrics.avg_hold_bars,
+    )
+
+    equity_curve = [
+        EquityPointSchema(date=ep.date, equity=ep.equity, drawdown=ep.drawdown)
+        for ep in result.equity_curve
+    ]
+
+    trades = [
+        BacktestTradeSchema(
+            date=t.date,
+            direction=t.direction,
+            entry_price=t.entry_price,
+            exit_price=t.exit_price,
+            stop_loss=t.stop_loss,
+            take_profit=t.take_profit,
+            pnl_percent=t.pnl_percent,
+            pnl_amount=t.pnl_amount,
+            result=t.result,
+            hold_bars=t.hold_bars,
+            confluence_score=t.confluence_score,
+            williams_r=t.williams_r,
+            rsi=t.rsi,
+            volume_confirm=t.volume_confirm,
+        )
+        for t in result.trades
+    ]
+
+    return BacktestResponse(
+        symbol=result.symbol,
+        market=result.market,
+        timeframe=result.timeframe,
+        period=result.period,
+        initial_capital=result.initial_capital,
+        final_capital=result.final_capital,
+        currency=result.currency,
+        metrics=metrics,
+        equity_curve=equity_curve,
+        trades=trades,
+    )
+
+
+# --- Alert endpoints ---
+
+from engine.alerts.telegram_bot import (
+    get_bot,
+    load_settings,
+    save_settings,
+    AlertSettings,
+)
+import asyncio
+
+
+@app.post("/alerts/test", response_model=AlertTestResponse)
+async def test_alert() -> AlertTestResponse:
+    """Send a test alert to verify Telegram connection."""
+    bot = get_bot()
+    success = await bot.send_test_alert()
+
+    if success:
+        return AlertTestResponse(
+            success=True,
+            message="테스트 알림이 성공적으로 전송되었습니다!"
+        )
+    else:
+        return AlertTestResponse(
+            success=False,
+            message="알림 전송 실패. 봇 토큰과 채팅 ID를 확인하세요."
+        )
+
+
+@app.get("/alerts/settings", response_model=AlertSettingsResponse)
+def get_alert_settings() -> AlertSettingsResponse:
+    """Get current alert settings."""
+    bot = get_bot()
+    settings = bot.reload_settings()
+
+    # Test connection by checking if we can reach Telegram API
+    connected = True  # Assume connected; actual check would be async
+
+    return AlertSettingsResponse(
+        settings=AlertSettingsSchema(
+            enabled=settings.enabled,
+            min_confluence=settings.min_confluence,
+            alert_types=settings.alert_types,
+            cooldown_minutes=settings.cooldown_minutes,
+        ),
+        connected=connected,
+    )
+
+
+@app.post("/alerts/settings", response_model=AlertSettingsResponse)
+def update_alert_settings(
+    settings: AlertSettingsSchema,
+) -> AlertSettingsResponse:
+    """Update alert settings."""
+    # Validate min_confluence
+    if not 50 <= settings.min_confluence <= 100:
+        raise HTTPException(
+            status_code=400,
+            detail="min_confluence must be between 50 and 100"
+        )
+
+    # Validate cooldown_minutes
+    if not 1 <= settings.cooldown_minutes <= 60:
+        raise HTTPException(
+            status_code=400,
+            detail="cooldown_minutes must be between 1 and 60"
+        )
+
+    # Save settings
+    new_settings = AlertSettings(
+        enabled=settings.enabled,
+        min_confluence=settings.min_confluence,
+        alert_types=settings.alert_types,
+        cooldown_minutes=settings.cooldown_minutes,
+    )
+    save_settings(new_settings)
+
+    # Reload bot settings
+    bot = get_bot()
+    bot.reload_settings()
+
+    return AlertSettingsResponse(
+        settings=settings,
+        connected=True,
+    )
+
+
+@app.post("/alerts/scan")
+async def scan_for_alerts(
+    market: str = Query("KR", description="Market to scan: KR or US"),
+) -> dict:
+    """
+    Manually trigger alert scan for a market.
+    Checks all watchlist symbols for retest signals.
+    """
+    market = market.upper()
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    bot = get_bot()
+    if not bot.settings.enabled:
+        return {"scanned": 0, "alerts_sent": 0, "message": "Alerts are disabled"}
+
+    # Load watchlist
+    watchlist_path = Path(f"data/{market.lower()}_watchlist.txt")
+    if not watchlist_path.exists():
+        return {"scanned": 0, "alerts_sent": 0, "message": "Watchlist not found"}
+
+    symbols = [
+        line.strip()
+        for line in watchlist_path.read_text().splitlines()
+        if line.strip()
+    ]
+
+    alerts_sent = 0
+    scanned = 0
+
+    for symbol in symbols:
+        try:
+            # Load data
+            data_dir = f"data/{market.lower()}"
+            data = load_csv(symbol, "1D", data_dir=data_dir)
+
+            if len(data.close) < 50:
+                continue
+
+            scanned += 1
+            bar_index = len(data.close) - 1
+            current_price = float(data.close[bar_index])
+
+            # Run analysis
+            analysis = analyze_at_bar(data, bar_index, filter_weak=True)
+
+            # Check for active retest signals
+            if analysis.signals:
+                for signal in analysis.signals:
+                    if signal.type in ("retest_long", "retest_short"):
+                        direction = "bull" if signal.type == "retest_long" else "bear"
+
+                        # Check confluence score
+                        score = signal.ob_strength
+                        if score >= bot.settings.min_confluence:
+                            # Get OB zone info
+                            zone_top = current_price * 1.02  # Placeholder
+                            zone_bottom = current_price * 0.98
+
+                            if analysis.current_valid_ob:
+                                zone_top = analysis.current_valid_ob.zone_top
+                                zone_bottom = analysis.current_valid_ob.zone_bottom
+
+                            # Send alert
+                            success = await bot.send_retest_alert(
+                                symbol=symbol,
+                                market=market,
+                                direction=direction,
+                                zone_top=zone_top,
+                                zone_bottom=zone_bottom,
+                                score=score,
+                                price=current_price,
+                                volume_confirm=signal.volume_confirm,
+                            )
+
+                            if success:
+                                alerts_sent += 1
+
+        except Exception as e:
+            print(f"Error scanning {symbol}: {e}")
+            continue
+
+    return {
+        "scanned": scanned,
+        "alerts_sent": alerts_sent,
+        "message": f"Scanned {scanned} symbols, sent {alerts_sent} alerts",
+    }

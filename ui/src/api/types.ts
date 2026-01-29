@@ -3,7 +3,7 @@
  */
 
 export interface OHLCVBar {
-  time: string;  // YYYY-MM-DD
+  time: string | number;  // YYYY-MM-DD for daily, Unix timestamp for intraday
   open: number;
   high: number;
   low: number;
@@ -16,12 +16,20 @@ export interface OHLCVResponse {
   market: string;
   timeframe: string;
   bars: OHLCVBar[];
-  ema20: number[];
-  ema200: number[];
+  ema20: (number | null)[];  // null for bars before EMA converges
+  ema200: (number | null)[];  // null for bars before EMA converges
   rsi: number[];
+  rsi_signal: number[];  // RSI Signal(9) - SMA of RSI
   macd_line: number[];
   macd_signal: number[];
   macd_histogram: number[];
+  // 3 Stochastic indicators with different timeframes
+  stoch_slow_k: number[];  // Stoch Slow (20,12,12) %K - Long-term
+  stoch_slow_d: number[];  // Stoch Slow (20,12,12) %D
+  stoch_med_k: number[];   // Stoch Medium (10,6,6) %K - Medium-term
+  stoch_med_d: number[];   // Stoch Medium (10,6,6) %D
+  stoch_fast_k: number[];  // Stoch Fast (5,3,3) %K - Short-term
+  stoch_fast_d: number[];  // Stoch Fast (5,3,3) %D
 }
 
 // Order Block types
@@ -30,6 +38,16 @@ export interface FVG {
   direction: string;
   gap_high: number;
   gap_low: number;
+}
+
+export interface RetestSignal {
+  retest_active: boolean;
+  direction: 'bull' | 'bear' | '';
+  distance_pct: number;
+  volume_confirm: number;
+  entry_price: number;
+  ob_strength: number;
+  signal_type: 'retest_long' | 'retest_short' | '';
 }
 
 export interface OrderBlock {
@@ -43,6 +61,21 @@ export interface OrderBlock {
   // Volume analysis
   volume_strength: 'strong' | 'normal' | 'weak';
   volume_ratio: number;  // displacement_volume / avg_volume
+  // Volumatic strategy fields
+  age_candles: number;
+  age_status: 'fresh' | 'mature' | 'aged';
+  fvg_fresh: boolean;
+  volumatic_score: number;  // 0-100
+  // Retest signal
+  retest_signal: RetestSignal | null;
+}
+
+export interface ActiveSignal {
+  type: 'retest_long' | 'retest_short';
+  price: number;
+  ob_strength: number;
+  volume_confirm: number;
+  direction: 'bull' | 'bear';
 }
 
 export interface ConfluenceData {
@@ -54,6 +87,25 @@ export interface ConfluenceData {
   proximity_bonus: number;
   reason: string;
   details: Record<string, unknown>;
+}
+
+// Williams %R types
+export type WilliamsRZone =
+  | 'extreme_overbought'
+  | 'overbought'
+  | 'neutral'
+  | 'oversold'
+  | 'extreme_oversold';
+
+export interface WilliamsRSignal {
+  value: number;           // Current %R value (-100 to 0)
+  zone: WilliamsRZone;     // Zone classification
+  signal: 'buy' | 'sell' | 'neutral';
+  strength: number;        // 0-10 scale
+  divergence: 'bullish' | 'bearish' | null;
+  cross_direction: 'up' | 'down' | null;  // Crossing -50 level
+  ob_bonus: number;        // Bonus points for OB confluence (0-25)
+  summary: string;         // Human-readable summary
 }
 
 export interface AnalyzeResponse {
@@ -70,6 +122,8 @@ export interface AnalyzeResponse {
   confluence: ConfluenceData | null;
   atr: number | null;
   filtered_weak_obs: number;  // Count of weak OBs filtered out
+  signals: ActiveSignal[];  // Active trading signals (e.g., retest)
+  williams_r: WilliamsRSignal | null;  // Williams %R signal with OB confluence
 }
 
 // Portfolio types
@@ -174,4 +228,213 @@ export interface VolumeProfileResponse {
   total_volume: number;
   value_area_volume: number;
   histogram: VolumeProfileBin[];
+}
+
+// Volumatic Strategy types
+
+export interface VolumaticSignal {
+  signal_type: 'long' | 'short';
+  bar_index: number;
+  entry_price: number;
+  stop_loss: number;
+  take_profit: number;
+  risk_reward: number;
+  ob_index: number;
+  fvg_index: number | null;
+  volumatic_score: number;
+  rsi_value: number;
+  reason: string;
+}
+
+export interface VolumaticBacktestResponse {
+  symbol: string;
+  market: string;
+  timeframe: string;
+  total_trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number;       // Percentage
+  profit_factor: number;
+  total_profit_r: number; // Total profit in R multiples
+  avg_win_r: number;
+  avg_loss_r: number;
+  max_drawdown_r: number;
+  sharpe_ratio: number;
+  signals: VolumaticSignal[];
+  equity_curve: number[];
+}
+
+// MTF (Multi-Timeframe) types
+
+export interface HTFOrderBlock {
+  htf_index: number;
+  direction: 'buy' | 'sell';
+  zone_top: number;
+  zone_bottom: number;
+  htf_timeframe: string;
+  ltf_start: number;  // LTF bar index where zone starts
+  ltf_end: number;    // LTF bar index where zone ends
+  volume_strength: number;
+  displacement_pct: number;
+  distance_from_price_pct: number;
+  price_in_zone: boolean;
+}
+
+export interface HTFFVG {
+  htf_index: number;
+  direction: 'buy' | 'sell';
+  gap_high: number;
+  gap_low: number;
+  htf_timeframe: string;
+  ltf_start: number;
+  ltf_end: number;
+  is_fresh: boolean;
+  fill_percentage: number;
+  distance_from_price_pct: number;
+  price_in_gap: boolean;
+}
+
+export interface MTFAnalyzeResponse {
+  symbol: string;
+  market: string;
+  ltf_timeframe: string;
+  htf_timeframe: string;
+  current_price: number;
+  htf_bar_count: number;
+  ltf_bar_count: number;
+  htf_obs: HTFOrderBlock[];
+  htf_fvgs: HTFFVG[];
+  bull_obs_count: number;
+  bear_obs_count: number;
+  bull_fvgs_count: number;
+  bear_fvgs_count: number;
+  nearest_bull_zone: number | null;
+  nearest_bear_zone: number | null;
+}
+
+// Dynamic Indicator types
+
+export interface IndicatorColors {
+  main: string;
+  signal: string;
+  oversold: string;
+  overbought: string;
+}
+
+export interface WilliamsRIndicator {
+  name: string;
+  label: string;
+  wr: number[];
+  wr_signal: number[];
+  oversold: number;
+  overbought: number;
+  min_value: number;
+  max_value: number;
+  current_value: number;
+  current_signal: number;
+  crossover: 'bullish' | 'bearish' | null;
+  colors: IndicatorColors;
+}
+
+export interface RSIIndicator {
+  name: string;
+  label: string;
+  rsi: number[];
+  rsi_signal: number[];
+  oversold: number;
+  overbought: number;
+  min_value: number;
+  max_value: number;
+  current_value: number;
+  current_signal: number;
+  crossover: 'bullish' | 'bearish' | null;
+  colors: IndicatorColors;
+}
+
+export interface DynamicIndicatorsResponse {
+  symbol: string;
+  market: string;
+  timeframe: string;
+  bar_count: number;
+  wr: WilliamsRIndicator | null;
+  rsi: RSIIndicator | null;
+}
+
+// Backtest types
+
+export interface BacktestTrade {
+  date: string;
+  direction: string;
+  entry_price: number;
+  exit_price: number;
+  stop_loss: number;
+  take_profit: number;
+  pnl_percent: number;
+  pnl_amount: number;
+  result: string;
+  hold_bars: number;
+  confluence_score: number;
+  williams_r: number;
+  rsi: number;
+  volume_confirm: number;
+}
+
+export interface BacktestMetrics {
+  total_trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  profit_factor: number;
+  sharpe_ratio: number;
+  total_return: number;
+  max_drawdown: number;
+  avg_win: number;
+  avg_loss: number;
+  max_consecutive_wins: number;
+  max_consecutive_losses: number;
+  avg_hold_bars: number;
+}
+
+export interface EquityPoint {
+  date: string;
+  equity: number;
+  drawdown: number;
+}
+
+export interface BacktestResponse {
+  symbol: string;
+  market: string;
+  timeframe: string;
+  period: string;
+  initial_capital: number;
+  final_capital: number;
+  currency: string;
+  metrics: BacktestMetrics;
+  equity_curve: EquityPoint[];
+  trades: BacktestTrade[];
+}
+
+// Alert types
+
+export interface AlertSettings {
+  enabled: boolean;
+  min_confluence: number;
+  alert_types: string[];
+  cooldown_minutes: number;
+}
+
+export interface AlertSettingsResponse {
+  settings: AlertSettings;
+  connected: boolean;
+}
+
+export interface AlertTestResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface AlertScanResponse {
+  scanned: number;
+  alerts_sent: number;
+  message: string;
 }

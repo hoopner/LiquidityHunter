@@ -1,6 +1,6 @@
 """Pydantic schemas for API responses."""
 
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel
 
@@ -11,6 +11,17 @@ class FVGSchema(BaseModel):
     direction: str
     gap_high: float
     gap_low: float
+
+
+class RetestSignalSchema(BaseModel):
+    """Retest signal schema."""
+    retest_active: bool
+    direction: str = ""  # "bull" or "bear"
+    distance_pct: float = 0.0  # Distance from OB mid as percentage
+    volume_confirm: float = 0.0  # Current vol / avg vol ratio
+    entry_price: float = 0.0
+    ob_strength: int = 0  # Volumatic score of the OB
+    signal_type: str = ""  # "retest_long" or "retest_short"
 
 
 class OrderBlockSchema(BaseModel):
@@ -25,6 +36,13 @@ class OrderBlockSchema(BaseModel):
     # Volume analysis
     volume_strength: str = "normal"  # "strong", "normal", "weak"
     volume_ratio: float = 1.0  # displacement_volume / avg_volume
+    # Volumatic strategy fields
+    age_candles: int = 0
+    age_status: str = "fresh"  # "fresh", "mature", "aged"
+    fvg_fresh: bool = False
+    volumatic_score: int = 0
+    # Retest signal
+    retest_signal: Optional[RetestSignalSchema] = None
 
 
 class ValidationDetails(BaseModel):
@@ -46,6 +64,15 @@ class ConfluenceSchema(BaseModel):
     details: dict = {}
 
 
+class ActiveSignalSchema(BaseModel):
+    """Active trading signal schema."""
+    type: str  # "retest_long", "retest_short"
+    price: float
+    ob_strength: int
+    volume_confirm: float
+    direction: str  # "bull", "bear"
+
+
 class AnalyzeResponse(BaseModel):
     """Response schema for /analyze endpoint."""
     bar_index: int
@@ -59,6 +86,10 @@ class AnalyzeResponse(BaseModel):
     atr: Optional[float] = None
     # Volume filtering
     filtered_weak_obs: int = 0  # Count of weak OBs filtered out
+    # Active trading signals
+    signals: List[ActiveSignalSchema] = []  # Active retest signals
+    # Williams %R indicator
+    williams_r: Optional["WilliamsRSignal"] = None
 
 
 class ReplayResponse(BaseModel):
@@ -94,7 +125,7 @@ class ScreenAllResponse(BaseModel):
 
 class OHLCVBar(BaseModel):
     """Single OHLCV bar."""
-    time: str  # ISO date string YYYY-MM-DD
+    time: Union[str, int]  # ISO date string YYYY-MM-DD or Unix timestamp for intraday
     open: float
     high: float
     low: float
@@ -108,12 +139,34 @@ class OHLCVResponse(BaseModel):
     market: str
     timeframe: str
     bars: List[OHLCVBar]
-    ema20: List[float]
-    ema200: List[float]
+    ema20: List[Optional[float]]  # None for initial bars before EMA converges
+    ema200: List[Optional[float]]  # None for initial bars before EMA converges
     rsi: List[float]
+    rsi_signal: List[float] = []  # RSI Signal(9) - SMA of RSI
     macd_line: List[float]
     macd_signal: List[float]
     macd_histogram: List[float]
+    # 3 Stochastic indicators with different timeframes
+    stoch_slow_k: List[float] = []  # Stoch Slow (20,12,12) %K
+    stoch_slow_d: List[float] = []  # Stoch Slow (20,12,12) %D
+    stoch_med_k: List[float] = []   # Stoch Medium (10,6,6) %K
+    stoch_med_d: List[float] = []   # Stoch Medium (10,6,6) %D
+    stoch_fast_k: List[float] = []  # Stoch Fast (5,3,3) %K
+    stoch_fast_d: List[float] = []  # Stoch Fast (5,3,3) %D
+
+
+# --- Williams %R schemas ---
+
+class WilliamsRSignal(BaseModel):
+    """Williams %R signal data."""
+    value: float  # Current %R value (-100 to 0)
+    zone: str  # "extreme_overbought", "overbought", "neutral", "oversold", "extreme_oversold"
+    signal: str  # "buy", "sell", "neutral"
+    strength: float  # 0-10 scale
+    divergence: Optional[str] = None  # "bullish", "bearish"
+    cross_direction: Optional[str] = None  # "up", "down"
+    ob_bonus: int = 0  # Bonus points for OB confluence
+    summary: str = ""
 
 
 # --- Watchlist schemas ---
@@ -295,3 +348,232 @@ class RSIScreenResponse(BaseModel):
     """Response for /screen/rsi endpoint."""
     kr_candidates: List[RSIScreenResult]
     us_candidates: List[RSIScreenResult]
+
+
+# --- Volumatic Strategy schemas ---
+
+class VolumaticSignalSchema(BaseModel):
+    """Single trading signal from Volumatic strategy."""
+    signal_type: str  # "long" or "short"
+    bar_index: int
+    entry_price: float
+    stop_loss: float
+    take_profit: float
+    risk_reward: float
+    ob_index: int
+    fvg_index: Optional[int]
+    volumatic_score: int
+    rsi_value: float
+    reason: str
+
+
+class VolumaticBacktestResponse(BaseModel):
+    """Response for /strategy/backtest endpoint."""
+    symbol: str
+    market: str
+    timeframe: str
+    total_trades: int
+    wins: int
+    losses: int
+    win_rate: float  # Percentage
+    profit_factor: float
+    total_profit_r: float  # Total profit in R multiples
+    avg_win_r: float
+    avg_loss_r: float
+    max_drawdown_r: float
+    sharpe_ratio: float
+    signals: List[VolumaticSignalSchema]
+    equity_curve: List[float]
+
+
+class VolumaticAnalysis(BaseModel):
+    """Volumatic analysis for an OB zone."""
+    volumatic_score: int
+    age_candles: int
+    age_status: str  # "fresh", "mature", "aged"
+    fvg_fresh: bool
+    volume_strength: str
+
+
+# --- MTF (Multi-Timeframe) schemas ---
+
+class HTFOrderBlockSchema(BaseModel):
+    """Higher Timeframe Order Block schema."""
+    htf_index: int
+    direction: str  # "buy" or "sell"
+    zone_top: float
+    zone_bottom: float
+    htf_timeframe: str  # e.g., "4H"
+    ltf_start: int  # LTF bar index where zone starts
+    ltf_end: int  # LTF bar index where zone ends
+    volume_strength: float
+    displacement_pct: float
+    distance_from_price_pct: float
+    price_in_zone: bool
+
+
+class HTFFVGSchema(BaseModel):
+    """Higher Timeframe Fair Value Gap schema."""
+    htf_index: int
+    direction: str  # "buy" or "sell"
+    gap_high: float
+    gap_low: float
+    htf_timeframe: str
+    ltf_start: int
+    ltf_end: int
+    is_fresh: bool
+    fill_percentage: float
+    distance_from_price_pct: float
+    price_in_gap: bool
+
+
+class MTFAnalyzeResponse(BaseModel):
+    """Response for /mtf/analyze endpoint."""
+    symbol: str
+    market: str
+    ltf_timeframe: str
+    htf_timeframe: str
+    current_price: float
+    htf_bar_count: int
+    ltf_bar_count: int
+    htf_obs: List[HTFOrderBlockSchema]
+    htf_fvgs: List[HTFFVGSchema]
+    # Summary
+    bull_obs_count: int
+    bear_obs_count: int
+    bull_fvgs_count: int
+    bear_fvgs_count: int
+    nearest_bull_zone: Optional[float] = None  # Distance % to nearest bull OB/FVG
+    nearest_bear_zone: Optional[float] = None  # Distance % to nearest bear OB/FVG
+
+
+# --- Dynamic Indicator schemas ---
+
+class IndicatorColors(BaseModel):
+    """Color configuration for indicator."""
+    main: str
+    signal: str
+    oversold: str
+    overbought: str
+
+
+class WilliamsRIndicator(BaseModel):
+    """Williams %R indicator with signal line."""
+    name: str = "williams_r"
+    label: str = "Williams %R (14)"
+    wr: List[float]
+    wr_signal: List[float]
+    oversold: float = -80
+    overbought: float = -20
+    min_value: float = -100
+    max_value: float = 0
+    current_value: float
+    current_signal: float
+    crossover: Optional[str] = None  # "bullish", "bearish"
+    colors: IndicatorColors
+
+
+class RSIIndicator(BaseModel):
+    """RSI indicator with Fibonacci signal line."""
+    name: str = "rsi"
+    label: str = "RSI (14)"
+    rsi: List[float]
+    rsi_signal: List[float]
+    oversold: float = 30
+    overbought: float = 70
+    min_value: float = 0
+    max_value: float = 100
+    current_value: float
+    current_signal: float
+    crossover: Optional[str] = None  # "bullish", "bearish"
+    colors: IndicatorColors
+
+
+class DynamicIndicatorsResponse(BaseModel):
+    """Response for /indicators/dynamic endpoint."""
+    symbol: str
+    market: str
+    timeframe: str
+    bar_count: int
+    wr: Optional[WilliamsRIndicator] = None
+    rsi: Optional[RSIIndicator] = None
+
+
+# --- Backtest schemas ---
+
+class BacktestTradeSchema(BaseModel):
+    """Single trade from backtest."""
+    date: str
+    direction: str
+    entry_price: float
+    exit_price: float
+    stop_loss: float
+    take_profit: float
+    pnl_percent: float
+    pnl_amount: float
+    result: str  # "win", "loss", "breakeven"
+    hold_bars: int
+    confluence_score: float
+    williams_r: float
+    rsi: float
+    volume_confirm: float
+
+
+class BacktestMetricsSchema(BaseModel):
+    """Backtest performance metrics."""
+    total_trades: int
+    wins: int
+    losses: int
+    win_rate: float
+    profit_factor: float
+    sharpe_ratio: float
+    total_return: float
+    max_drawdown: float
+    avg_win: float
+    avg_loss: float
+    max_consecutive_wins: int
+    max_consecutive_losses: int
+    avg_hold_bars: float
+
+
+class EquityPointSchema(BaseModel):
+    """Equity curve data point."""
+    date: str
+    equity: float
+    drawdown: float
+
+
+class BacktestResponse(BaseModel):
+    """Response for /backtest endpoint."""
+    symbol: str
+    market: str
+    timeframe: str
+    period: str
+    initial_capital: float
+    final_capital: float
+    currency: str
+    metrics: BacktestMetricsSchema
+    equity_curve: List[EquityPointSchema]
+    trades: List[BacktestTradeSchema]
+
+
+# --- Alert schemas ---
+
+class AlertSettingsSchema(BaseModel):
+    """Alert settings configuration."""
+    enabled: bool = True
+    min_confluence: int = 80
+    alert_types: List[str] = ["retest", "new_ob", "breakout"]
+    cooldown_minutes: int = 15
+
+
+class AlertTestResponse(BaseModel):
+    """Response for alert test."""
+    success: bool
+    message: str
+
+
+class AlertSettingsResponse(BaseModel):
+    """Response for alert settings."""
+    settings: AlertSettingsSchema
+    connected: bool

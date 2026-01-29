@@ -744,20 +744,20 @@ export function MainChart({
       };
     });
 
-    // Convert EMA data to line data (skip zeros/NaN at the beginning)
+    // Convert EMA data to line data (skip null/zero values at the beginning)
     const ema20Data: LineData<Time>[] = data.bars
       .map((bar, i) => ({
         time: bar.time as Time,
         value: data.ema20[i],
       }))
-      .filter((d) => d.value > 0);
+      .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
 
     const ema200Data: LineData<Time>[] = data.bars
       .map((bar, i) => ({
         time: bar.time as Time,
         value: data.ema200[i],
       }))
-      .filter((d) => d.value > 0);
+      .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
 
     candlestickSeriesRef.current.setData(candlestickData);
     ema20SeriesRef.current.setData(ema20Data);
