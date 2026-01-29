@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MainChart, TIMEFRAMES, type Timeframe } from './MainChart';
-import { SubCharts, type ExpandedIndicator } from './SubCharts';
-import { ExpandedIndicatorChart } from './ExpandedIndicatorChart';
+import { SubCharts } from './SubCharts';
 import { fetchWatchlist, fetchPortfolio } from '../../api/client';
 import type { WatchlistItem } from '../../api/types';
+import type { DrawingToolType } from '../../types/drawings';
+import type { ChartType } from '../../utils/DrawingManager';
 
 export type LayoutType = 1 | 2 | 4 | 8;
 
@@ -37,7 +38,43 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
   const [timeframe, setTimeframe] = useState<Timeframe>('1D');
   const [loadedFromWatchlist, setLoadedFromWatchlist] = useState(false);
   const [watchlistSymbols, setWatchlistSymbols] = useState<WatchlistItem[]>([]);
-  const [expandedIndicator, setExpandedIndicator] = useState<ExpandedIndicator>(null);
+
+  // Visible range for timeline sync with subcharts
+  const [visibleRange, setVisibleRange] = useState<{ from: number; to: number } | null>(null);
+  const handleVisibleRangeChange = useCallback((range: { from: number; to: number } | null) => {
+    setVisibleRange(range);
+  }, []);
+
+  // Drawing tool coordination between main chart and subcharts
+  const [drawingToolActive, setDrawingToolActive] = useState<DrawingToolType | null>(null);
+  const [showDrawingTools, setShowDrawingTools] = useState(false);
+  const [activeChartType, setActiveChartType] = useState<ChartType | null>('main');
+
+  // Handle drawing tool changes from MainChart
+  const handleDrawingToolChange = useCallback((tool: DrawingToolType | null, show: boolean) => {
+    setDrawingToolActive(tool);
+    setShowDrawingTools(show);
+    // When drawing tools are toggled, default to main chart active
+    if (show && !tool) {
+      setActiveChartType('main');
+    }
+  }, []);
+
+  // Handle main chart activation for drawing
+  const handleMainChartActivate = useCallback(() => {
+    setActiveChartType('main');
+  }, []);
+
+  // Handle subchart activation for drawing
+  const handleSubchartActivate = useCallback((chartType: ChartType) => {
+    setActiveChartType(chartType);
+  }, []);
+
+  // Handle drawing completion on subcharts
+  const handleSubchartDrawingComplete = useCallback(() => {
+    // Optionally reset tool after drawing - same behavior as main chart
+    // setDrawingToolActive(null);
+  }, []);
 
   // Load watchlist symbols (for autocomplete)
   const refreshWatchlist = useCallback(async () => {
@@ -220,7 +257,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
         </div>
 
         {/* Main chart */}
-        <div className={expandedIndicator ? 'flex-1 min-h-0' : 'flex-1'}>
+        <div className="flex-1">
           <MainChart
             symbol={selectedSymbol}
             market={selectedMarket}
@@ -230,28 +267,24 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             watchlistSymbols={watchlistSymbols}
             onWatchlistChange={refreshWatchlist}
             onSymbolChange={(newSymbol, newMarket) => onStockSelect(newSymbol, newMarket)}
+            onVisibleRangeChange={handleVisibleRangeChange}
+            onDrawingToolChange={handleDrawingToolChange}
+            onMainChartActivate={handleMainChartActivate}
+            isActiveForDrawing={activeChartType === 'main'}
           />
         </div>
 
-        {/* Expanded indicator chart (between main and sub-charts) */}
-        {expandedIndicator && (
-          <ExpandedIndicatorChart
-            symbol={selectedSymbol}
-            market={selectedMarket}
-            timeframe={timeframe}
-            indicator={expandedIndicator}
-            onCollapse={() => setExpandedIndicator(null)}
-          />
-        )}
-
-        {/* Sub charts */}
-        <div className={expandedIndicator ? 'h-8' : 'h-40'}>
+        {/* Sub charts - Stochastics, RSI, MACD, Volume */}
+        <div className="h-[450px] min-h-[300px]">
           <SubCharts
             symbol={selectedSymbol}
             market={selectedMarket}
             timeframe={timeframe}
-            expandedIndicator={expandedIndicator}
-            onExpandChange={setExpandedIndicator}
+            visibleRange={visibleRange}
+            drawingToolActive={showDrawingTools ? drawingToolActive : null}
+            activeChartType={activeChartType}
+            onChartActivate={handleSubchartActivate}
+            onDrawingComplete={handleSubchartDrawingComplete}
           />
         </div>
       </div>
@@ -291,7 +324,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
         </div>
 
         {/* Full screen chart with all indicators */}
-        <div className={expandedIndicator ? 'flex-1 min-h-0' : 'flex-1'}>
+        <div className="flex-1">
           <MainChart
             symbol={cell.symbol}
             market={cell.market}
@@ -303,28 +336,24 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             onSymbolChange={(newSymbol, newMarket) => {
               handleSymbolChange(maximizedCell, newSymbol, newMarket);
             }}
+            onVisibleRangeChange={handleVisibleRangeChange}
+            onDrawingToolChange={handleDrawingToolChange}
+            onMainChartActivate={handleMainChartActivate}
+            isActiveForDrawing={activeChartType === 'main'}
           />
         </div>
 
-        {/* Expanded indicator chart */}
-        {expandedIndicator && (
-          <ExpandedIndicatorChart
-            symbol={cell.symbol}
-            market={cell.market}
-            timeframe={timeframe}
-            indicator={expandedIndicator}
-            onCollapse={() => setExpandedIndicator(null)}
-          />
-        )}
-
-        {/* Sub charts - RSI, MACD, Volume */}
-        <div className={expandedIndicator ? 'h-8' : 'h-40'}>
+        {/* Sub charts - Stochastics, RSI, MACD, Volume */}
+        <div className="h-[450px] min-h-[300px]">
           <SubCharts
             symbol={cell.symbol}
             market={cell.market}
             timeframe={timeframe}
-            expandedIndicator={expandedIndicator}
-            onExpandChange={setExpandedIndicator}
+            visibleRange={visibleRange}
+            drawingToolActive={showDrawingTools ? drawingToolActive : null}
+            activeChartType={activeChartType}
+            onChartActivate={handleSubchartActivate}
+            onDrawingComplete={handleSubchartDrawingComplete}
           />
         </div>
       </div>

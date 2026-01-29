@@ -11,8 +11,13 @@ import type {
   LineData,
   Time,
 } from 'lightweight-charts';
-import { fetchOHLCV, fetchAnalyze, fetchVolumeProfile, addToWatchlist, removeFromWatchlist } from '../../api/client';
-import type { OHLCVResponse, AnalyzeResponse, WatchlistItem, VolumeProfileResponse } from '../../api/types';
+import { fetchOHLCV, fetchAnalyze, fetchVolumeProfile, fetchMTFAnalyze, addToWatchlist, removeFromWatchlist } from '../../api/client';
+import type { OHLCVResponse, AnalyzeResponse, WatchlistItem, VolumeProfileResponse, MTFAnalyzeResponse } from '../../api/types';
+import { useDrawings } from '../../hooks/useDrawings';
+import { DrawingToolbar } from '../chart/DrawingToolbar';
+import { DrawingCanvas } from '../chart/DrawingCanvas';
+import { DrawingPropertyEditor } from '../chart/DrawingPropertyEditor';
+import type { DrawingToolType } from '../../types/drawings';
 
 export const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'] as const;
 export type Timeframe = typeof TIMEFRAMES[number];
@@ -29,6 +34,12 @@ interface MainChartProps {
   onSymbolChange?: (symbol: string, market: string) => void;
   watchlistSymbols?: WatchlistItem[];
   onWatchlistChange?: () => void;
+  onChartReady?: (chartRef: React.RefObject<IChartApi | null>) => void;
+  onVisibleRangeChange?: (range: { from: number; to: number } | null) => void;
+  // Drawing tool coordination with subcharts
+  onDrawingToolChange?: (tool: DrawingToolType | null, showTools: boolean) => void;
+  onMainChartActivate?: () => void;
+  isActiveForDrawing?: boolean;
 }
 
 interface BoxPosition {
@@ -54,12 +65,21 @@ export function MainChart({
   onSymbolChange,
   watchlistSymbols = [],
   onWatchlistChange,
+  onChartReady,
+  onVisibleRangeChange,
+  onDrawingToolChange,
+  onMainChartActivate,
+  isActiveForDrawing = true,
 }: MainChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const ema20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const ema200SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+
+  // Ref to store the latest onVisibleRangeChange callback (avoids stale closure)
+  const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
+  onVisibleRangeChangeRef.current = onVisibleRangeChange;
 
   const [data, setData] = useState<OHLCVResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -136,11 +156,36 @@ export function MainChart({
   // Volume filter state - hide weak OBs
   const [hideWeakOB, setHideWeakOB] = useState(false);
 
+  // MTF (Multi-Timeframe) state
+  const [mtfData, setMtfData] = useState<MTFAnalyzeResponse | null>(null);
+  const [showMTF, setShowMTF] = useState(false);
+  const [mtfLoading, setMtfLoading] = useState(false);
+
   // Watchlist state
   const [isWatchlistLoading, setIsWatchlistLoading] = useState(false);
   const [watchlistAdded, setWatchlistAdded] = useState(false);
   const [watchlistRemoved, setWatchlistRemoved] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Drawing tools state
+  const [showDrawingTools, setShowDrawingTools] = useState(false);
+  const {
+    drawings,
+    manager: drawingManager,
+    activeTool,
+    setActiveTool,
+    selectedDrawingId,
+    setSelectedDrawingId,
+    editingDrawing,
+    setEditingDrawing,
+    clearAll: clearAllDrawings,
+    updateDrawing,
+  } = useDrawings(symbol, timeframe);
+
+  // Notify parent when drawing tool state changes (for subchart coordination)
+  useEffect(() => {
+    onDrawingToolChange?.(activeTool, showDrawingTools);
+  }, [activeTool, showDrawingTools, onDrawingToolChange]);
 
   // Check if symbol is in watchlist
   const isInWatchlist = watchlistSymbols.some(
@@ -267,6 +312,26 @@ export function MainChart({
       .catch(() => setAnalyzeData(null));
   }, [data, symbol, market, timeframe, hideWeakOB]);
 
+  // Show alert toast when retest signal is detected
+  useEffect(() => {
+    if (!analyzeData?.signals || analyzeData.signals.length === 0) return;
+
+    const signal = analyzeData.signals[0]; // Show first active signal
+    const ob = analyzeData.current_valid_ob;
+    if (!ob) return;
+
+    const obMid = (ob.zone_top + ob.zone_bottom) / 2;
+    const priceStr = obMid.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    const volStr = signal.volume_confirm.toFixed(1);
+    const directionEmoji = signal.direction === 'bull' ? '▲' : '▼';
+    const directionText = signal.direction === 'bull' ? '매수' : '매도';
+    const alertColor = signal.direction === 'bull' ? '🟢' : '🔴';
+
+    setToastMessage(`${alertColor} ${priceStr} OB 리테스트! ${directionEmoji} ${directionText} 신호 - 볼륨 ${volStr}x 확인`);
+    const timer = setTimeout(() => setToastMessage(null), 5000);
+    return () => clearTimeout(timer);
+  }, [analyzeData?.signals]);
+
   // Fetch Volume Profile when enabled
   useEffect(() => {
     if (!showVP || !data || data.bars.length === 0) {
@@ -285,6 +350,33 @@ export function MainChart({
         setVpLoading(false);
       });
   }, [showVP, data, symbol, market, timeframe]);
+
+  // Fetch MTF (Multi-Timeframe) zones when enabled
+  useEffect(() => {
+    if (!showMTF || !data || data.bars.length === 0) {
+      setMtfData(null);
+      return;
+    }
+
+    setMtfLoading(true);
+    // Map timeframe to API format
+    const ltfMap: Record<string, string> = {
+      '1m': '1m', '5m': '5m', '15m': '15m',
+      '1h': '1H', '1H': '1H', '4h': '4H', '4H': '4H',
+      '1D': '1D', '1W': '1W', '1M': '1M',
+    };
+    const ltf = ltfMap[timeframe] || '1D';
+
+    fetchMTFAnalyze(symbol, market, ltf, '', 20, true)
+      .then((mtf) => {
+        setMtfData(mtf);
+        setMtfLoading(false);
+      })
+      .catch(() => {
+        setMtfData(null);
+        setMtfLoading(false);
+      });
+  }, [showMTF, data, symbol, market, timeframe]);
 
   // Store OB base position (without user adjustment) - calculated from chart coordinates
   const obBaseRightRef = useRef<number>(0);
@@ -478,6 +570,11 @@ export function MainChart({
 
     chartRef.current = chart;
 
+    // Notify parent that chart is ready
+    if (onChartReady) {
+      onChartReady(chartRef);
+    }
+
     // Create candlestick series (v5 API)
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#26a69a',
@@ -516,8 +613,14 @@ export function MainChart({
       updateBoxPositions();
     };
 
-    // Subscribe to visible range changes to update box positions
-    chart.timeScale().subscribeVisibleLogicalRangeChange(updateBoxPositions);
+    // Subscribe to visible range changes to update box positions and sync subcharts
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      updateBoxPositions();
+      // Notify parent to sync all subcharts with main chart's visible range
+      if (onVisibleRangeChangeRef.current && range) {
+        onVisibleRangeChangeRef.current({ from: range.from, to: range.to });
+      }
+    });
 
     // Wheel zoom handlers:
     // - Normal wheel: Gentle horizontal zoom (centered)
@@ -665,6 +768,16 @@ export function MainChart({
 
     // Update box positions after data loads
     setTimeout(updateBoxPositions, 100);
+
+    // CRITICAL: Send initial visible range to sync subcharts
+    setTimeout(() => {
+      if (chartRef.current && onVisibleRangeChangeRef.current) {
+        const range = chartRef.current.timeScale().getVisibleLogicalRange();
+        if (range) {
+          onVisibleRangeChangeRef.current({ from: range.from, to: range.to });
+        }
+      }
+    }, 150);
   }, [data, updateBoxPositions]);
 
   // Update box positions when analyze data changes
@@ -920,6 +1033,32 @@ export function MainChart({
             {vpLoading ? '...' : 'VP'}
           </button>
 
+          {/* MTF Toggle */}
+          <button
+            onClick={() => setShowMTF(!showMTF)}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showMTF
+                ? 'bg-[#f97316] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title={`Multi-Timeframe Zones${mtfData ? ` (${mtfData.htf_timeframe})` : ''}`}
+          >
+            {mtfLoading ? '...' : 'MTF'}
+          </button>
+
+          {/* Drawing Tools Toggle */}
+          <button
+            onClick={() => setShowDrawingTools(!showDrawingTools)}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showDrawingTools
+                ? 'bg-[#ec4899] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title="Drawing Tools"
+          >
+            ✏️ Draw
+          </button>
+
           <div className="ml-auto flex items-center gap-4 text-xs text-[var(--text-secondary)]">
             {ob && showOB && (
               <span className={`flex items-center gap-1 ${isBuyOB ? 'text-[#26a69a]' : 'text-[#ef5350]'}`}>
@@ -1162,24 +1301,58 @@ export function MainChart({
           const isStrong = volStrength === 'strong';
           const isWeak = volStrength === 'weak';
 
-          // Strong: 3px border, full opacity
-          // Normal: 2px border, normal opacity
-          // Weak: 1px border, 0.3 opacity
-          const borderWidth = isStrong ? '3px' : isWeak ? '1px' : '2px';
-          const bgOpacity = isWeak ? 0.15 : 0.35;
-          const borderOpacity = isWeak ? 0.4 : 0.9;
-          const glowIntensity = isHighConfluence ? '12px' : isStrong ? '10px' : '6px';
+          // Volumatic strategy fields
+          const ageStatus = ob.age_status || 'fresh';
+          const ageCandles = ob.age_candles || 0;
+          const volumaticScore = ob.volumatic_score || 0;
+          const fvgFresh = ob.fvg_fresh || false;
+          const isAged = ageStatus === 'aged';
+          const isVolumatic = volumaticScore >= 80; // High volumatic score
 
-          const bgColor = isBuyOB
-            ? `rgba(38, 166, 154, ${bgOpacity})`
-            : `rgba(239, 83, 80, ${bgOpacity})`;
-          const borderColor = isBuyOB
-            ? `rgba(38, 166, 154, ${borderOpacity})`
-            : `rgba(239, 83, 80, ${borderOpacity})`;
+          // Retest signal detection
+          const retestSignal = ob.retest_signal;
+          const isRetestActive = retestSignal?.retest_active ?? false;
+          const retestDirection = retestSignal?.direction ?? '';
+          const retestVolConfirm = retestSignal?.volume_confirm ?? 0;
+
+          // Aged OBs get grayed out regardless of volume strength
+          // Strong volumatic OBs get gold border
+          // Retest active: extra thick border + animation
+          const borderWidth = isRetestActive ? '4px' : isAged ? '1px' : isVolumatic ? '4px' : isStrong ? '3px' : isWeak ? '1px' : '2px';
+          const bgOpacity = isAged ? 0.1 : isWeak ? 0.15 : 0.35;
+          const borderOpacity = isAged ? 0.3 : isWeak ? 0.4 : 0.9;
+          const glowIntensity = isRetestActive ? '20px' : isVolumatic ? '15px' : isHighConfluence ? '12px' : isStrong ? '10px' : '6px';
+
+          // Gold border for high volumatic score, gray for aged, special for retest
+          let borderColor: string;
+          let bgColor: string;
+          if (isAged) {
+            borderColor = 'rgba(128, 128, 128, 0.5)';
+            bgColor = 'rgba(128, 128, 128, 0.15)';
+          } else if (isRetestActive) {
+            // Cyan/magenta border for active retest
+            borderColor = retestDirection === 'bull' ? 'rgba(0, 255, 200, 0.95)' : 'rgba(255, 50, 150, 0.95)';
+            bgColor = isBuyOB
+              ? `rgba(38, 166, 154, ${bgOpacity + 0.1})`
+              : `rgba(239, 83, 80, ${bgOpacity + 0.1})`;
+          } else if (isVolumatic) {
+            // Gold border for high volumatic score
+            borderColor = 'rgba(255, 215, 0, 0.9)';
+            bgColor = isBuyOB
+              ? `rgba(38, 166, 154, ${bgOpacity})`
+              : `rgba(239, 83, 80, ${bgOpacity})`;
+          } else {
+            bgColor = isBuyOB
+              ? `rgba(38, 166, 154, ${bgOpacity})`
+              : `rgba(239, 83, 80, ${bgOpacity})`;
+            borderColor = isBuyOB
+              ? `rgba(38, 166, 154, ${borderOpacity})`
+              : `rgba(239, 83, 80, ${borderOpacity})`;
+          }
 
           return (
             <div
-              className="absolute z-[5]"
+              className={`absolute z-[5] ${isRetestActive ? 'animate-pulse' : ''}`}
               style={{
                 left: obBoxPosition.left,
                 top: obBoxPosition.top,
@@ -1188,23 +1361,30 @@ export function MainChart({
                 backgroundColor: bgColor,
                 border: `${borderWidth} solid ${borderColor}`,
                 borderRadius: '3px',
-                boxShadow: isHighConfluence
+                boxShadow: isRetestActive
+                  ? `0 0 ${glowIntensity} ${retestDirection === 'bull' ? 'rgba(0, 255, 200, 0.8)' : 'rgba(255, 50, 150, 0.8)'}, 0 0 30px ${retestDirection === 'bull' ? 'rgba(0, 255, 200, 0.4)' : 'rgba(255, 50, 150, 0.4)'}`
+                  : isVolumatic
+                  ? `0 0 ${glowIntensity} rgba(255, 215, 0, 0.6), 0 0 25px rgba(255, 215, 0, 0.3)`
+                  : isHighConfluence
                   ? `0 0 ${glowIntensity} ${isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)'}, 0 0 20px rgba(255, 215, 0, 0.4)`
+                  : isAged
+                  ? 'none'
                   : `0 0 ${glowIntensity} ${isBuyOB ? `rgba(38, 166, 154, ${isWeak ? 0.2 : 0.5})` : `rgba(239, 83, 80, ${isWeak ? 0.2 : 0.5})`}`,
                 pointerEvents: 'none',
-                opacity: isWeak ? 0.6 : 1,
+                opacity: isAged ? 0.5 : isWeak ? 0.6 : 1,
+                animation: isRetestActive ? 'pulse 1.5s ease-in-out infinite' : undefined,
               }}
-              title={`볼륨: ${volRatio.toFixed(1)}x 평균 (${volStrength === 'strong' ? '강함' : volStrength === 'weak' ? '약함' : '보통'})`}
+              title={`볼륨: ${volRatio.toFixed(1)}x 평균 (${volStrength === 'strong' ? '강함' : volStrength === 'weak' ? '약함' : '보통'}) | 나이: ${ageCandles}캔들 (${ageStatus === 'fresh' ? '신선' : ageStatus === 'mature' ? '성숙' : '노후'})${isRetestActive ? ` | 리테스트 활성: ${retestDirection === 'bull' ? '매수' : '매도'} 볼륨 ${retestVolConfirm.toFixed(1)}x` : ''}`}
             >
-              {/* OB label with optional gold star for high confluence */}
+              {/* OB label with optional gold star for high confluence or volumatic */}
               <div className="absolute top-1 left-1 flex items-center gap-1">
                 <div
                   className="px-1.5 py-0.5 text-xs font-black rounded"
                   style={{
-                    backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
+                    backgroundColor: isAged ? 'rgba(128, 128, 128, 0.8)' : isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
                     color: 'white',
                     textShadow: '0 1px 2px rgba(0,0,0,0.3)',
-                    opacity: isWeak ? 0.6 : 1,
+                    opacity: isAged ? 0.7 : isWeak ? 0.6 : 1,
                   }}
                 >
                   OB
@@ -1213,15 +1393,43 @@ export function MainChart({
                 <div
                   className="px-1 py-0.5 text-[9px] font-bold rounded"
                   style={{
-                    backgroundColor: isStrong ? 'rgba(34, 197, 94, 0.9)' : isWeak ? 'rgba(156, 163, 175, 0.7)' : 'rgba(100, 100, 100, 0.7)',
+                    backgroundColor: isAged ? 'rgba(128, 128, 128, 0.6)' : isStrong ? 'rgba(34, 197, 94, 0.9)' : isWeak ? 'rgba(156, 163, 175, 0.7)' : 'rgba(100, 100, 100, 0.7)',
                     color: 'white',
                   }}
                   title={`볼륨: ${volRatio.toFixed(1)}x 평균`}
                 >
                   {volRatio.toFixed(1)}x
                 </div>
-                {/* Gold star for high confluence */}
-                {isHighConfluence && (
+                {/* Age status badge */}
+                {ageStatus !== 'fresh' && (
+                  <div
+                    className="px-1 py-0.5 text-[9px] font-bold rounded"
+                    style={{
+                      backgroundColor: isAged ? 'rgba(239, 68, 68, 0.8)' : 'rgba(251, 191, 36, 0.8)',
+                      color: 'white',
+                    }}
+                    title={`${ageCandles}캔들 경과`}
+                  >
+                    {isAged ? '노후' : '성숙'}
+                  </div>
+                )}
+                {/* Volumatic score badge - gold for high score */}
+                {volumaticScore > 0 && (
+                  <div
+                    className="px-1.5 py-0.5 text-xs font-bold rounded flex items-center gap-0.5"
+                    style={{
+                      backgroundColor: isVolumatic ? 'rgba(255, 215, 0, 0.95)' : 'rgba(100, 100, 100, 0.8)',
+                      color: isVolumatic ? '#1a1a1a' : 'white',
+                      textShadow: isVolumatic ? '0 1px 1px rgba(255,255,255,0.3)' : 'none',
+                    }}
+                    title={`Volumatic Score: ${volumaticScore}점${fvgFresh ? ' (Fresh FVG)' : ''}`}
+                  >
+                    {isVolumatic && <span>★</span>}
+                    <span>V{volumaticScore}</span>
+                  </div>
+                )}
+                {/* Gold star for high confluence (only if not already showing volumatic) */}
+                {isHighConfluence && !isVolumatic && (
                   <div
                     className="px-1.5 py-0.5 text-xs font-bold rounded flex items-center gap-0.5"
                     style={{
@@ -1235,8 +1443,8 @@ export function MainChart({
                     <span>{confluenceScore}</span>
                   </div>
                 )}
-                {/* Normal score badge (50-79) */}
-                {!isHighConfluence && confluenceScore >= 50 && (
+                {/* Normal score badge (50-79) - only if no volumatic or high confluence */}
+                {!isHighConfluence && !isVolumatic && confluenceScore >= 50 && (
                   <div
                     className="px-1 py-0.5 text-[10px] font-medium rounded"
                     style={{
@@ -1246,6 +1454,37 @@ export function MainChart({
                     title={`Confluence Score: ${confluenceScore}점`}
                   >
                     {confluenceScore}
+                  </div>
+                )}
+                {/* Retest signal badge - blinking with direction arrow */}
+                {isRetestActive && (
+                  <div
+                    className="px-1.5 py-0.5 text-xs font-black rounded flex items-center gap-0.5 animate-pulse"
+                    style={{
+                      backgroundColor: retestDirection === 'bull' ? 'rgba(0, 255, 200, 0.95)' : 'rgba(255, 50, 150, 0.95)',
+                      color: retestDirection === 'bull' ? '#003d33' : '#4d0026',
+                      textShadow: '0 1px 2px rgba(255,255,255,0.3)',
+                    }}
+                    title={`리테스트 활성! ${retestDirection === 'bull' ? '매수' : '매도'} 신호 - 볼륨 ${retestVolConfirm.toFixed(1)}x 확인`}
+                  >
+                    <span className="text-sm">{retestDirection === 'bull' ? '▲' : '▼'}</span>
+                    <span>RET</span>
+                  </div>
+                )}
+                {/* Williams %R OB confluence bonus */}
+                {analyzeData?.williams_r && analyzeData.williams_r.ob_bonus > 0 && (
+                  <div
+                    className="px-1 py-0.5 text-[9px] font-bold rounded flex items-center gap-0.5"
+                    style={{
+                      backgroundColor: analyzeData.williams_r.ob_bonus >= 15
+                        ? 'rgba(236, 72, 153, 0.95)' // Pink for strong confluence
+                        : 'rgba(168, 85, 247, 0.8)', // Purple for moderate
+                      color: 'white',
+                    }}
+                    title={`Williams %R: ${analyzeData.williams_r.value.toFixed(1)} (${analyzeData.williams_r.zone}) | ${analyzeData.williams_r.summary}`}
+                  >
+                    <span>%R</span>
+                    <span>+{analyzeData.williams_r.ob_bonus}</span>
                   </div>
                 )}
               </div>
@@ -1313,6 +1552,16 @@ export function MainChart({
           );
         })}
 
+        {/* MTF (Multi-Timeframe) HTF Zones - only in non-compact mode */}
+        {!compact && showMTF && mtfData && chartRef.current && candlestickSeriesRef.current && (
+          <MTFZonesOverlay
+            mtfData={mtfData}
+            data={data}
+            chart={chartRef.current}
+            series={candlestickSeriesRef.current}
+          />
+        )}
+
         {/* Volume Profile overlay - only in non-compact mode */}
         {!compact && showVP && volumeProfile && chartRef.current && candlestickSeriesRef.current && (
           <VolumeProfileOverlay
@@ -1322,7 +1571,52 @@ export function MainChart({
           />
         )}
 
-        <div ref={chartContainerRef} className="w-full h-full" />
+        {/* Drawing Tools - only in non-compact mode */}
+        {!compact && showDrawingTools && (
+          <>
+            <DrawingToolbar
+              activeTool={activeTool}
+              onToolSelect={setActiveTool}
+              onClearAll={clearAllDrawings}
+              drawingCount={drawings.length}
+            />
+            {chartRef.current && candlestickSeriesRef.current && data && (
+              <DrawingCanvas
+                chart={chartRef.current}
+                series={candlestickSeriesRef.current}
+                drawings={drawings}
+                manager={drawingManager}
+                activeTool={activeTool}
+                selectedDrawingId={selectedDrawingId}
+                onDrawingSelect={setSelectedDrawingId}
+                onDrawingComplete={() => setActiveTool(null)}
+                containerRef={chartContainerRef as React.RefObject<HTMLDivElement>}
+                data={data}
+                isActiveChart={isActiveForDrawing}
+                onChartActivate={onMainChartActivate}
+              />
+            )}
+          </>
+        )}
+
+        {/* Drawing Property Editor Modal */}
+        {editingDrawing && (
+          <DrawingPropertyEditor
+            drawing={editingDrawing}
+            onUpdate={(updates) => {
+              if (editingDrawing) {
+                updateDrawing(editingDrawing.id, updates);
+              }
+            }}
+            onClose={() => setEditingDrawing(null)}
+          />
+        )}
+
+        <div
+          ref={chartContainerRef}
+          className="w-full h-full"
+          style={{ marginLeft: !compact && showDrawingTools ? 48 : 0 }}
+        />
       </div>
     </div>
   );
@@ -1477,5 +1771,189 @@ function VolumeProfileOverlay({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * MTF Zones overlay component - displays HTF OBs and FVGs on LTF chart
+ */
+function MTFZonesOverlay({
+  mtfData,
+  data,
+  chart,
+  series,
+}: {
+  mtfData: MTFAnalyzeResponse;
+  data: OHLCVResponse | null;
+  chart: IChartApi;
+  series: ISeriesApi<'Candlestick'>;
+}) {
+  const [positions, setPositions] = useState<{
+    htfObs: { left: number; right: number; top: number; bottom: number; direction: string; htfTf: string; volStrength: number; priceInZone: boolean }[];
+    htfFvgs: { left: number; right: number; top: number; bottom: number; direction: string; htfTf: string; isFresh: boolean; priceInGap: boolean }[];
+  } | null>(null);
+
+  useEffect(() => {
+    const updatePositions = () => {
+      if (!mtfData || !data || data.bars.length === 0) {
+        setPositions(null);
+        return;
+      }
+
+      const timeScale = chart.timeScale();
+      const chartRightEdge = chart.timeScale().width() - 60;
+
+      // Calculate positions for HTF OBs
+      const htfObs = mtfData.htf_obs.map((ob) => {
+        // Get LTF time for the start of the zone
+        const startIdx = Math.max(0, Math.min(ob.ltf_start, data.bars.length - 1));
+        const startTime = data.bars[startIdx]?.time;
+
+        if (!startTime) {
+          return null;
+        }
+
+        const leftX = timeScale.timeToCoordinate(startTime as Time);
+        const topY = series.priceToCoordinate(ob.zone_top);
+        const bottomY = series.priceToCoordinate(ob.zone_bottom);
+
+        if (leftX === null || topY === null || bottomY === null) {
+          return null;
+        }
+
+        return {
+          left: leftX,
+          right: chartRightEdge,
+          top: Math.min(topY, bottomY),
+          bottom: Math.max(topY, bottomY),
+          direction: ob.direction,
+          htfTf: ob.htf_timeframe,
+          volStrength: ob.volume_strength,
+          priceInZone: ob.price_in_zone,
+        };
+      }).filter(Boolean) as typeof positions extends { htfObs: infer T } ? T : never;
+
+      // Calculate positions for HTF FVGs
+      const htfFvgs = mtfData.htf_fvgs.map((fvg) => {
+        const startIdx = Math.max(0, Math.min(fvg.ltf_start, data.bars.length - 1));
+        const startTime = data.bars[startIdx]?.time;
+
+        if (!startTime) {
+          return null;
+        }
+
+        const leftX = timeScale.timeToCoordinate(startTime as Time);
+        const topY = series.priceToCoordinate(fvg.gap_high);
+        const bottomY = series.priceToCoordinate(fvg.gap_low);
+
+        if (leftX === null || topY === null || bottomY === null) {
+          return null;
+        }
+
+        return {
+          left: leftX,
+          right: chartRightEdge,
+          top: Math.min(topY, bottomY),
+          bottom: Math.max(topY, bottomY),
+          direction: fvg.direction,
+          htfTf: fvg.htf_timeframe,
+          isFresh: fvg.is_fresh,
+          priceInGap: fvg.price_in_gap,
+        };
+      }).filter(Boolean) as typeof positions extends { htfFvgs: infer T } ? T : never;
+
+      setPositions({ htfObs, htfFvgs });
+    };
+
+    updatePositions();
+
+    // Subscribe to chart updates
+    chart.timeScale().subscribeVisibleLogicalRangeChange(updatePositions);
+
+    return () => {
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(updatePositions);
+    };
+  }, [mtfData, data, chart, series]);
+
+  if (!positions) return null;
+
+  return (
+    <>
+      {/* HTF Order Blocks - Orange/Amber theme */}
+      {positions.htfObs.map((ob, i) => {
+        const isBullOB = ob.direction === 'buy';
+        const baseColor = isBullOB ? '251, 146, 60' : '249, 115, 22'; // amber-400 : orange-500
+
+        return (
+          <div
+            key={`htf-ob-${i}`}
+            className={`absolute z-[3] ${ob.priceInZone ? 'animate-pulse' : ''}`}
+            style={{
+              left: ob.left,
+              top: ob.top,
+              width: ob.right - ob.left,
+              height: Math.max(2, ob.bottom - ob.top),
+              backgroundColor: `rgba(${baseColor}, ${ob.priceInZone ? 0.35 : 0.2})`,
+              border: `2px solid rgba(${baseColor}, 0.8)`,
+              borderRadius: '2px',
+              boxShadow: ob.priceInZone ? `0 0 12px rgba(${baseColor}, 0.5)` : 'none',
+              pointerEvents: 'none',
+            }}
+            title={`HTF ${ob.htfTf} ${isBullOB ? 'Bull' : 'Bear'} OB | Vol: ${ob.volStrength.toFixed(1)}x`}
+          >
+            {/* HTF OB label */}
+            <div
+              className="absolute -top-4 left-1 px-1.5 py-0.5 text-[9px] font-bold rounded flex items-center gap-1"
+              style={{
+                backgroundColor: `rgba(${baseColor}, 0.95)`,
+                color: 'white',
+              }}
+            >
+              <span>{ob.htfTf}</span>
+              <span>{isBullOB ? '▲' : '▼'}</span>
+              {ob.priceInZone && <span className="animate-pulse">●</span>}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* HTF FVGs - Cyan/Teal theme */}
+      {positions.htfFvgs.map((fvg, i) => {
+        const isBullFVG = fvg.direction === 'buy';
+        const baseColor = isBullFVG ? '20, 184, 166' : '6, 182, 212'; // teal-500 : cyan-500
+
+        return (
+          <div
+            key={`htf-fvg-${i}`}
+            className={`absolute z-[2] ${fvg.priceInGap ? 'animate-pulse' : ''}`}
+            style={{
+              left: fvg.left,
+              top: fvg.top,
+              width: fvg.right - fvg.left,
+              height: Math.max(2, fvg.bottom - fvg.top),
+              backgroundColor: `rgba(${baseColor}, ${fvg.priceInGap ? 0.3 : 0.15})`,
+              border: `1px dashed rgba(${baseColor}, 0.7)`,
+              borderRadius: '2px',
+              boxShadow: fvg.priceInGap ? `0 0 10px rgba(${baseColor}, 0.4)` : 'none',
+              pointerEvents: 'none',
+            }}
+            title={`HTF ${fvg.htfTf} ${isBullFVG ? 'Bull' : 'Bear'} FVG | ${fvg.isFresh ? 'Fresh' : 'Partially filled'}`}
+          >
+            {/* HTF FVG label */}
+            <div
+              className="absolute -top-4 left-1 px-1 py-0.5 text-[8px] font-bold rounded flex items-center gap-0.5"
+              style={{
+                backgroundColor: `rgba(${baseColor}, 0.9)`,
+                color: 'white',
+              }}
+            >
+              <span>{fvg.htfTf}</span>
+              <span>FVG</span>
+              {fvg.isFresh && <span>✦</span>}
+            </div>
+          </div>
+        );
+      })}
+    </>
   );
 }
