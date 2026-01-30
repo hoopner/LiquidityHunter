@@ -2,9 +2,11 @@ import { useState } from 'react';
 import { PortfolioPanel } from '../panels/PortfolioPanel';
 import { WatchlistPanel } from '../panels/WatchlistPanel';
 import { ScreenerPanel } from '../panels/ScreenerPanel';
+import { BacktestPanel } from '../panels/BacktestPanel';
+import { AlertPanel } from '../panels/AlertPanel';
 import type { SelectedStock } from '../../App';
 
-type PanelType = 'portfolio' | 'watchlist' | 'screener';
+type PanelType = 'portfolio' | 'watchlist' | 'screener' | 'backtest' | 'alerts';
 
 interface SidebarProps {
   onStockSelect: (symbol: string, market: string) => void;
@@ -21,6 +23,8 @@ export function Sidebar({ onStockSelect, selectedStock }: SidebarProps) {
     { id: 'portfolio', title: 'Portfolio', titleKo: '포트폴리오' },
     { id: 'watchlist', title: 'Watchlist', titleKo: '관심리스트' },
     { id: 'screener', title: 'Screener', titleKo: 'EMA 스크리너' },
+    { id: 'backtest', title: 'Backtest', titleKo: '백테스트' },
+    { id: 'alerts', title: 'Alerts', titleKo: '알림 설정' },
   ];
 
   const renderPanel = (panelId: PanelType) => {
@@ -31,6 +35,10 @@ export function Sidebar({ onStockSelect, selectedStock }: SidebarProps) {
         return <WatchlistPanel onStockSelect={onStockSelect} selectedSymbol={selectedStock.symbol} />;
       case 'screener':
         return <ScreenerPanel onStockSelect={onStockSelect} selectedSymbol={selectedStock.symbol} />;
+      case 'backtest':
+        return <BacktestPanel symbol={selectedStock.symbol} market={selectedStock.market} />;
+      case 'alerts':
+        return <AlertPanel />;
     }
   };
 

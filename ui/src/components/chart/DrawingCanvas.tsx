@@ -33,7 +33,7 @@ interface DrawingCanvasProps {
   onDrawingSelect: (id: string | null) => void;
   onDrawingComplete: () => void;
   containerRef: React.RefObject<HTMLDivElement>;
-  data: { bars: Array<{ time: string; open: number; high: number; low: number; close: number }> } | null;
+  data: { bars: Array<{ time: string | number; open: number; high: number; low: number; close: number }> } | null;
   // For coordination with subcharts - when multiple charts can have drawings
   isActiveChart?: boolean;
   onChartActivate?: () => void;
@@ -95,7 +95,10 @@ export function DrawingCanvas({
 
         const barIndex = Math.round(logicalIndex);
         const clampedIndex = Math.max(0, Math.min(barIndex, data.bars.length - 1));
-        const fallbackTime = data.bars[clampedIndex]?.time || '';
+        const rawTime = data.bars[clampedIndex]?.time || '';
+        const fallbackTime = typeof rawTime === 'number'
+          ? new Date(rawTime * 1000).toISOString().split('T')[0]
+          : rawTime;
         return { time: fallbackTime, price, x, y };
       }
 

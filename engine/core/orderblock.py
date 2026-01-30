@@ -37,6 +37,9 @@ class FVG:
     direction: OBDirection
     gap_high: float  # Top of gap zone
     gap_low: float   # Bottom of gap zone
+    # Volumatic strategy fields
+    mitigated: bool = False  # True if price has filled this FVG
+    mitigated_index: Optional[int] = None  # Index where FVG was mitigated
 
 
 class VolumeStrength(Enum):
@@ -44,6 +47,13 @@ class VolumeStrength(Enum):
     STRONG = "strong"
     NORMAL = "normal"
     WEAK = "weak"
+
+
+class OBAgeStatus(Enum):
+    """Order Block age classification."""
+    FRESH = "fresh"      # < 20 candles
+    MATURE = "mature"    # 20-50 candles
+    AGED = "aged"        # > 50 candles (weakening)
 
 
 @dataclass
@@ -59,6 +69,11 @@ class OrderBlock:
     # Volume analysis
     volume_strength: VolumeStrength = VolumeStrength.NORMAL
     volume_ratio: float = 1.0  # displacement_volume / avg_volume
+    # Volumatic strategy fields
+    age_candles: int = 0  # Candles since OB formation
+    age_status: OBAgeStatus = OBAgeStatus.FRESH
+    fvg_fresh: bool = False  # True if associated FVG is not mitigated
+    volumatic_score: int = 0  # Combined volumatic score (0-100)
 
 
 @dataclass

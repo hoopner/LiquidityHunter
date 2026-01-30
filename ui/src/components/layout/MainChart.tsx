@@ -287,7 +287,42 @@ export function MainChart({
           setNoData(true);
           setData(null);
         } else {
-          setData(response);
+          // Remove trailing bars with invalid (zero) OHLC values to prevent chart distortion
+          // This can happen when yfinance returns incomplete data for the current day
+          let validEndIdx = response.bars.length;
+          while (validEndIdx > 0) {
+            const bar = response.bars[validEndIdx - 1];
+            if (bar.open > 0 && bar.high > 0 && bar.low > 0 && bar.close > 0) {
+              break;
+            }
+            validEndIdx--;
+          }
+
+          if (validEndIdx === 0) {
+            setNoData(true);
+            setData(null);
+          } else if (validEndIdx < response.bars.length) {
+            // Trim invalid trailing bars and corresponding indicator values
+            setData({
+              ...response,
+              bars: response.bars.slice(0, validEndIdx),
+              ema20: response.ema20.slice(0, validEndIdx),
+              ema200: response.ema200.slice(0, validEndIdx),
+              rsi: response.rsi.slice(0, validEndIdx),
+              rsi_signal: response.rsi_signal.slice(0, validEndIdx),
+              macd_line: response.macd_line.slice(0, validEndIdx),
+              macd_signal: response.macd_signal.slice(0, validEndIdx),
+              macd_histogram: response.macd_histogram.slice(0, validEndIdx),
+              stoch_slow_k: response.stoch_slow_k.slice(0, validEndIdx),
+              stoch_slow_d: response.stoch_slow_d.slice(0, validEndIdx),
+              stoch_med_k: response.stoch_med_k.slice(0, validEndIdx),
+              stoch_med_d: response.stoch_med_d.slice(0, validEndIdx),
+              stoch_fast_k: response.stoch_fast_k.slice(0, validEndIdx),
+              stoch_fast_d: response.stoch_fast_d.slice(0, validEndIdx),
+            });
+          } else {
+            setData(response);
+          }
         }
         setLoading(false);
       })
@@ -405,7 +440,12 @@ export function MainChart({
         const topY = series.priceToCoordinate(ob.zone_top);
         const bottomY = series.priceToCoordinate(ob.zone_bottom);
 
-        if (leftX !== null && topY !== null && bottomY !== null) {
+        // Validate coordinates are reasonable (not NaN, not extreme values)
+        const chartHeight = container.clientHeight || 500;
+        if (leftX !== null && topY !== null && bottomY !== null &&
+            !isNaN(topY) && !isNaN(bottomY) &&
+            topY >= -100 && bottomY >= -100 &&
+            topY <= chartHeight + 100 && bottomY <= chartHeight + 100) {
           obBaseRightRef.current = chartRightEdge;
           const adjustedRight = Math.max(leftX + 30, chartRightEdge + obRightOffset);
 
@@ -426,29 +466,47 @@ export function MainChart({
       setObBoxPosition(prev => ({ ...prev, visible: false }));
     }
 
-    // Handle independent FVGs - only show the most recent one
-    if (analyzeData?.fvgs && analyzeData.fvgs.length > 0) {
-      // Get the most recent FVG (last in the array, which has the highest index)
-      const mostRecentFvg = analyzeData.fvgs[analyzeData.fvgs.length - 1];
+    // Handle independent FVGs - only show FVGs close to current price
+    if (analyzeData?.fvgs && analyzeData.fvgs.length > 0 && analyzeData.current_price > 0) {
+      const currentPrice = analyzeData.current_price;
 
-      // FVG starts at the middle candle (i-1) where the gap becomes apparent
-      const fvgStartIdx = Math.max(0, mostRecentFvg.index - 1);
-      const fvgStartTime = data.bars[fvgStartIdx]?.time;
+      // Filter FVGs to only those within 30% of current price (to avoid Y-axis distortion)
+      const validFvgs = analyzeData.fvgs.filter(fvg => {
+        const gapMid = (fvg.gap_high + fvg.gap_low) / 2;
+        const distancePercent = Math.abs(gapMid - currentPrice) / currentPrice * 100;
+        return distancePercent <= 30; // Only show FVGs within 30% of current price
+      });
 
-      if (fvgStartTime) {
-        const fvgLeftX = timeScale.timeToCoordinate(fvgStartTime as Time);
-        const fvgTopY = series.priceToCoordinate(mostRecentFvg.gap_high);
-        const fvgBottomY = series.priceToCoordinate(mostRecentFvg.gap_low);
+      // Get the most recent valid FVG
+      const mostRecentFvg = validFvgs.length > 0 ? validFvgs[validFvgs.length - 1] : null;
 
-        if (fvgLeftX !== null && fvgTopY !== null && fvgBottomY !== null) {
-          setFvgBoxPositions([{
-            left: fvgLeftX,
-            right: chartRightEdge,
-            top: Math.min(fvgTopY, fvgBottomY),
-            bottom: Math.max(fvgTopY, fvgBottomY),
-            visible: true,
-            direction: mostRecentFvg.direction,
-          }]);
+      if (mostRecentFvg) {
+        // FVG starts at the middle candle (i-1) where the gap becomes apparent
+        const fvgStartIdx = Math.max(0, mostRecentFvg.index - 1);
+        const fvgStartTime = data.bars[fvgStartIdx]?.time;
+
+        if (fvgStartTime) {
+          const fvgLeftX = timeScale.timeToCoordinate(fvgStartTime as Time);
+          const fvgTopY = series.priceToCoordinate(mostRecentFvg.gap_high);
+          const fvgBottomY = series.priceToCoordinate(mostRecentFvg.gap_low);
+
+          // Validate coordinates are reasonable (not NaN, not extreme values)
+          const chartHeight = container.clientHeight || 500;
+          if (fvgLeftX !== null && fvgTopY !== null && fvgBottomY !== null &&
+              !isNaN(fvgTopY) && !isNaN(fvgBottomY) &&
+              fvgTopY >= -100 && fvgBottomY >= -100 &&
+              fvgTopY <= chartHeight + 100 && fvgBottomY <= chartHeight + 100) {
+            setFvgBoxPositions([{
+              left: fvgLeftX,
+              right: chartRightEdge,
+              top: Math.min(fvgTopY, fvgBottomY),
+              bottom: Math.max(fvgTopY, fvgBottomY),
+              visible: true,
+              direction: mostRecentFvg.direction,
+            }]);
+          } else {
+            setFvgBoxPositions([]);
+          }
         } else {
           setFvgBoxPositions([]);
         }
@@ -1350,14 +1408,21 @@ export function MainChart({
               : `rgba(239, 83, 80, ${borderOpacity})`;
           }
 
+          // Skip rendering if dimensions are invalid
+          const boxWidth = obBoxPosition.right - obBoxPosition.left;
+          const boxHeight = obBoxPosition.bottom - obBoxPosition.top;
+          if (boxWidth <= 0 || boxHeight <= 0 || boxHeight > 2000) {
+            return null;
+          }
+
           return (
             <div
               className={`absolute z-[5] ${isRetestActive ? 'animate-pulse' : ''}`}
               style={{
                 left: obBoxPosition.left,
                 top: obBoxPosition.top,
-                width: obBoxPosition.right - obBoxPosition.left,
-                height: obBoxPosition.bottom - obBoxPosition.top,
+                width: boxWidth,
+                height: Math.max(4, boxHeight), // Minimum 4px height for visibility
                 backgroundColor: bgColor,
                 border: `${borderWidth} solid ${borderColor}`,
                 borderRadius: '3px',
@@ -1523,6 +1588,12 @@ export function MainChart({
         {/* FVG overlays - independent from OB, multiple FVGs supported */}
         {!compact && showOB && fvgBoxPositions.map((fvgPos, idx) => {
           const isBuyFVG = fvgPos.direction === 'buy';
+          const fvgWidth = fvgPos.right - fvgPos.left;
+          const fvgHeight = fvgPos.bottom - fvgPos.top;
+          // Skip invalid dimensions
+          if (fvgWidth <= 0 || fvgHeight <= 0 || fvgHeight > 2000) {
+            return null;
+          }
           return (
             <div
               key={`fvg-${idx}`}
@@ -1530,8 +1601,8 @@ export function MainChart({
               style={{
                 left: fvgPos.left,
                 top: fvgPos.top,
-                width: fvgPos.right - fvgPos.left,
-                height: fvgPos.bottom - fvgPos.top,
+                width: fvgWidth,
+                height: Math.max(2, fvgHeight), // Minimum 2px height
                 backgroundColor: isBuyFVG ? 'rgba(38, 166, 154, 0.15)' : 'rgba(239, 83, 80, 0.15)',
                 border: `1px dashed ${isBuyFVG ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)'}`,
                 borderRadius: '2px',
@@ -1804,7 +1875,16 @@ function MTFZonesOverlay({
       const chartRightEdge = chart.timeScale().width() - 60;
 
       // Calculate positions for HTF OBs
+      // Get chart height from the chart API options
+      const chartHeight = (chart.options() as { height?: number }).height || 500;
       const htfObs = mtfData.htf_obs.map((ob) => {
+        // Validate OB price data first
+        if (!ob.zone_top || !ob.zone_bottom ||
+            isNaN(ob.zone_top) || isNaN(ob.zone_bottom) ||
+            ob.zone_top <= 0 || ob.zone_bottom <= 0) {
+          return null;
+        }
+
         // Get LTF time for the start of the zone
         const startIdx = Math.max(0, Math.min(ob.ltf_start, data.bars.length - 1));
         const startTime = data.bars[startIdx]?.time;
@@ -1817,7 +1897,17 @@ function MTFZonesOverlay({
         const topY = series.priceToCoordinate(ob.zone_top);
         const bottomY = series.priceToCoordinate(ob.zone_bottom);
 
-        if (leftX === null || topY === null || bottomY === null) {
+        // Validate coordinates - must be non-null, not NaN, and within reasonable bounds
+        if (leftX === null || topY === null || bottomY === null ||
+            isNaN(topY) || isNaN(bottomY) ||
+            topY < -50 || bottomY < -50 ||
+            topY > chartHeight + 50 || bottomY > chartHeight + 50) {
+          return null;
+        }
+
+        // Check for reasonable height
+        const height = Math.abs(bottomY - topY);
+        if (height < 1 || height > chartHeight) {
           return null;
         }
 
@@ -1833,8 +1923,16 @@ function MTFZonesOverlay({
         };
       }).filter(Boolean) as typeof positions extends { htfObs: infer T } ? T : never;
 
-      // Calculate positions for HTF FVGs
+      // Calculate positions for HTF FVGs (reuse chartHeight from above)
       const htfFvgs = mtfData.htf_fvgs.map((fvg) => {
+        // Validate FVG price data first
+        if (!fvg.gap_high || !fvg.gap_low ||
+            isNaN(fvg.gap_high) || isNaN(fvg.gap_low) ||
+            fvg.gap_high <= 0 || fvg.gap_low <= 0 ||
+            fvg.gap_high <= fvg.gap_low) {
+          return null;
+        }
+
         const startIdx = Math.max(0, Math.min(fvg.ltf_start, data.bars.length - 1));
         const startTime = data.bars[startIdx]?.time;
 
@@ -1846,7 +1944,17 @@ function MTFZonesOverlay({
         const topY = series.priceToCoordinate(fvg.gap_high);
         const bottomY = series.priceToCoordinate(fvg.gap_low);
 
-        if (leftX === null || topY === null || bottomY === null) {
+        // Validate coordinates - must be non-null, not NaN, and within reasonable bounds
+        if (leftX === null || topY === null || bottomY === null ||
+            isNaN(topY) || isNaN(bottomY) ||
+            topY < -50 || bottomY < -50 ||
+            topY > chartHeight + 50 || bottomY > chartHeight + 50) {
+          return null;
+        }
+
+        // Check for reasonable height (not a vertical line)
+        const height = Math.abs(bottomY - topY);
+        if (height < 1 || height > chartHeight) {
           return null;
         }
 
@@ -1881,6 +1989,14 @@ function MTFZonesOverlay({
     <>
       {/* HTF Order Blocks - Orange/Amber theme */}
       {positions.htfObs.map((ob, i) => {
+        // Skip if dimensions are invalid
+        const obWidth = ob.right - ob.left;
+        const obHeight = ob.bottom - ob.top;
+        if (obWidth <= 0 || obHeight <= 0 || obHeight > 1000 ||
+            ob.top < 0 || ob.bottom < 0 || isNaN(ob.top) || isNaN(ob.bottom)) {
+          return null;
+        }
+
         const isBullOB = ob.direction === 'buy';
         const baseColor = isBullOB ? '251, 146, 60' : '249, 115, 22'; // amber-400 : orange-500
 
@@ -1891,15 +2007,15 @@ function MTFZonesOverlay({
             style={{
               left: ob.left,
               top: ob.top,
-              width: ob.right - ob.left,
-              height: Math.max(2, ob.bottom - ob.top),
+              width: obWidth,
+              height: Math.max(2, obHeight),
               backgroundColor: `rgba(${baseColor}, ${ob.priceInZone ? 0.35 : 0.2})`,
               border: `2px solid rgba(${baseColor}, 0.8)`,
               borderRadius: '2px',
               boxShadow: ob.priceInZone ? `0 0 12px rgba(${baseColor}, 0.5)` : 'none',
               pointerEvents: 'none',
             }}
-            title={`HTF ${ob.htfTf} ${isBullOB ? 'Bull' : 'Bear'} OB | Vol: ${ob.volStrength.toFixed(1)}x`}
+            title={`HTF ${ob.htfTf} ${isBullOB ? 'Bull' : 'Bear'} OB | Vol: ${ob.volStrength}`}
           >
             {/* HTF OB label */}
             <div
@@ -1919,6 +2035,14 @@ function MTFZonesOverlay({
 
       {/* HTF FVGs - Cyan/Teal theme */}
       {positions.htfFvgs.map((fvg, i) => {
+        // Skip if dimensions are invalid (prevents vertical line rendering bug)
+        const fvgWidth = fvg.right - fvg.left;
+        const fvgHeight = fvg.bottom - fvg.top;
+        if (fvgWidth <= 0 || fvgHeight <= 0 || fvgHeight > 1000 ||
+            fvg.top < 0 || fvg.bottom < 0 || isNaN(fvg.top) || isNaN(fvg.bottom)) {
+          return null;
+        }
+
         const isBullFVG = fvg.direction === 'buy';
         const baseColor = isBullFVG ? '20, 184, 166' : '6, 182, 212'; // teal-500 : cyan-500
 
@@ -1929,8 +2053,8 @@ function MTFZonesOverlay({
             style={{
               left: fvg.left,
               top: fvg.top,
-              width: fvg.right - fvg.left,
-              height: Math.max(2, fvg.bottom - fvg.top),
+              width: fvgWidth,
+              height: Math.max(2, fvgHeight),
               backgroundColor: `rgba(${baseColor}, ${fvg.priceInGap ? 0.3 : 0.15})`,
               border: `1px dashed rgba(${baseColor}, 0.7)`,
               borderRadius: '2px',

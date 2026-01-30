@@ -14,6 +14,14 @@ import type {
   UpdateHoldingResponse,
   RemoveHoldingResponse,
   VolumeProfileResponse,
+  VolumaticBacktestResponse,
+  MTFAnalyzeResponse,
+  DynamicIndicatorsResponse,
+  BacktestResponse,
+  AlertSettings,
+  AlertSettingsResponse,
+  AlertTestResponse,
+  AlertScanResponse,
 } from './types';
 
 const BASE_URL = 'http://localhost:8000';
@@ -259,6 +267,188 @@ export async function fetchVolumeProfile(
   });
 
   const response = await fetch(`${BASE_URL}/volume_profile?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch Volumatic Strategy backtest results
+ */
+export async function fetchVolumaticBacktest(
+  symbol: string,
+  market: string = 'KR',
+  timeframe: string = '1D',
+  lookback: number = 1000
+): Promise<VolumaticBacktestResponse> {
+  const params = new URLSearchParams({
+    symbol,
+    market,
+    tf: timeframe,
+    lookback: lookback.toString(),
+  });
+
+  const response = await fetch(`${BASE_URL}/strategy/backtest?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch MTF (Multi-Timeframe) analysis
+ */
+export async function fetchMTFAnalyze(
+  symbol: string,
+  market: string = 'KR',
+  ltf: string = '1H',
+  htf: string = '',
+  lookback: number = 20,
+  freshOnly: boolean = true
+): Promise<MTFAnalyzeResponse> {
+  const params = new URLSearchParams({
+    symbol,
+    market,
+    ltf,
+    lookback: lookback.toString(),
+    fresh_only: freshOnly.toString(),
+  });
+  if (htf) {
+    params.append('htf', htf);
+  }
+
+  const response = await fetch(`${BASE_URL}/mtf/analyze?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch dynamic indicators with signal lines
+ */
+export async function fetchDynamicIndicators(
+  symbol: string,
+  market: string = 'KR',
+  timeframe: string = '1D',
+  selected: string[] = ['wr']
+): Promise<DynamicIndicatorsResponse> {
+  const params = new URLSearchParams({
+    symbol,
+    market,
+    tf: timeframe,
+    selected: selected.join(','),
+  });
+
+  const response = await fetch(`${BASE_URL}/indicators/dynamic?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch strategy backtest results
+ */
+export async function fetchBacktest(
+  symbol: string,
+  market: string = 'KR',
+  timeframe: string = '1D',
+  days: number = 90,
+  minScore: number = 85,
+  riskReward: number = 3.0
+): Promise<BacktestResponse> {
+  const params = new URLSearchParams({
+    symbol,
+    market,
+    tf: timeframe,
+    days: days.toString(),
+    min_score: minScore.toString(),
+    risk_reward: riskReward.toString(),
+  });
+
+  const response = await fetch(`${BASE_URL}/backtest?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Send test alert to Telegram
+ */
+export async function sendTestAlert(): Promise<AlertTestResponse> {
+  const response = await fetch(`${BASE_URL}/alerts/test`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get alert settings
+ */
+export async function getAlertSettings(): Promise<AlertSettingsResponse> {
+  const response = await fetch(`${BASE_URL}/alerts/settings`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Update alert settings
+ */
+export async function updateAlertSettings(
+  settings: AlertSettings
+): Promise<AlertSettingsResponse> {
+  const response = await fetch(`${BASE_URL}/alerts/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Manually scan for alerts
+ */
+export async function scanForAlerts(
+  market: string = 'KR'
+): Promise<AlertScanResponse> {
+  const response = await fetch(`${BASE_URL}/alerts/scan?market=${market}`, {
+    method: 'POST',
+  });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));

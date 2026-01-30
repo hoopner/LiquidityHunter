@@ -87,8 +87,8 @@ export function WhyPanel({ symbol, market, timeframe = '1D' }: WhyPanelProps) {
     const ema20 = state.ohlcv.ema20[len - 1];
     const ema200 = state.ohlcv.ema200[len - 1];
 
-    // Skip if EMAs are not yet calculated (initial period)
-    if (ema20 === 0 || ema200 === 0) {
+    // Skip if EMAs are not yet calculated (initial period) or null
+    if (ema20 === null || ema200 === null || ema20 === 0 || ema200 === 0) {
       return { status: 'unknown', text: 'EMA 계산 중', color: 'text-[var(--text-secondary)]' };
     }
 
@@ -101,15 +101,19 @@ export function WhyPanel({ symbol, market, timeframe = '1D' }: WhyPanelProps) {
     let daysToClose = null;
 
     if (lookback >= 2) {
-      const prevGap = state.ohlcv.ema20[len - lookback] - state.ohlcv.ema200[len - lookback];
-      const gapChange = Math.abs(gap) - Math.abs(prevGap);
+      const prevEma20 = state.ohlcv.ema20[len - lookback];
+      const prevEma200 = state.ohlcv.ema200[len - lookback];
+      if (prevEma20 !== null && prevEma200 !== null) {
+        const prevGap = prevEma20 - prevEma200;
+        const gapChange = Math.abs(gap) - Math.abs(prevGap);
 
-      // If gap is closing
-      if (gapChange < 0 && Math.abs(gap) < Math.abs(prevGap)) {
-        approaching = true;
-        const dailyChange = (Math.abs(prevGap) - Math.abs(gap)) / lookback;
-        if (dailyChange > 0) {
-          daysToClose = Math.ceil(Math.abs(gap) / dailyChange);
+        // If gap is closing
+        if (gapChange < 0 && Math.abs(gap) < Math.abs(prevGap)) {
+          approaching = true;
+          const dailyChange = (Math.abs(prevGap) - Math.abs(gap)) / lookback;
+          if (dailyChange > 0) {
+            daysToClose = Math.ceil(Math.abs(gap) / dailyChange);
+          }
         }
       }
     }

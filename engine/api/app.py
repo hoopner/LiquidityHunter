@@ -363,11 +363,29 @@ def analyze(
     Returns the current valid order block (if any) and validation details.
     Set filter_weak=true to exclude OBs with weak volume (< 0.8x avg volume).
     """
+    # Use same data loading and limiting as OHLCV endpoint
+    market = market.upper() if market else "US"
     try:
-        data_dir = f"data/{market.lower()}" if market else "data"
-        data = load_csv(symbol, tf, data_dir=data_dir)
+        data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=False)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    # Apply same limits as OHLCV endpoint to ensure consistency
+    default_limits = {
+        "1m": 500, "5m": 500, "15m": 500, "30m": 500,
+        "1h": 500, "1H": 500, "4h": 500, "4H": 500,
+        "1D": 1500, "1d": 1500, "1W": 0, "1w": 0, "1M": 0, "1mo": 0,
+    }
+    max_bars = default_limits.get(tf, 1000)
+    total_bars = len(data.close)
+    if max_bars > 0 and total_bars > max_bars:
+        start_idx = total_bars - max_bars
+        data.timestamps = data.timestamps[start_idx:]
+        data.open = data.open[start_idx:]
+        data.high = data.high[start_idx:]
+        data.low = data.low[start_idx:]
+        data.close = data.close[start_idx:]
+        data.volume = data.volume[start_idx:]
 
     try:
         return analyze_at_bar(data, bar_index, filter_weak=filter_weak)
