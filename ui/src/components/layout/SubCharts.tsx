@@ -405,6 +405,7 @@ export function SubCharts({
             onChartActivate={() => onChartActivate?.(expandedIndicator)}
             onDrawingComplete={onDrawingComplete}
             drawingHook={drawingHooks[expandedIndicator]}
+            externalVisibleRange={externalVisibleRange}
           />
         </div>
       </div>
@@ -467,6 +468,7 @@ export function SubCharts({
                   onChartActivate={() => onChartActivate?.(indicator)}
                   onDrawingComplete={onDrawingComplete}
                   drawingHook={drawingHooks[indicator]}
+                  externalVisibleRange={externalVisibleRange}
                 />
               </div>
             </div>
@@ -492,6 +494,7 @@ function IndicatorChart({
   onChartActivate,
   onDrawingComplete,
   drawingHook,
+  externalVisibleRange,
 }: {
   indicator: IndicatorType;
   data: OHLCVResponse | null;
@@ -503,6 +506,7 @@ function IndicatorChart({
   onChartActivate?: () => void;
   onDrawingComplete?: () => void;
   drawingHook?: ReturnType<typeof useDrawings>;
+  externalVisibleRange?: { from: number; to: number } | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -782,14 +786,21 @@ function IndicatorChart({
       }
     }
 
-    // Fit content initially - will be overridden by sync from parent
-    chartRef.current?.timeScale().fitContent();
+    // Sync to external visible range AFTER data is loaded (critical for timeline sync)
+    // This is more reliable than the parent's sync effect because data is now available
+    if (externalVisibleRange && chartRef.current) {
+      try {
+        chartRef.current.timeScale().setVisibleLogicalRange(externalVisibleRange);
+      } catch {
+        // Ignore - chart might not be ready
+      }
+    }
 
     // Notify parent of primary series for drawing coordinate conversion
     if (seriesRef.current.length > 0) {
       onSeriesReady?.(seriesRef.current[0]);
     }
-  }, [data, indicator, onSeriesReady]);
+  }, [data, indicator, onSeriesReady, externalVisibleRange]);
 
   const canRenderDrawing = chartReady && drawingHook && chartRef.current && seriesRef.current.length > 0;
 

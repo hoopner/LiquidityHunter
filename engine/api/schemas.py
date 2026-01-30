@@ -164,6 +164,14 @@ class OHLCVResponse(BaseModel):
     rsi_bb_upper: List[float] = []  # BB(30, 2.0) applied to RSI
     rsi_bb_middle: List[float] = []
     rsi_bb_lower: List[float] = []
+    # VWAP (Volume Weighted Average Price)
+    vwap: List[float] = []  # VWAP with daily reset (intraday only)
+    # Keltner Channel
+    kc_upper: List[float] = []   # EMA(20) + ATR(10) * 1.5
+    kc_middle: List[float] = []  # EMA(20)
+    kc_lower: List[float] = []   # EMA(20) - ATR(10) * 1.5
+    # TTM Squeeze
+    squeeze: List[bool] = []  # True = squeeze ON (BB inside KC), False = squeeze OFF
 
 
 # --- Williams %R schemas ---

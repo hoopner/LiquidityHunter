@@ -41,6 +41,14 @@ export interface OHLCVResponse {
   rsi_bb_upper: number[];  // BB(30, 2.0) applied to RSI
   rsi_bb_middle: number[];
   rsi_bb_lower: number[];
+  // VWAP (Volume Weighted Average Price) - intraday only
+  vwap: number[];
+  // Keltner Channel
+  kc_upper: number[];   // EMA(20) + ATR(10) * 1.5
+  kc_middle: number[];  // EMA(20)
+  kc_lower: number[];   // EMA(20) - ATR(10) * 1.5
+  // TTM Squeeze
+  squeeze: boolean[];  // true = squeeze ON (BB inside KC)
 }
 
 // Order Block types

@@ -82,6 +82,12 @@ export function MainChart({
   const bb1LowerRef = useRef<ISeriesApi<'Line'> | null>(null);
   const bb2UpperRef = useRef<ISeriesApi<'Line'> | null>(null);
   const bb2LowerRef = useRef<ISeriesApi<'Line'> | null>(null);
+  // VWAP series ref
+  const vwapRef = useRef<ISeriesApi<'Line'> | null>(null);
+  // Keltner Channel series refs
+  const kcUpperRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const kcMiddleRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const kcLowerRef = useRef<ISeriesApi<'Line'> | null>(null);
 
   // Ref to store the latest onVisibleRangeChange callback (avoids stale closure)
   const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
@@ -140,6 +146,12 @@ export function MainChart({
   // Bollinger Band toggle states
   const [showBB1, setShowBB1] = useState(false);  // BB1 (20, 0.5) - Green
   const [showBB2, setShowBB2] = useState(false);  // BB2 (20, 3.0) - Red
+  // VWAP toggle state
+  const [showVWAP, setShowVWAP] = useState(false);
+  // Keltner Channel toggle state
+  const [showKC, setShowKC] = useState(false);
+  // TTM Squeeze toggle state
+  const [showSqueeze, setShowSqueeze] = useState(false);
   const [obBoxPosition, setObBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
   // FVG positions - now supports multiple independent FVGs
   const [fvgBoxPositions, setFvgBoxPositions] = useState<(BoxPosition & { direction: string })[]>([]);
@@ -654,18 +666,18 @@ export function MainChart({
     });
     candlestickSeriesRef.current = candlestickSeries;
 
-    // Create EMA20 line series
+    // Create EMA20 line series - Bright Pink
     const ema20Series = chart.addSeries(LineSeries, {
-      color: '#f59e0b',
-      lineWidth: 1,
+      color: '#f472b6',
+      lineWidth: 2,
       title: 'EMA20',
     });
     ema20SeriesRef.current = ema20Series;
 
-    // Create EMA200 line series
+    // Create EMA200 line series - Green
     const ema200Series = chart.addSeries(LineSeries, {
-      color: '#8b5cf6',
-      lineWidth: 1,
+      color: '#22c55e',
+      lineWidth: 2,
       title: 'EMA200',
     });
     ema200SeriesRef.current = ema200Series;
@@ -714,6 +726,40 @@ export function MainChart({
       visible: false,
     });
     bb2LowerRef.current = bb2Lower;
+
+    // Create VWAP line series - Yellow
+    const vwapLine = chart.addSeries(LineSeries, {
+      color: '#eab308',  // Yellow
+      lineWidth: 2,
+      title: 'VWAP',
+      visible: false,
+    });
+    vwapRef.current = vwapLine;
+
+    // Create Keltner Channel line series - Cyan
+    const kcUpper = chart.addSeries(LineSeries, {
+      color: '#06b6d4',  // Cyan
+      lineWidth: 1,
+      title: 'KC Upper',
+      visible: false,
+    });
+    kcUpperRef.current = kcUpper;
+
+    const kcMiddle = chart.addSeries(LineSeries, {
+      color: '#ffffff',  // White
+      lineWidth: 1,
+      title: 'KC Middle',
+      visible: false,
+    });
+    kcMiddleRef.current = kcMiddle;
+
+    const kcLower = chart.addSeries(LineSeries, {
+      color: '#06b6d4',  // Cyan
+      lineWidth: 1,
+      title: 'KC Lower',
+      visible: false,
+    });
+    kcLowerRef.current = kcLower;
 
     // Handle resize
     const handleResize = () => {
@@ -922,6 +968,41 @@ export function MainChart({
     bb2UpperRef.current?.setData(bb2UpperData);
     bb2LowerRef.current?.setData(bb2LowerData);
 
+    // Set VWAP data (skip zero values - VWAP is intraday only)
+    const vwapData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.vwap?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+    vwapRef.current?.setData(vwapData);
+
+    // Set Keltner Channel data (skip zero values at beginning)
+    const kcUpperData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.kc_upper?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+
+    const kcMiddleData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.kc_middle?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+
+    const kcLowerData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.kc_lower?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+
+    kcUpperRef.current?.setData(kcUpperData);
+    kcMiddleRef.current?.setData(kcMiddleData);
+    kcLowerRef.current?.setData(kcLowerData);
+
     // Fit content
     chartRef.current?.timeScale().fitContent();
 
@@ -956,6 +1037,18 @@ export function MainChart({
     bb2UpperRef.current?.applyOptions({ visible: showBB2 });
     bb2LowerRef.current?.applyOptions({ visible: showBB2 });
   }, [showBB2]);
+
+  // Toggle VWAP visibility
+  useEffect(() => {
+    vwapRef.current?.applyOptions({ visible: showVWAP });
+  }, [showVWAP]);
+
+  // Toggle Keltner Channel visibility
+  useEffect(() => {
+    kcUpperRef.current?.applyOptions({ visible: showKC });
+    kcMiddleRef.current?.applyOptions({ visible: showKC });
+    kcLowerRef.current?.applyOptions({ visible: showKC });
+  }, [showKC]);
 
   // Get current price info
   const lastBar = data?.bars[data.bars.length - 1];
@@ -1244,6 +1337,49 @@ export function MainChart({
             BB2
           </button>
 
+          {/* VWAP Toggle - Orange (intraday only) */}
+          <button
+            onClick={() => setShowVWAP(!showVWAP)}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showVWAP
+                ? ['1D', '1W', '1M'].includes(timeframe)
+                  ? 'bg-[#6b7280] text-white'  // Gray when daily+ (VWAP not meaningful)
+                  : 'bg-[#eab308] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title={['1D', '1W', '1M'].includes(timeframe)
+              ? 'VWAP - Not available for daily+ timeframes (use 1h, 5m, etc.)'
+              : 'VWAP - Volume Weighted Average Price (intraday)'}
+          >
+            VWAP{showVWAP && ['1D', '1W', '1M'].includes(timeframe) ? ' (N/A)' : ''}
+          </button>
+
+          {/* Keltner Channel Toggle - Cyan */}
+          <button
+            onClick={() => setShowKC(!showKC)}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showKC
+                ? 'bg-[#06b6d4] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title="Keltner Channel (EMA20, ATR10×1.5)"
+          >
+            KC
+          </button>
+
+          {/* TTM Squeeze Toggle */}
+          <button
+            onClick={() => setShowSqueeze(!showSqueeze)}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showSqueeze
+                ? 'bg-[#8b5cf6] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title="TTM Squeeze (BB inside KC = consolidation)"
+          >
+            Squeeze
+          </button>
+
           {/* Drawing Tools Toggle */}
           <button
             onClick={() => setShowDrawingTools(!showDrawingTools)}
@@ -1292,11 +1428,42 @@ export function MainChart({
               </span>
             )}
             <span className="flex items-center gap-1">
-              <span className="w-3 h-0.5 bg-[#f59e0b]"></span> EMA20
+              <span className="w-3 h-0.5 bg-[#f472b6]"></span> EMA20
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-3 h-0.5 bg-[#8b5cf6]"></span> EMA200
+              <span className="w-3 h-0.5 bg-[#22c55e]"></span> EMA200
             </span>
+            {/* VWAP legend */}
+            {showVWAP && (
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-0.5 bg-[#eab308]"></span> VWAP
+              </span>
+            )}
+            {/* Keltner Channel legend */}
+            {showKC && (
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-0.5 bg-[#06b6d4]"></span> KC
+              </span>
+            )}
+            {/* TTM Squeeze Status */}
+            {showSqueeze && data && data.squeeze && (
+              <span className="flex items-center gap-1">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    data.squeeze[data.squeeze.length - 1]
+                      ? 'bg-[#ef4444]'  // Red = Squeeze ON (consolidation)
+                      : 'bg-[#22c55e]'  // Green = Squeeze OFF (breakout)
+                  }`}
+                ></span>
+                <span className={
+                  data.squeeze[data.squeeze.length - 1]
+                    ? 'text-[#ef4444]'
+                    : 'text-[#22c55e]'
+                }>
+                  {data.squeeze[data.squeeze.length - 1] ? 'Squeeze' : 'Fired'}
+                </span>
+              </span>
+            )}
           </div>
         </div>
       )}
