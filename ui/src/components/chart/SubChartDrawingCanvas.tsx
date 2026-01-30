@@ -57,6 +57,7 @@ export function SubChartDrawingCanvas({
 
 
   // Convert pixel to point (for indicator values)
+  // IMPORTANT: Preserve original time format - Unix timestamp for intraday, date string for daily
   const pixelToPoint = useCallback(
     (x: number, y: number): Point | null => {
       if (!chart || !series) return null;
@@ -67,11 +68,15 @@ export function SubChartDrawingCanvas({
       const time = chart.timeScale().coordinateToTime(x);
       if (time === null) return null;
 
+      // Keep time in original format (number for intraday, string/BusinessDay for daily)
+      // This ensures timeToCoordinate works correctly when rendering
+      if (typeof time === 'number') {
+        return { time, price: value, x, y };
+      }
+
       const timeStr =
         typeof time === 'string'
           ? time
-          : typeof time === 'number'
-          ? new Date(time * 1000).toISOString().split('T')[0]
           : `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
 
       return { time: timeStr, price: value, x, y };

@@ -197,7 +197,7 @@ export class DrawingManager {
     }) as HorizontalLineDrawing;
   }
 
-  createVerticalLine(time: string, options?: Partial<Omit<VerticalLineDrawing, 'type' | 'time'>>): VerticalLineDrawing {
+  createVerticalLine(time: string | number, options?: Partial<Omit<VerticalLineDrawing, 'type' | 'time'>>): VerticalLineDrawing {
     const defaults = DEFAULT_DRAWING_VALUES.vertical_line;
     return this.add({
       type: 'vertical_line',

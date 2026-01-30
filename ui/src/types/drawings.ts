@@ -14,7 +14,7 @@ export type DrawingType =
 export type DrawingToolType = DrawingType | 'select' | 'delete';
 
 export interface Point {
-  time: string; // ISO date string
+  time: string | number; // ISO date string for daily, Unix timestamp for intraday
   price: number;
   x?: number; // Pixel coordinate (computed)
   y?: number; // Pixel coordinate (computed)
@@ -42,7 +42,7 @@ export interface HorizontalLineDrawing extends BaseDrawing {
 
 export interface VerticalLineDrawing extends BaseDrawing {
   type: 'vertical_line';
-  time: string;
+  time: string | number; // ISO date string for daily, Unix timestamp for intraday
   lineStyle: 'solid' | 'dashed' | 'dotted';
 }
 

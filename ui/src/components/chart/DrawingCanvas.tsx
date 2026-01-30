@@ -76,6 +76,7 @@ export function DrawingCanvas({
   const isDraggingChartRef = useRef(false);
 
   // Convert pixel coordinates to price/time using chart APIs
+  // IMPORTANT: Preserve original time format - Unix timestamp for intraday, date string for daily
   const pixelToPoint = useCallback(
     (x: number, y: number): Point | null => {
       if (!chart || !series || !data || data.bars.length === 0) return null;
@@ -83,6 +84,10 @@ export function DrawingCanvas({
       // Get price from y coordinate
       const price = series.coordinateToPrice(y);
       if (price === null) return null;
+
+      // Determine if data uses Unix timestamps (intraday) or date strings (daily)
+      const sampleTime = data.bars[0]?.time;
+      const isIntraday = typeof sampleTime === 'number';
 
       // Get time from x coordinate - use coordinateToTime for accurate conversion
       const timeScale = chart.timeScale();
@@ -95,14 +100,19 @@ export function DrawingCanvas({
 
         const barIndex = Math.round(logicalIndex);
         const clampedIndex = Math.max(0, Math.min(barIndex, data.bars.length - 1));
-        const rawTime = data.bars[clampedIndex]?.time || '';
-        const fallbackTime = typeof rawTime === 'number'
-          ? new Date(rawTime * 1000).toISOString().split('T')[0]
-          : rawTime;
-        return { time: fallbackTime, price, x, y };
+        const rawTime = data.bars[clampedIndex]?.time;
+        // Keep original format (number for intraday, string for daily)
+        return { time: rawTime, price, x, y };
       }
 
-      // Convert Time to string format
+      // Return time in its original format
+      // For intraday (Unix timestamp), keep as number
+      // For daily (date string or BusinessDay object), convert to string
+      if (isIntraday && typeof time === 'number') {
+        return { time, price, x, y };
+      }
+
+      // Convert Time to string format for daily data
       const timeStr = typeof time === 'string' ? time :
                      typeof time === 'number' ? new Date(time * 1000).toISOString().split('T')[0] :
                      `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
