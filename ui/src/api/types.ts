@@ -457,3 +457,50 @@ export interface AlertScanResponse {
   alerts_sent: number;
   message: string;
 }
+
+// KIS API types
+
+export interface KISConfigRequest {
+  app_key: string;
+  app_secret: string;
+  account_no?: string;
+  mock?: boolean;
+}
+
+export interface KISConfigResponse {
+  success: boolean;
+  message: string;
+  configured: boolean;
+  mock_mode: boolean;
+}
+
+export interface KISConnectionStatus {
+  configured: boolean;
+  connected: boolean;
+  mock_mode: boolean;
+  message: string;
+  token_expires?: string;
+}
+
+export interface KISPriceResponse {
+  symbol: string;
+  market: string;
+  price: number;
+  change: number;
+  change_pct: number;
+  volume: number;
+  high: number;
+  low: number;
+  open: number;
+  prev_close: number;
+  timestamp: string;
+}
+
+export interface DataSourceInfo {
+  current_source: string;
+  kis_configured: boolean;
+  kis_connected: boolean;
+  available_sources: string[];
+}
+
+export type DataSource = 'yfinance' | 'kis';

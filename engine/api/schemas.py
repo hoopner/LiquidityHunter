@@ -596,3 +596,53 @@ class AlertSettingsResponse(BaseModel):
     """Response for alert settings."""
     settings: AlertSettingsSchema
     connected: bool
+
+
+# --- KIS API schemas ---
+
+class KISConfigRequest(BaseModel):
+    """Request body for KIS API configuration."""
+    app_key: str
+    app_secret: str
+    account_no: str = ""
+    mock: bool = False
+
+
+class KISConfigResponse(BaseModel):
+    """Response for KIS API configuration."""
+    success: bool
+    message: str
+    configured: bool
+    mock_mode: bool
+
+
+class KISConnectionStatus(BaseModel):
+    """KIS API connection status."""
+    configured: bool
+    connected: bool
+    mock_mode: bool
+    message: str
+    token_expires: Optional[str] = None
+
+
+class KISPriceResponse(BaseModel):
+    """Response for KIS current price query."""
+    symbol: str
+    market: str
+    price: float
+    change: float
+    change_pct: float
+    volume: int
+    high: float
+    low: float
+    open: float
+    prev_close: float
+    timestamp: str
+
+
+class DataSourceInfo(BaseModel):
+    """Information about available data sources."""
+    current_source: str  # "yfinance" or "kis"
+    kis_configured: bool
+    kis_connected: bool
+    available_sources: List[str]

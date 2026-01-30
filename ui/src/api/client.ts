@@ -22,22 +22,32 @@ import type {
   AlertSettingsResponse,
   AlertTestResponse,
   AlertScanResponse,
+  // KIS API types
+  KISConfigRequest,
+  KISConfigResponse,
+  KISConnectionStatus,
+  KISPriceResponse,
+  DataSourceInfo,
+  DataSource,
 } from './types';
 
 const BASE_URL = 'http://localhost:8000';
 
 /**
  * Fetch OHLCV data with EMA indicators
+ * @param source - Data source: 'yfinance' (default) or 'kis' (Korea Investment API)
  */
 export async function fetchOHLCV(
   symbol: string,
   market: string = 'KR',
-  timeframe: string = '1D'
+  timeframe: string = '1D',
+  source: DataSource = 'yfinance'
 ): Promise<OHLCVResponse> {
   const params = new URLSearchParams({
     symbol,
     market,
     tf: timeframe,
+    source,
   });
 
   const response = await fetch(`${BASE_URL}/ohlcv?${params}`);
@@ -449,6 +459,99 @@ export async function scanForAlerts(
   const response = await fetch(`${BASE_URL}/alerts/scan?market=${market}`, {
     method: 'POST',
   });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+// --- KIS API Functions ---
+
+/**
+ * Configure KIS API credentials
+ */
+export async function configureKIS(
+  config: KISConfigRequest
+): Promise<KISConfigResponse> {
+  const response = await fetch(`${BASE_URL}/kis/configure`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get KIS API connection status
+ */
+export async function getKISStatus(): Promise<KISConnectionStatus> {
+  const response = await fetch(`${BASE_URL}/kis/status`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Test KIS API connection
+ */
+export async function testKISConnection(): Promise<{
+  success: boolean;
+  message: string;
+  test_data?: {
+    symbol: string;
+    name: string;
+    price: number;
+    change: number;
+    change_pct: number;
+  };
+  error_code?: string;
+}> {
+  const response = await fetch(`${BASE_URL}/kis/test`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get current price from KIS API
+ */
+export async function getKISPrice(
+  symbol: string,
+  market: string = 'KR'
+): Promise<KISPriceResponse> {
+  const params = new URLSearchParams({ symbol, market });
+  const response = await fetch(`${BASE_URL}/kis/price?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get available data sources info
+ */
+export async function getDataSourceInfo(): Promise<DataSourceInfo> {
+  const response = await fetch(`${BASE_URL}/data/source`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));

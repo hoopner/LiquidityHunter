@@ -85,6 +85,18 @@ from engine.api.schemas import (
     AlertSettingsSchema,
     AlertTestResponse,
     AlertSettingsResponse,
+    # KIS API schemas
+    KISConfigRequest,
+    KISConfigResponse,
+    KISConnectionStatus,
+    KISPriceResponse,
+    DataSourceInfo,
+)
+from engine.data.kis_api import (
+    KISClient,
+    KISAPIError,
+    get_kis_client,
+    configure_kis_client,
 )
 from engine.core.screener import ema, rsi, macd
 from engine.strategy.backtest import run_backtest
@@ -661,12 +673,15 @@ def get_ohlcv(
     tf: str = Query("1D", description="Timeframe: 1m, 5m, 15m, 1h, 1D, 1W, 1M"),
     refresh: bool = Query(False, description="Force refresh from yfinance"),
     limit: int = Query(0, description="Max bars to return (0=auto based on timeframe)"),
+    source: str = Query("yfinance", description="Data source: yfinance or kis"),
 ) -> OHLCVResponse:
     """
     Get OHLCV data with indicators for charting.
 
     Supports all timeframes: 1m, 5m, 15m, 1h, 1D, 1W, 1M
-    Data is automatically fetched from yfinance if not cached.
+    Data sources:
+    - yfinance: Yahoo Finance (free, delayed)
+    - kis: Korea Investment & Securities API (real-time, requires credentials)
 
     Returns bars array with dates and indicator values.
     """
@@ -674,11 +689,36 @@ def get_ohlcv(
     if market not in ("KR", "US"):
         raise HTTPException(status_code=400, detail="Market must be KR or US")
 
-    try:
-        # Use load_with_refresh for dynamic data fetching
-        data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=refresh)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    data = None
+
+    # Try KIS source if requested
+    if source.lower() == "kis":
+        try:
+            client = get_kis_client()
+            if client.is_configured:
+                kis_data = client.get_ohlcv(symbol, market, tf, count=limit if limit > 0 else 500)
+                if kis_data and kis_data.get("count", 0) > 0:
+                    # Convert KIS response to OHLCVData format
+                    data = OHLCVData(
+                        timestamps=kis_data["timestamps"],
+                        open=np.array(kis_data["open"]),
+                        high=np.array(kis_data["high"]),
+                        low=np.array(kis_data["low"]),
+                        close=np.array(kis_data["close"]),
+                        volume=np.array(kis_data["volume"]),
+                    )
+        except KISAPIError as e:
+            # Fall back to yfinance on KIS error
+            print(f"KIS API error, falling back to yfinance: {e}")
+        except Exception as e:
+            print(f"KIS error, falling back to yfinance: {e}")
+
+    # Fall back to yfinance if KIS not used or failed
+    if data is None:
+        try:
+            data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=refresh)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     # Apply default limits based on timeframe to prevent browser crashes
     default_limits = {
@@ -1938,3 +1978,179 @@ async def scan_for_alerts(
         "alerts_sent": alerts_sent,
         "message": f"Scanned {scanned} symbols, sent {alerts_sent} alerts",
     }
+
+
+# --- KIS API endpoints ---
+
+@app.post("/kis/configure", response_model=KISConfigResponse)
+def configure_kis(request: KISConfigRequest):
+    """
+    Configure KIS (Korea Investment & Securities) API credentials.
+
+    Credentials are stored in memory only (not persisted).
+    For production, use environment variables.
+    """
+    try:
+        client = configure_kis_client(
+            app_key=request.app_key,
+            app_secret=request.app_secret,
+            account_no=request.account_no,
+            mock=request.mock,
+        )
+
+        # Test the connection
+        status = client.test_connection()
+
+        return KISConfigResponse(
+            success=status["connected"],
+            message=status["message"],
+            configured=status["configured"],
+            mock_mode=status["mock_mode"],
+        )
+    except Exception as e:
+        return KISConfigResponse(
+            success=False,
+            message=str(e),
+            configured=False,
+            mock_mode=False,
+        )
+
+
+@app.get("/kis/status", response_model=KISConnectionStatus)
+def get_kis_status():
+    """
+    Get KIS API connection status.
+
+    Returns configuration and connection status.
+    """
+    try:
+        client = get_kis_client()
+        status = client.test_connection()
+
+        return KISConnectionStatus(
+            configured=status["configured"],
+            connected=status["connected"],
+            mock_mode=status["mock_mode"],
+            message=status["message"],
+            token_expires=status.get("token_expires"),
+        )
+    except Exception as e:
+        return KISConnectionStatus(
+            configured=False,
+            connected=False,
+            mock_mode=False,
+            message=str(e),
+        )
+
+
+@app.get("/kis/test")
+def test_kis_connection():
+    """
+    Test KIS API connection by fetching a sample stock price.
+
+    Uses Samsung (005930) as a test symbol.
+    """
+    try:
+        client = get_kis_client()
+
+        if not client.is_configured:
+            return {
+                "success": False,
+                "message": "KIS API not configured. Set KIS_APP_KEY and KIS_APP_SECRET environment variables or call /kis/configure.",
+            }
+
+        # Test with Samsung
+        price = client.get_current_price("005930", "KR")
+
+        return {
+            "success": True,
+            "message": "Connection successful",
+            "test_data": {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "price": price["price"],
+                "change": price["change"],
+                "change_pct": price["change_pct"],
+            },
+        }
+    except KISAPIError as e:
+        return {
+            "success": False,
+            "message": str(e),
+            "error_code": e.code,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Unexpected error: {e}",
+        }
+
+
+@app.get("/kis/price", response_model=KISPriceResponse)
+def get_kis_price(
+    symbol: str = Query(..., description="Stock symbol"),
+    market: str = Query("KR", description="Market: KR or US"),
+):
+    """
+    Get current stock price from KIS API.
+
+    Real-time price data (requires KIS API credentials).
+    """
+    try:
+        client = get_kis_client()
+
+        if not client.is_configured:
+            raise HTTPException(
+                status_code=400,
+                detail="KIS API not configured. Set environment variables or call /kis/configure first.",
+            )
+
+        price_data = client.get_current_price(symbol, market)
+
+        return KISPriceResponse(
+            symbol=price_data["symbol"],
+            market=price_data["market"],
+            price=price_data["price"],
+            change=price_data["change"],
+            change_pct=price_data["change_pct"],
+            volume=price_data["volume"],
+            high=price_data["high"],
+            low=price_data["low"],
+            open=price_data["open"],
+            prev_close=price_data["prev_close"],
+            timestamp=price_data["timestamp"],
+        )
+    except KISAPIError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+
+
+@app.get("/data/source", response_model=DataSourceInfo)
+def get_data_source_info():
+    """
+    Get information about available data sources.
+
+    Returns current source and KIS configuration status.
+    """
+    try:
+        client = get_kis_client()
+        status = client.test_connection()
+
+        available = ["yfinance"]
+        if status["configured"]:
+            available.append("kis")
+
+        return DataSourceInfo(
+            current_source="yfinance",  # Default source
+            kis_configured=status["configured"],
+            kis_connected=status["connected"],
+            available_sources=available,
+        )
+    except Exception:
+        return DataSourceInfo(
+            current_source="yfinance",
+            kis_configured=False,
+            kis_connected=False,
+            available_sources=["yfinance"],
+        )
