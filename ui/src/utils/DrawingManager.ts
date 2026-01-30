@@ -17,7 +17,7 @@ import { DEFAULT_DRAWING_VALUES, DRAWING_COLORS } from '../types/drawings';
 
 export type DrawingChangeCallback = (drawings: Drawing[]) => void;
 
-export type ChartType = 'main' | 'stoch_slow' | 'stoch_med' | 'stoch_fast' | 'rsi' | 'macd' | 'volume';
+export type ChartType = 'main' | 'stoch_slow' | 'stoch_med' | 'stoch_fast' | 'rsi' | 'macd' | 'volume' | 'rsi_bb';
 
 export class DrawingManager {
   private drawings: Map<string, Drawing> = new Map();

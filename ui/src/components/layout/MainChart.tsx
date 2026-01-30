@@ -76,6 +76,12 @@ export function MainChart({
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const ema20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const ema200SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  // Bollinger Band series refs
+  const bb1UpperRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const bb1MiddleRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const bb1LowerRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const bb2UpperRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const bb2LowerRef = useRef<ISeriesApi<'Line'> | null>(null);
 
   // Ref to store the latest onVisibleRangeChange callback (avoids stale closure)
   const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
@@ -130,6 +136,10 @@ export function MainChart({
   // Order Block state
   const [analyzeData, setAnalyzeData] = useState<AnalyzeResponse | null>(null);
   const [showOB, setShowOB] = useState(true);
+
+  // Bollinger Band toggle states
+  const [showBB1, setShowBB1] = useState(false);  // BB1 (20, 0.5) - Green
+  const [showBB2, setShowBB2] = useState(false);  // BB2 (20, 3.0) - Red
   const [obBoxPosition, setObBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
   // FVG positions - now supports multiple independent FVGs
   const [fvgBoxPositions, setFvgBoxPositions] = useState<(BoxPosition & { direction: string })[]>([]);
@@ -660,6 +670,51 @@ export function MainChart({
     });
     ema200SeriesRef.current = ema200Series;
 
+    // Create BB1 (Tight 0.5) line series - Green
+    const bb1Upper = chart.addSeries(LineSeries, {
+      color: '#22c55e',
+      lineWidth: 1,
+      title: 'BB1 Upper',
+      visible: false,
+    });
+    bb1UpperRef.current = bb1Upper;
+
+    const bb1Middle = chart.addSeries(LineSeries, {
+      color: '#22c55e',
+      lineWidth: 1,
+      // Solid line (no lineStyle)
+      title: 'BB1 Middle',
+      visible: false,
+    });
+    bb1MiddleRef.current = bb1Middle;
+
+    const bb1Lower = chart.addSeries(LineSeries, {
+      color: '#22c55e',
+      lineWidth: 1,
+      title: 'BB1 Lower',
+      visible: false,
+    });
+    bb1LowerRef.current = bb1Lower;
+
+    // Create BB2 (Wide 3.0) line series - Red
+    const bb2Upper = chart.addSeries(LineSeries, {
+      color: '#ef4444',
+      lineWidth: 1,
+      title: 'BB2 Upper',
+      visible: false,
+    });
+    bb2UpperRef.current = bb2Upper;
+
+    // BB2 has no middle line (only upper and lower)
+
+    const bb2Lower = chart.addSeries(LineSeries, {
+      color: '#ef4444',
+      lineWidth: 1,
+      title: 'BB2 Lower',
+      visible: false,
+    });
+    bb2LowerRef.current = bb2Lower;
+
     // Handle resize
     const handleResize = () => {
       if (chartContainerRef.current) {
@@ -821,6 +876,52 @@ export function MainChart({
     ema20SeriesRef.current.setData(ema20Data);
     ema200SeriesRef.current.setData(ema200Data);
 
+    // Set BB1 data (skip zero values at beginning)
+    const bb1UpperData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.bb1_upper?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+
+    const bb1MiddleData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.bb1_middle?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+
+    const bb1LowerData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.bb1_lower?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+
+    bb1UpperRef.current?.setData(bb1UpperData);
+    bb1MiddleRef.current?.setData(bb1MiddleData);
+    bb1LowerRef.current?.setData(bb1LowerData);
+
+    // Set BB2 data (skip zero values at beginning)
+    const bb2UpperData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.bb2_upper?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+
+    // BB2 has no middle line
+
+    const bb2LowerData: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.bb2_lower?.[i] || 0,
+      }))
+      .filter((d): d is LineData<Time> => d.value > 0);
+
+    bb2UpperRef.current?.setData(bb2UpperData);
+    bb2LowerRef.current?.setData(bb2LowerData);
+
     // Fit content
     chartRef.current?.timeScale().fitContent();
 
@@ -842,6 +943,19 @@ export function MainChart({
   useEffect(() => {
     updateBoxPositions();
   }, [analyzeData, updateBoxPositions]);
+
+  // Toggle BB1 visibility
+  useEffect(() => {
+    bb1UpperRef.current?.applyOptions({ visible: showBB1 });
+    bb1MiddleRef.current?.applyOptions({ visible: showBB1 });
+    bb1LowerRef.current?.applyOptions({ visible: showBB1 });
+  }, [showBB1]);
+
+  // Toggle BB2 visibility
+  useEffect(() => {
+    bb2UpperRef.current?.applyOptions({ visible: showBB2 });
+    bb2LowerRef.current?.applyOptions({ visible: showBB2 });
+  }, [showBB2]);
 
   // Get current price info
   const lastBar = data?.bars[data.bars.length - 1];
@@ -1102,6 +1216,32 @@ export function MainChart({
             title={`Multi-Timeframe Zones${mtfData ? ` (${mtfData.htf_timeframe})` : ''}`}
           >
             {mtfLoading ? '...' : 'MTF'}
+          </button>
+
+          {/* BB1 Toggle - Tight (0.5) Green */}
+          <button
+            onClick={() => setShowBB1(!showBB1)}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showBB1
+                ? 'bg-[#22c55e] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title="Bollinger Band (20, 0.5) - Tight"
+          >
+            BB1
+          </button>
+
+          {/* BB2 Toggle - Wide (3.0) Red */}
+          <button
+            onClick={() => setShowBB2(!showBB2)}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showBB2
+                ? 'bg-[#ef4444] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title="Bollinger Band (20, 3.0) - Wide"
+          >
+            BB2
           </button>
 
           {/* Drawing Tools Toggle */}
@@ -2081,3 +2221,4 @@ function MTFZonesOverlay({
     </>
   );
 }
+

@@ -19,7 +19,7 @@ import { SubChartDrawingCanvas } from '../chart/SubChartDrawingCanvas';
 import type { ChartType } from '../../utils/DrawingManager';
 
 // Indicator types - replaced Williams %R with 3 Stochastics
-export type IndicatorType = 'stoch_slow' | 'stoch_med' | 'stoch_fast' | 'rsi' | 'macd' | 'volume';
+export type IndicatorType = 'stoch_slow' | 'stoch_med' | 'stoch_fast' | 'rsi' | 'macd' | 'volume' | 'rsi_bb';
 export type ExpandedIndicator = IndicatorType | null;
 
 interface SubChartsProps {
@@ -60,10 +60,41 @@ const indicatorConfig: Record<IndicatorType, { label: string; shortLabel: string
   rsi: { label: 'RSI (14)', shortLabel: 'RSI', color: '#06b6d4' },
   macd: { label: 'MACD (12,26,9)', shortLabel: 'MACD', color: '#3b82f6' },
   volume: { label: 'Volume', shortLabel: 'Vol', color: '#26a69a' },
+  rsi_bb: { label: 'RSI BB (14,30,2)', shortLabel: 'RSI BB', color: '#a855f7' },
 };
 
-// Order: Stoch Slow (top), Stoch Med, Stoch Fast, RSI, MACD, Volume (bottom)
-const ALL_INDICATORS: IndicatorType[] = ['stoch_slow', 'stoch_med', 'stoch_fast', 'rsi', 'macd', 'volume'];
+// Default order: Stoch Slow (top), Stoch Med, Stoch Fast, RSI, MACD, Volume, RSI BB (bottom)
+const DEFAULT_INDICATOR_ORDER: IndicatorType[] = ['stoch_slow', 'stoch_med', 'stoch_fast', 'rsi', 'macd', 'volume', 'rsi_bb'];
+
+// LocalStorage key for persisting order
+const INDICATOR_ORDER_KEY = 'subchart_indicator_order';
+
+// Load indicator order from localStorage
+function loadIndicatorOrder(): IndicatorType[] {
+  try {
+    const stored = localStorage.getItem(INDICATOR_ORDER_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored) as IndicatorType[];
+      // Validate that all indicators are present
+      if (parsed.length === DEFAULT_INDICATOR_ORDER.length &&
+          DEFAULT_INDICATOR_ORDER.every(ind => parsed.includes(ind))) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return [...DEFAULT_INDICATOR_ORDER];
+}
+
+// Save indicator order to localStorage
+function saveIndicatorOrder(order: IndicatorType[]): void {
+  try {
+    localStorage.setItem(INDICATOR_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // Ignore storage errors
+  }
+}
 
 /**
  * Sub-charts component - ALL charts are SLAVES to main candlestick chart
@@ -83,10 +114,18 @@ export function SubCharts({
 }: SubChartsProps) {
   // Single data source for ALL charts
   const [data, setData] = useState<OHLCVResponse | null>(null);
+  // RSI BB is off by default (user can toggle it on)
   const [activeIndicators, setActiveIndicators] = useState<Set<IndicatorType>>(
     new Set(['stoch_slow', 'stoch_med', 'stoch_fast', 'rsi', 'macd', 'volume'])
   );
   const [expandedIndicator, setExpandedIndicator] = useState<ExpandedIndicator>(null);
+
+  // Indicator order (for drag-and-drop reordering)
+  const [indicatorOrder, setIndicatorOrder] = useState<IndicatorType[]>(loadIndicatorOrder);
+
+  // Drag state
+  const [draggedIndicator, setDraggedIndicator] = useState<IndicatorType | null>(null);
+  const [dropTargetIndicator, setDropTargetIndicator] = useState<IndicatorType | null>(null);
 
   // Chart refs - store all chart instances for syncing
   const chartRefs = useRef<Map<IndicatorType, IChartApi>>(new Map());
@@ -101,6 +140,7 @@ export function SubCharts({
   const rsiDrawings = useDrawings(symbol, timeframe, 'rsi');
   const macdDrawings = useDrawings(symbol, timeframe, 'macd');
   const volumeDrawings = useDrawings(symbol, timeframe, 'volume');
+  const rsiBBDrawings = useDrawings(symbol, timeframe, 'rsi_bb');
 
   // Map indicator type to drawing hook
   const drawingHooks: Record<IndicatorType, typeof stochSlowDrawings> = {
@@ -110,6 +150,7 @@ export function SubCharts({
     rsi: rsiDrawings,
     macd: macdDrawings,
     volume: volumeDrawings,
+    rsi_bb: rsiBBDrawings,
   };
 
 
@@ -157,6 +198,62 @@ export function SubCharts({
       return next;
     });
   };
+
+  // Drag-and-drop handlers
+  const handleDragStart = useCallback((indicator: IndicatorType) => (e: React.DragEvent) => {
+    setDraggedIndicator(indicator);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', indicator);
+    // Add a slight delay to allow the drag image to be captured
+    setTimeout(() => {
+      (e.target as HTMLElement).style.opacity = '0.5';
+    }, 0);
+  }, []);
+
+  const handleDragEnd = useCallback((e: React.DragEvent) => {
+    (e.target as HTMLElement).style.opacity = '1';
+    setDraggedIndicator(null);
+    setDropTargetIndicator(null);
+  }, []);
+
+  const handleDragOver = useCallback((indicator: IndicatorType) => (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedIndicator && indicator !== draggedIndicator) {
+      setDropTargetIndicator(indicator);
+    }
+  }, [draggedIndicator]);
+
+  const handleDragLeave = useCallback(() => {
+    setDropTargetIndicator(null);
+  }, []);
+
+  const handleDrop = useCallback((targetIndicator: IndicatorType) => (e: React.DragEvent) => {
+    e.preventDefault();
+    if (!draggedIndicator || draggedIndicator === targetIndicator) {
+      setDraggedIndicator(null);
+      setDropTargetIndicator(null);
+      return;
+    }
+
+    setIndicatorOrder(prev => {
+      const newOrder = [...prev];
+      const draggedIndex = newOrder.indexOf(draggedIndicator);
+      const targetIndex = newOrder.indexOf(targetIndicator);
+
+      // Remove dragged item
+      newOrder.splice(draggedIndex, 1);
+      // Insert at target position
+      newOrder.splice(targetIndex, 0, draggedIndicator);
+
+      // Save to localStorage
+      saveIndicatorOrder(newOrder);
+      return newOrder;
+    });
+
+    setDraggedIndicator(null);
+    setDropTargetIndicator(null);
+  }, [draggedIndicator]);
 
   // Store external visible range in ref for use in callbacks
   const visibleRangeRef = useRef(externalVisibleRange);
@@ -264,6 +361,12 @@ export function SubCharts({
         if (!bar) return null;
         return <span style={{ color: 'var(--text-primary)' }}>{(bar.volume / 1000000).toFixed(1)}M</span>;
       }
+      case 'rsi_bb': {
+        const v = data.rsi?.[data.rsi.length - 1];
+        if (v == null || v <= 0) return null;
+        const color = v >= 70 ? '#ef5350' : v <= 30 ? '#26a69a' : '#a855f7';
+        return <span style={{ color, fontWeight: 500 }}>{v.toFixed(1)}</span>;
+      }
     }
   };
 
@@ -272,9 +375,9 @@ export function SubCharts({
     const config = indicatorConfig[expandedIndicator];
     return (
       <div className="flex flex-col h-full border-t border-[var(--border-color)]">
-        {/* Toggle buttons */}
+        {/* Toggle buttons - order follows subchart order */}
         <div className="px-2 py-1 bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2">
-          {ALL_INDICATORS.map(renderToggleButton)}
+          {indicatorOrder.map(renderToggleButton)}
         </div>
 
         {/* Expanded header */}
@@ -311,27 +414,45 @@ export function SubCharts({
   // Normal view with all active indicators
   return (
     <div className="flex flex-col h-full border-t border-[var(--border-color)]">
-      {/* Toggle buttons */}
+      {/* Toggle buttons - order follows subchart order */}
       <div className="px-2 py-1 bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2">
         <span className="text-xs text-[var(--text-secondary)] mr-1">지표:</span>
-        {ALL_INDICATORS.map(renderToggleButton)}
+        {indicatorOrder.map(renderToggleButton)}
       </div>
 
-      {/* Subcharts - all use same data, all synced */}
+      {/* Subcharts - all use same data, all synced, draggable for reordering */}
       <div className="flex-1 overflow-y-auto">
-        {ALL_INDICATORS.map(indicator => {
+        {indicatorOrder.map(indicator => {
           if (!activeIndicators.has(indicator)) return null;
           const config = indicatorConfig[indicator];
+          const isDragging = draggedIndicator === indicator;
+          const isDropTarget = dropTargetIndicator === indicator;
           return (
-            <div key={indicator} className="flex flex-col border-b border-[var(--border-color)]" style={{ height: '90px' }}>
-              {/* Header */}
+            <div
+              key={indicator}
+              className={`flex flex-col border-b border-[var(--border-color)] transition-all ${
+                isDragging ? 'opacity-50' : ''
+              } ${isDropTarget ? 'border-t-2 border-t-[var(--accent-blue)]' : ''}`}
+              style={{ height: '90px' }}
+            >
+              {/* Header - draggable */}
               <div
+                draggable
+                onDragStart={handleDragStart(indicator)}
+                onDragEnd={handleDragEnd}
+                onDragOver={handleDragOver(indicator)}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop(indicator)}
                 onClick={() => setExpandedIndicator(indicator)}
-                className="px-2 py-0.5 text-xs bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2 cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors"
+                className="px-2 py-0.5 text-xs bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2 cursor-grab hover:bg-[var(--bg-tertiary)] transition-colors active:cursor-grabbing select-none"
               >
+                {/* Drag handle icon */}
+                <span className="text-[var(--text-secondary)] opacity-50 hover:opacity-100" title="드래그하여 순서 변경">
+                  ⠿
+                </span>
                 <span className="text-[var(--text-secondary)]">{config.label}</span>
                 {getCurrentValue(indicator)}
-                <span className="ml-auto text-[10px] text-[var(--text-secondary)]">클릭하여 확대</span>
+                <span className="ml-auto text-[10px] text-[var(--text-secondary)]">클릭: 확대 | 드래그: 순서 변경</span>
               </div>
               {/* Chart */}
               <div className="flex-1 min-h-0">
@@ -493,6 +614,30 @@ function IndicatorChart({
         seriesRef.current = [main];
         break;
       }
+      case 'rsi_bb': {
+        // BB lower line - red
+        const bbLower = chart.addSeries(LineSeries, {
+          color: '#ef4444',
+          lineWidth: 1,
+          priceLineVisible: false,
+        });
+        // BB upper line - red
+        const bbUpper = chart.addSeries(LineSeries, {
+          color: '#ef4444',
+          lineWidth: 1,
+          priceLineVisible: false,
+        });
+        // RSI line - purple (thinner at 2px)
+        const rsiLine = chart.addSeries(LineSeries, {
+          color: '#a855f7',
+          lineWidth: 2,
+          priceLineVisible: false,
+        });
+        // Only 50 level line (no 70, 30)
+        rsiLine.createPriceLine({ price: 50, color: '#6b7280', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+        seriesRef.current = [rsiLine, bbUpper, bbLower];
+        break;
+      }
     }
 
     // Resize handler
@@ -607,6 +752,32 @@ function IndicatorChart({
           color: bar.close >= bar.open ? '#26a69a80' : '#ef535080',
         }));
         (main as ISeriesApi<'Histogram'>).setData(volumeData);
+        break;
+      }
+      case 'rsi_bb': {
+        const [rsiLine, bbUpper, bbLower] = seriesRef.current;
+        // RSI data
+        const rsiData: LineData<Time>[] = data.bars.map((bar, i) => ({
+          time: bar.time as Time,
+          value: data.rsi?.[i] || 50,
+        }));
+        rsiLine.setData(rsiData);
+        // BB upper data (skip initial zeros)
+        const bbUpperData: LineData<Time>[] = data.bars
+          .map((bar, i) => ({
+            time: bar.time as Time,
+            value: data.rsi_bb_upper?.[i] || 0,
+          }))
+          .filter((d): d is LineData<Time> => d.value > 0);
+        bbUpper.setData(bbUpperData);
+        // BB lower data (skip initial zeros)
+        const bbLowerData: LineData<Time>[] = data.bars
+          .map((bar, i) => ({
+            time: bar.time as Time,
+            value: data.rsi_bb_lower?.[i] || 0,
+          }))
+          .filter((d): d is LineData<Time> => d.value > 0);
+        bbLower.setData(bbLowerData);
         break;
       }
     }

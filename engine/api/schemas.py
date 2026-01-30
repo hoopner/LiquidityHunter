@@ -153,6 +153,17 @@ class OHLCVResponse(BaseModel):
     stoch_med_d: List[float] = []   # Stoch Medium (10,6,6) %D
     stoch_fast_k: List[float] = []  # Stoch Fast (5,3,3) %K
     stoch_fast_d: List[float] = []  # Stoch Fast (5,3,3) %D
+    # Bollinger Bands
+    bb1_upper: List[float] = []    # BB1 (20, 0.5) - Tight - Green
+    bb1_middle: List[float] = []
+    bb1_lower: List[float] = []
+    bb2_upper: List[float] = []    # BB2 (20, 3.0) - Wide - Red
+    bb2_middle: List[float] = []
+    bb2_lower: List[float] = []
+    # RSI with Bollinger Band (for subchart)
+    rsi_bb_upper: List[float] = []  # BB(30, 2.0) applied to RSI
+    rsi_bb_middle: List[float] = []
+    rsi_bb_lower: List[float] = []
 
 
 # --- Williams %R schemas ---

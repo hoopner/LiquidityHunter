@@ -27,6 +27,7 @@ from engine.core.retest_detector import detect_retest, RetestSignal
 from engine.core.mtf_resampler import analyze_mtf, project_htf_zones_to_ltf, get_htf_for_ltf
 from engine.indicators.williams_r import calculate_williams_r, get_wr_signal, analyze_wr_confluence
 from engine.indicators.dynamic_manager import DynamicIndicatorManager
+from engine.indicators.bollinger_bands import calculate_bb1, calculate_bb2, calculate_rsi_with_bb
 from engine.core.screener import screen_watchlist, ScreenResult
 from engine.core.volume_profile import calculate_volume_profile
 from engine.api.data import load_csv, load_with_refresh, OHLCVData
@@ -806,6 +807,16 @@ def get_ohlcv(
 
     rsi_signal_values = sma(rsi_values, 9)
 
+    # Calculate Bollinger Bands
+    # BB1: Tight (20, 0.5) - Green
+    bb1_upper, bb1_middle, bb1_lower = calculate_bb1(data.close)
+    # BB2: Wide (20, 3.0) - Red
+    bb2_upper, bb2_middle, bb2_lower = calculate_bb2(data.close)
+    # RSI with Bollinger Band (30, 2.0) - for subchart
+    _, rsi_bb_upper, rsi_bb_middle, rsi_bb_lower = calculate_rsi_with_bb(
+        data.close, rsi_period=14, bb_length=30, bb_std_dev=2.0
+    )
+
     # Convert to list, replacing NaN with None for EMAs (so frontend skips them)
     ema20_list = [float(v) if not np.isnan(v) else None for v in ema20_values]
     ema200_list = [float(v) if not np.isnan(v) else None for v in ema200_values]
@@ -821,6 +832,16 @@ def get_ohlcv(
     stoch_med_d_list = [float(v) if not np.isnan(v) else 50 for v in stoch_med_d]
     stoch_fast_k_list = [float(v) if not np.isnan(v) else 50 for v in stoch_fast_k]
     stoch_fast_d_list = [float(v) if not np.isnan(v) else 50 for v in stoch_fast_d]
+    # Bollinger Bands - use 0 for NaN (will be filtered on frontend)
+    bb1_upper_list = [float(v) if not np.isnan(v) else 0 for v in bb1_upper]
+    bb1_middle_list = [float(v) if not np.isnan(v) else 0 for v in bb1_middle]
+    bb1_lower_list = [float(v) if not np.isnan(v) else 0 for v in bb1_lower]
+    bb2_upper_list = [float(v) if not np.isnan(v) else 0 for v in bb2_upper]
+    bb2_middle_list = [float(v) if not np.isnan(v) else 0 for v in bb2_middle]
+    bb2_lower_list = [float(v) if not np.isnan(v) else 0 for v in bb2_lower]
+    rsi_bb_upper_list = [float(v) if not np.isnan(v) else 50 for v in rsi_bb_upper]
+    rsi_bb_middle_list = [float(v) if not np.isnan(v) else 50 for v in rsi_bb_middle]
+    rsi_bb_lower_list = [float(v) if not np.isnan(v) else 50 for v in rsi_bb_lower]
 
     return OHLCVResponse(
         symbol=symbol,
@@ -840,6 +861,16 @@ def get_ohlcv(
         stoch_med_d=stoch_med_d_list,
         stoch_fast_k=stoch_fast_k_list,
         stoch_fast_d=stoch_fast_d_list,
+        # Bollinger Bands
+        bb1_upper=bb1_upper_list,
+        bb1_middle=bb1_middle_list,
+        bb1_lower=bb1_lower_list,
+        bb2_upper=bb2_upper_list,
+        bb2_middle=bb2_middle_list,
+        bb2_lower=bb2_lower_list,
+        rsi_bb_upper=rsi_bb_upper_list,
+        rsi_bb_middle=rsi_bb_middle_list,
+        rsi_bb_lower=rsi_bb_lower_list,
     )
 
 

@@ -302,6 +302,7 @@ export function ExpandedIndicatorChart({
     rsi: 'RSI (14)',
     macd: 'MACD (12, 26, 9)',
     volume: 'Volume',
+    rsi_bb: 'RSI BB (14,30,2)',
   };
 
   const indicatorColors: Record<IndicatorType, string> = {
@@ -311,6 +312,7 @@ export function ExpandedIndicatorChart({
     rsi: '#26a69a',
     macd: '#2962ff',
     volume: '#a855f7',
+    rsi_bb: '#a855f7',
   };
 
   return (

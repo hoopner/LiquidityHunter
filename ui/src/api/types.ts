@@ -30,6 +30,17 @@ export interface OHLCVResponse {
   stoch_med_d: number[];   // Stoch Medium (10,6,6) %D
   stoch_fast_k: number[];  // Stoch Fast (5,3,3) %K - Short-term
   stoch_fast_d: number[];  // Stoch Fast (5,3,3) %D
+  // Bollinger Bands
+  bb1_upper: number[];     // BB1 (20, 0.5) - Tight - Green
+  bb1_middle: number[];
+  bb1_lower: number[];
+  bb2_upper: number[];     // BB2 (20, 3.0) - Wide - Red
+  bb2_middle: number[];
+  bb2_lower: number[];
+  // RSI with Bollinger Band (for subchart)
+  rsi_bb_upper: number[];  // BB(30, 2.0) applied to RSI
+  rsi_bb_middle: number[];
+  rsi_bb_lower: number[];
 }
 
 // Order Block types
