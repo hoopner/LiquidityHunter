@@ -21,6 +21,7 @@ import { WhyPanel } from './components/layout/WhyPanel';
 import { ScreenerPage } from './components/layout/ScreenerPage';
 import { useRealtimePrice } from './hooks/useRealtimePrice';
 import { getMarket, getMarketStatus, formatTimeSince } from './utils/marketHours';
+import type { TradingLevels } from './components/ai/AIPredictionsPanel';
 
 export interface SelectedStock {
   symbol: string;
@@ -52,6 +53,9 @@ function App() {
     return { symbol: DEFAULT_SYMBOL, market: DEFAULT_MARKET };
   });
   const [currentView, setCurrentView] = useState<ViewType>('chart');
+
+  // Trading levels from AI panel
+  const [tradingLevels, setTradingLevels] = useState<TradingLevels | null>(null);
 
   // Real-time price subscription
   const { price: realtimePrice, status: priceStatus, direction: priceDirection } = useRealtimePrice(
@@ -239,6 +243,7 @@ function App() {
               selectedMarket={selectedStock.market}
               onStockSelect={handleStockSelect}
               realtimePrice={realtimePrice}
+              tradingLevels={tradingLevels}
             />
           ) : (
             <ScreenerPage
@@ -250,7 +255,7 @@ function App() {
 
         {/* Right: Sidebar (always visible) */}
         <div className="w-96">
-          <Sidebar onStockSelect={handleStockSelect} selectedStock={selectedStock} />
+          <Sidebar onStockSelect={handleStockSelect} selectedStock={selectedStock} onTradingLevelsChange={setTradingLevels} />
         </div>
       </div>
 

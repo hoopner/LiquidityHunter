@@ -6,6 +6,7 @@ import type { WatchlistItem } from '../../api/types';
 import type { DrawingToolType } from '../../types/drawings';
 import type { ChartType } from '../../utils/DrawingManager';
 import type { RealtimePrice } from '../../hooks/useRealtimePrice';
+import type { TradingLevels } from '../ai/AIPredictionsPanel';
 
 export type LayoutType = 1 | 2 | 4 | 8;
 
@@ -19,6 +20,7 @@ interface MultiChartLayoutProps {
   selectedMarket: string;
   onStockSelect: (symbol: string, market: string) => void;
   realtimePrice?: RealtimePrice | null;
+  tradingLevels?: TradingLevels | null;
 }
 
 const DEFAULT_SYMBOLS: ChartCell[] = [
@@ -32,7 +34,7 @@ const DEFAULT_SYMBOLS: ChartCell[] = [
   { symbol: 'AMZN', market: 'US' },
 ];
 
-export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect, realtimePrice }: MultiChartLayoutProps) {
+export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect, realtimePrice, tradingLevels }: MultiChartLayoutProps) {
   const [layout, setLayout] = useState<LayoutType>(1);
   const [cells, setCells] = useState<ChartCell[]>(DEFAULT_SYMBOLS);
   const [selectedCell, setSelectedCell] = useState(0);
@@ -281,6 +283,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             onMainChartActivate={handleMainChartActivate}
             isActiveForDrawing={activeChartType === 'main'}
             realtimePrice={realtimePrice}
+            tradingLevels={tradingLevels}
           />
         </div>
 

@@ -14,6 +14,7 @@ import type {
 import { fetchOHLCV, fetchAnalyze, fetchVolumeProfile, fetchMTFAnalyze, addToWatchlist, removeFromWatchlist } from '../../api/client';
 import type { OHLCVResponse, AnalyzeResponse, WatchlistItem, VolumeProfileResponse, MTFAnalyzeResponse } from '../../api/types';
 import type { RealtimePrice } from '../../hooks/useRealtimePrice';
+import type { TradingLevels } from '../ai/AIPredictionsPanel';
 import { useDrawings } from '../../hooks/useDrawings';
 import { DrawingToolbar } from '../chart/DrawingToolbar';
 import { DrawingCanvas } from '../chart/DrawingCanvas';
@@ -47,6 +48,8 @@ interface MainChartProps {
   isActiveForDrawing?: boolean;
   // Real-time price update from WebSocket
   realtimePrice?: RealtimePrice | null;
+  // Trading levels from AI panel (entry, stop, targets)
+  tradingLevels?: TradingLevels | null;
 }
 
 interface BoxPosition {
@@ -80,6 +83,7 @@ export function MainChart({
   onMainChartActivate,
   isActiveForDrawing = true,
   realtimePrice,
+  tradingLevels,
 }: MainChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -100,6 +104,10 @@ export function MainChart({
   const kcUpperRef = useRef<ISeriesApi<'Line'> | null>(null);
   const kcMiddleRef = useRef<ISeriesApi<'Line'> | null>(null);
   const kcLowerRef = useRef<ISeriesApi<'Line'> | null>(null);
+
+  // Trading level price lines (stored to allow removal)
+  const tradingLevelLinesRef = useRef<{ id: string; line: ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']> }[]>([]);
+  const [showTradingLevels, setShowTradingLevels] = useState(true);
 
   // Ref to store the latest onVisibleRangeChange callback (avoids stale closure)
   const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
@@ -1354,6 +1362,67 @@ export function MainChart({
     kcLowerRef.current?.applyOptions({ visible: showKC });
   }, [showKC]);
 
+  // Trading level price lines (Entry, Stop, Targets)
+  useEffect(() => {
+    if (!candlestickSeriesRef.current || compact) return;
+
+    // Remove existing trading level lines
+    tradingLevelLinesRef.current.forEach(({ line }) => {
+      try {
+        candlestickSeriesRef.current?.removePriceLine(line);
+      } catch {
+        // Line may already be removed
+      }
+    });
+    tradingLevelLinesRef.current = [];
+
+    // Add new lines if trading levels are provided and visible
+    if (tradingLevels && showTradingLevels) {
+      const { entry, stop, targets, currentPrice } = tradingLevels;
+      const risk = Math.abs(entry - stop);
+
+      // Entry line - Green dashed
+      const entryPct = ((entry - currentPrice) / currentPrice * 100).toFixed(1);
+      const entryLine = candlestickSeriesRef.current.createPriceLine({
+        price: entry,
+        color: '#10b981',
+        lineWidth: 2,
+        lineStyle: 2, // Dashed
+        axisLabelVisible: true,
+        title: `Entry ${entryPct}%`,
+      });
+      tradingLevelLinesRef.current.push({ id: 'entry', line: entryLine });
+
+      // Stop Loss line - Red dashed
+      const stopPct = ((stop - currentPrice) / currentPrice * 100).toFixed(1);
+      const stopLine = candlestickSeriesRef.current.createPriceLine({
+        price: stop,
+        color: '#ef4444',
+        lineWidth: 2,
+        lineStyle: 2, // Dashed
+        axisLabelVisible: true,
+        title: `Stop ${stopPct}%`,
+      });
+      tradingLevelLinesRef.current.push({ id: 'stop', line: stopLine });
+
+      // Target lines - Blue dashed
+      targets.forEach((target, i) => {
+        const targetPct = ((target - currentPrice) / currentPrice * 100).toFixed(1);
+        const reward = Math.abs(target - entry);
+        const rr = risk > 0 ? (reward / risk).toFixed(1) : '0';
+        const targetLine = candlestickSeriesRef.current!.createPriceLine({
+          price: target,
+          color: '#3b82f6',
+          lineWidth: 2,
+          lineStyle: 2, // Dashed
+          axisLabelVisible: true,
+          title: `T${i + 1} +${targetPct}% (R:R ${rr})`,
+        });
+        tradingLevelLinesRef.current.push({ id: `target${i}`, line: targetLine });
+      });
+    }
+  }, [tradingLevels, showTradingLevels, compact]);
+
   // REAL-TIME UPDATES DISABLED FOR STABILITY
   // TODO: Re-enable after proper subscription management is implemented
   // The real-time candle update logic has been removed to prevent
@@ -1794,6 +1863,21 @@ export function MainChart({
           >
             Squeeze
           </button>
+
+          {/* Trading Levels Toggle - Show when trading levels are available */}
+          {tradingLevels && (
+            <button
+              onClick={() => setShowTradingLevels(!showTradingLevels)}
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                showTradingLevels
+                  ? 'bg-[#10b981] text-white'
+                  : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              title="Show Entry/Stop/Target levels from AI analysis"
+            >
+              📍 Levels
+            </button>
+          )}
 
           {/* Drawing Tools Toggle */}
           <button

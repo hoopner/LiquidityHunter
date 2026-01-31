@@ -5,6 +5,7 @@ import { ScreenerPanel } from '../panels/ScreenerPanel';
 import { BacktestPanel } from '../panels/BacktestPanel';
 import { AlertPanel } from '../panels/AlertPanel';
 import { AIPredictionsPanel } from '../ai/AIPredictionsPanel';
+import type { TradingLevels } from '../ai/AIPredictionsPanel';
 import type { SelectedStock } from '../../App';
 
 type PanelType = 'portfolio' | 'watchlist' | 'screener' | 'ai' | 'backtest' | 'alerts';
@@ -12,12 +13,13 @@ type PanelType = 'portfolio' | 'watchlist' | 'screener' | 'ai' | 'backtest' | 'a
 interface SidebarProps {
   onStockSelect: (symbol: string, market: string) => void;
   selectedStock: SelectedStock;
+  onTradingLevelsChange?: (levels: TradingLevels | null) => void;
 }
 
 /**
  * Right sidebar with collapsible panels
  */
-export function Sidebar({ onStockSelect, selectedStock }: SidebarProps) {
+export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }: SidebarProps) {
   const [expandedPanel, setExpandedPanel] = useState<PanelType>('screener');
 
   // Quick search state
@@ -60,7 +62,7 @@ export function Sidebar({ onStockSelect, selectedStock }: SidebarProps) {
       case 'screener':
         return <ScreenerPanel onStockSelect={onStockSelect} selectedSymbol={selectedStock.symbol} />;
       case 'ai':
-        return <AIPredictionsPanel symbol={selectedStock.symbol} market={selectedStock.market} />;
+        return <AIPredictionsPanel symbol={selectedStock.symbol} market={selectedStock.market} onTradingLevelsChange={onTradingLevelsChange} />;
       case 'backtest':
         return <BacktestPanel symbol={selectedStock.symbol} market={selectedStock.market} />;
       case 'alerts':
