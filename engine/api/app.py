@@ -1,10 +1,12 @@
 """FastAPI application for LiquidityHunter Phase 2."""
 
+import asyncio
+import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Set
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from engine.core.orderblock import (
@@ -26,8 +28,8 @@ from engine.strategy.volumatic_strategy import (
 from engine.core.retest_detector import detect_retest, RetestSignal
 from engine.core.mtf_resampler import analyze_mtf, project_htf_zones_to_ltf, get_htf_for_ltf
 from engine.indicators.williams_r import calculate_williams_r, get_wr_signal, analyze_wr_confluence
-from engine.indicators.dynamic_manager import DynamicIndicatorManager
-from engine.indicators.bollinger_bands import calculate_bb1, calculate_bb2, calculate_rsi_with_bb
+from engine.indicators.dynamic_manager import DynamicIndicatorManager, calculate_sma, calculate_rsi
+from engine.indicators.bollinger_bands import calculate_bb1, calculate_bb2, calculate_rsi_with_bb, calculate_bollinger_bands
 from engine.indicators.vwap import calculate_vwap
 from engine.indicators.keltner import calculate_keltner_channel, calculate_ttm_squeeze
 from engine.core.screener import screen_watchlist, ScreenResult
@@ -100,6 +102,37 @@ from engine.data.kis_api import (
 )
 from engine.core.screener import ema, rsi, macd
 from engine.strategy.backtest import run_backtest
+
+
+# Helper functions for AI endpoints (wrappers for consistency)
+def calculate_ema(closes: np.ndarray, period: int) -> np.ndarray:
+    """Calculate EMA - wrapper for ema()."""
+    return ema(closes, period)
+
+
+def calculate_macd(closes: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9):
+    """Calculate MACD line, signal line, and histogram."""
+    return macd(closes, fast, slow, signal)  # Returns (macd_line, signal_line, histogram)
+
+
+def calculate_stochastic(high: np.ndarray, low: np.ndarray, close: np.ndarray,
+                         k_period: int = 14, d_period: int = 3):
+    """Calculate Stochastic %K and %D."""
+    n = len(close)
+    k = np.full(n, np.nan)
+
+    for i in range(k_period - 1, n):
+        highest_high = np.max(high[i - k_period + 1:i + 1])
+        lowest_low = np.min(low[i - k_period + 1:i + 1])
+        if highest_high == lowest_low:
+            k[i] = 50.0
+        else:
+            k[i] = ((close[i] - lowest_low) / (highest_high - lowest_low)) * 100
+
+    # %D is SMA of %K
+    d = calculate_sma(k, d_period)
+    return k, d
+
 
 app = FastAPI(
     title="LiquidityHunter",
@@ -673,31 +706,40 @@ def get_ohlcv(
     tf: str = Query("1D", description="Timeframe: 1m, 5m, 15m, 1h, 1D, 1W, 1M"),
     refresh: bool = Query(False, description="Force refresh from yfinance"),
     limit: int = Query(0, description="Max bars to return (0=auto based on timeframe)"),
-    source: str = Query("yfinance", description="Data source: yfinance or kis"),
 ) -> OHLCVResponse:
     """
     Get OHLCV data with indicators for charting.
 
     Supports all timeframes: 1m, 5m, 15m, 1h, 1D, 1W, 1M
-    Data sources:
-    - yfinance: Yahoo Finance (free, delayed)
-    - kis: Korea Investment & Securities API (real-time, requires credentials)
+
+    Data source selection (automatic):
+    - KIS API: Used as PRIMARY if configured (real-time data for KR and US)
+    - yfinance: FALLBACK if KIS not configured or fails (delayed data)
 
     Returns bars array with dates and indicator values.
+    The 'source' field in response indicates which data source was used.
     """
     market = market.upper()
     if market not in ("KR", "US"):
         raise HTTPException(status_code=400, detail="Market must be KR or US")
 
     data = None
+    source_used = "yfinance"  # Track which source was actually used
 
-    # Try KIS source if requested
-    if source.lower() == "kis":
-        try:
-            client = get_kis_client()
-            if client.is_configured:
-                kis_data = client.get_ohlcv(symbol, market, tf, count=limit if limit > 0 else 500)
-                if kis_data and kis_data.get("count", 0) > 0:
+    # Minimum bars needed for EMA200 to have valid data (200 for EMA + 50 buffer)
+    MIN_BARS_FOR_EMA200 = 250
+
+    # Try KIS as PRIMARY source if configured
+    try:
+        client = get_kis_client()
+        if client.is_configured:
+            kis_data = client.get_ohlcv(symbol, market, tf, count=limit if limit > 0 else 500)
+            kis_bar_count = kis_data.get("count", 0) if kis_data else 0
+            print(f"[OHLCV] KIS returned {kis_bar_count} bars for {symbol} {tf}")
+
+            if kis_data and kis_bar_count > 0:
+                # Check if we have enough data for EMA200
+                if kis_bar_count >= MIN_BARS_FOR_EMA200:
                     # Convert KIS response to OHLCVData format
                     data = OHLCVData(
                         timestamps=kis_data["timestamps"],
@@ -707,16 +749,22 @@ def get_ohlcv(
                         close=np.array(kis_data["close"]),
                         volume=np.array(kis_data["volume"]),
                     )
-        except KISAPIError as e:
-            # Fall back to yfinance on KIS error
-            print(f"KIS API error, falling back to yfinance: {e}")
-        except Exception as e:
-            print(f"KIS error, falling back to yfinance: {e}")
+                    source_used = "kis"
+                else:
+                    print(f"[OHLCV] KIS data insufficient ({kis_bar_count} < {MIN_BARS_FOR_EMA200}), falling back to yfinance")
+    except KISAPIError as e:
+        # Fall back to yfinance on KIS error
+        print(f"KIS API error, falling back to yfinance: {e}")
+    except Exception as e:
+        print(f"KIS error, falling back to yfinance: {e}")
 
-    # Fall back to yfinance if KIS not used or failed
+    # Fall back to yfinance if KIS not configured, failed, or returned insufficient data
     if data is None:
         try:
+            print(f"[OHLCV] Loading from yfinance for {symbol} {market} {tf}")
             data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=refresh)
+            source_used = "yfinance"
+            print(f"[OHLCV] yfinance returned {len(data.close)} bars")
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
 
@@ -849,6 +897,10 @@ def get_ohlcv(
 
     rsi_signal_values = sma(rsi_values, 9)
 
+    # Calculate SMAs (Simple Moving Averages)
+    sma20_values = sma(data.close, 20)
+    sma200_values = sma(data.close, 200)
+
     # Calculate Bollinger Bands
     # BB1: Tight (20, 0.5) - Green
     bb1_upper, bb1_middle, bb1_lower = calculate_bb1(data.close)
@@ -887,9 +939,11 @@ def get_ohlcv(
         kc_lower=kc_lower,
     )
 
-    # Convert to list, replacing NaN with None for EMAs (so frontend skips them)
+    # Convert to list, replacing NaN with None for EMAs/SMAs (so frontend skips them)
     ema20_list = [float(v) if not np.isnan(v) else None for v in ema20_values]
     ema200_list = [float(v) if not np.isnan(v) else None for v in ema200_values]
+    sma20_list = [float(v) if not np.isnan(v) else None for v in sma20_values]
+    sma200_list = [float(v) if not np.isnan(v) else None for v in sma200_values]
     rsi_list = [float(v) if not np.isnan(v) else 50 for v in rsi_values]
     rsi_signal_list = [float(v) if not np.isnan(v) else 50 for v in rsi_signal_values]
     macd_line_list = [float(v) if not np.isnan(v) else 0 for v in macd_line_values]
@@ -928,6 +982,8 @@ def get_ohlcv(
         bars=bars,
         ema20=ema20_list,
         ema200=ema200_list,
+        sma20=sma20_list,
+        sma200=sma200_list,
         rsi=rsi_list,
         rsi_signal=rsi_signal_list,
         macd_line=macd_line_list,
@@ -957,6 +1013,8 @@ def get_ohlcv(
         kc_lower=kc_lower_list,
         # TTM Squeeze
         squeeze=squeeze_list,
+        # Data source
+        source=source_used,
     )
 
 
@@ -2154,3 +2212,613 @@ def get_data_source_info():
             kis_connected=False,
             available_sources=["yfinance"],
         )
+
+
+# --- WebSocket Real-time Price Updates ---
+
+class ConnectionManager:
+    """Manages WebSocket connections for real-time price updates."""
+
+    def __init__(self):
+        # symbol -> set of websockets
+        self.active_connections: Dict[str, Set[WebSocket]] = {}
+        self._kis_ws_task: Optional[asyncio.Task] = None
+        self._kis_connected = False
+
+    async def connect(self, websocket: WebSocket, symbol: str, market: str) -> None:
+        """Accept a new WebSocket connection and subscribe to price updates."""
+        await websocket.accept()
+
+        key = f"{symbol}:{market}"
+        if key not in self.active_connections:
+            self.active_connections[key] = set()
+        self.active_connections[key].add(websocket)
+
+        # Send initial connection status
+        await websocket.send_json({
+            "type": "connected",
+            "symbol": symbol,
+            "market": market,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    def disconnect(self, websocket: WebSocket, symbol: str, market: str) -> None:
+        """Remove a WebSocket connection."""
+        key = f"{symbol}:{market}"
+        if key in self.active_connections:
+            self.active_connections[key].discard(websocket)
+            if not self.active_connections[key]:
+                del self.active_connections[key]
+
+    async def broadcast_price(
+        self,
+        symbol: str,
+        market: str,
+        price_data: dict,
+    ) -> None:
+        """Broadcast price update to all connected clients for a symbol."""
+        key = f"{symbol}:{market}"
+        if key not in self.active_connections:
+            return
+
+        message = {
+            "type": "price",
+            "symbol": symbol,
+            "market": market,
+            **price_data,
+        }
+
+        # Send to all connected clients
+        dead_connections = []
+        for connection in self.active_connections[key]:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead_connections.append(connection)
+
+        # Clean up dead connections
+        for conn in dead_connections:
+            self.active_connections[key].discard(conn)
+
+
+# Global connection manager
+ws_manager = ConnectionManager()
+
+
+@app.websocket("/ws/realtime/{symbol}")
+async def websocket_realtime(
+    websocket: WebSocket,
+    symbol: str,
+    market: str = "KR",
+):
+    """
+    WebSocket endpoint for real-time price updates.
+
+    Connect to receive live price updates for a symbol.
+
+    Message types sent:
+    - connected: Initial connection confirmation
+    - price: Real-time price update
+    - error: Error message
+    - status: Connection status update
+
+    Price message format:
+    {
+        "type": "price",
+        "symbol": "005930",
+        "market": "KR",
+        "price": 80500,
+        "change": 500,
+        "change_pct": 0.62,
+        "high": 80800,
+        "low": 79900,
+        "open": 80000,
+        "volume": 12345678,
+        "timestamp": "2024-01-15T10:30:45.123456"
+    }
+    """
+    symbol = symbol.upper()
+    market = market.upper()
+
+    await ws_manager.connect(websocket, symbol, market)
+
+    try:
+        # Try to get real-time updates from KIS
+        client = get_kis_client()
+
+        if client.is_configured:
+            # Start polling for price updates (KIS WebSocket requires complex setup)
+            # For simplicity, we use polling with REST API as a reliable fallback
+            last_price = None
+            poll_interval = 1.0  # 1 second polling
+
+            while True:
+                try:
+                    # Check for client messages (ping/pong, close requests)
+                    try:
+                        msg = await asyncio.wait_for(
+                            websocket.receive_text(),
+                            timeout=0.1
+                        )
+                        # Handle ping
+                        if msg == "ping":
+                            await websocket.send_text("pong")
+                            continue
+                    except asyncio.TimeoutError:
+                        pass  # No message, continue with price update
+
+                    # Fetch current price
+                    try:
+                        price_data = client.get_current_price(symbol, market)
+
+                        # Check if we got valid price data
+                        current_price = price_data.get("price", 0)
+                        if current_price == 0:
+                            # No valid price - might be unsupported symbol
+                            if last_price is None:
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": f"Symbol {symbol} not found or no price data available",
+                                    "code": "NO_PRICE_DATA",
+                                })
+                            continue
+
+                        # Only send if price changed
+                        if last_price is None or current_price != last_price:
+                            last_price = current_price
+
+                            await ws_manager.broadcast_price(
+                                symbol,
+                                market,
+                                {
+                                    "price": price_data.get("price", 0),
+                                    "change": price_data.get("change", 0),
+                                    "change_pct": price_data.get("change_pct", 0),
+                                    "high": price_data.get("high", 0),
+                                    "low": price_data.get("low", 0),
+                                    "open": price_data.get("open", 0),
+                                    "volume": price_data.get("volume", 0),
+                                    "prev_close": price_data.get("prev_close", 0),
+                                    "timestamp": price_data.get("timestamp", datetime.now().isoformat()),
+                                }
+                            )
+                    except Exception as e:
+                        # Send error to client and log
+                        error_msg = str(e)
+                        print(f"Price fetch error for {symbol}: {error_msg}")
+                        if last_price is None:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": f"Failed to fetch price for {symbol}: {error_msg}",
+                                "code": "PRICE_FETCH_ERROR",
+                            })
+
+                    await asyncio.sleep(poll_interval)
+
+                except WebSocketDisconnect:
+                    break
+
+        else:
+            # KIS not configured - send error and keep connection for status
+            await websocket.send_json({
+                "type": "error",
+                "message": "KIS API not configured. Real-time updates unavailable.",
+                "code": "KIS_NOT_CONFIGURED",
+            })
+
+            # Keep connection alive but idle
+            while True:
+                try:
+                    msg = await websocket.receive_text()
+                    if msg == "ping":
+                        await websocket.send_text("pong")
+                except WebSocketDisconnect:
+                    break
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e),
+            })
+        except Exception:
+            pass
+    finally:
+        ws_manager.disconnect(websocket, symbol, market)
+
+
+@app.get("/ws/status")
+def get_websocket_status():
+    """Get WebSocket connection statistics."""
+    connections = {}
+    for key, conns in ws_manager.active_connections.items():
+        connections[key] = len(conns)
+
+    return {
+        "active_symbols": list(ws_manager.active_connections.keys()),
+        "total_connections": sum(len(c) for c in ws_manager.active_connections.values()),
+        "connections_per_symbol": connections,
+    }
+
+
+# Import datetime at module level for WebSocket
+from datetime import datetime
+
+
+# ============================================================
+# AI PREDICTION ENDPOINTS
+# ============================================================
+
+@app.get("/api/ai/technical_ml")
+async def ai_technical_ml(
+    symbol: str = Query(..., description="Stock symbol"),
+    market: str = Query("US", description="Market (KR or US)"),
+):
+    """
+    Technical ML AI - Predicts short-term and mid-term trends
+    based on technical indicators (EMA, SMA, RSI, MACD, Stochastic).
+    """
+    try:
+        # Load data
+        ohlcv = load_with_refresh(symbol, market, "1D")
+        if ohlcv is None or len(ohlcv.close) < 50:
+            raise HTTPException(status_code=404, detail=f"Not enough data for {symbol}")
+
+        # Calculate indicators
+        ema20 = calculate_ema(ohlcv.close, 20)
+        ema200 = calculate_ema(ohlcv.close, 200)
+        sma20 = calculate_sma(ohlcv.close, 20)
+        sma200 = calculate_sma(ohlcv.close, 200)
+        rsi = calculate_rsi(ohlcv.close, 14)
+        macd_line, macd_signal, macd_hist = calculate_macd(ohlcv.close)
+        stoch_k, stoch_d = calculate_stochastic(ohlcv.high, ohlcv.low, ohlcv.close, 14, 3)
+
+        # Get latest values
+        current_price = float(ohlcv.close[-1])
+        latest_ema20 = float(ema20[-1]) if ema20[-1] > 0 else current_price
+        latest_ema200 = float(ema200[-1]) if ema200[-1] > 0 else current_price
+        latest_rsi = float(rsi[-1]) if rsi[-1] > 0 else 50
+        latest_macd = float(macd_hist[-1]) if not np.isnan(macd_hist[-1]) else 0
+        latest_stoch_k = float(stoch_k[-1]) if not np.isnan(stoch_k[-1]) else 50
+
+        # Simple rule-based prediction (simulating ML output)
+        short_term_score = 50  # Base score
+
+        # EMA trend signals
+        if current_price > latest_ema20:
+            short_term_score += 10
+        else:
+            short_term_score -= 10
+
+        if current_price > latest_ema200:
+            short_term_score += 8
+        else:
+            short_term_score -= 8
+
+        # RSI signals
+        if 30 < latest_rsi < 50:
+            short_term_score += 12  # Oversold recovery potential
+        elif latest_rsi > 70:
+            short_term_score -= 10  # Overbought
+        elif latest_rsi > 50:
+            short_term_score += 5
+
+        # MACD signals
+        if latest_macd > 0:
+            short_term_score += 8
+        else:
+            short_term_score -= 8
+
+        # Stochastic signals
+        if latest_stoch_k < 20:
+            short_term_score += 10  # Oversold
+        elif latest_stoch_k > 80:
+            short_term_score -= 10  # Overbought
+        elif latest_stoch_k > 50:
+            short_term_score += 5
+
+        # Normalize to probability
+        short_term_up = min(max(short_term_score, 15), 85)
+        short_term_down = 100 - short_term_up
+
+        # Mid-term calculation (more weight on trend indicators)
+        mid_term_score = 50
+        if current_price > latest_ema200:
+            mid_term_score += 15
+        else:
+            mid_term_score -= 15
+
+        # EMA crossover
+        if latest_ema20 > latest_ema200:
+            mid_term_score += 12
+        else:
+            mid_term_score -= 12
+
+        # Trend strength
+        price_to_ema200_pct = ((current_price - latest_ema200) / latest_ema200) * 100
+        if price_to_ema200_pct > 5:
+            mid_term_score += 8
+        elif price_to_ema200_pct < -5:
+            mid_term_score -= 8
+
+        mid_term_up = min(max(mid_term_score, 15), 85)
+        mid_term_down = 100 - mid_term_up
+
+        return {
+            "symbol": symbol,
+            "market": market,
+            "short_term": {
+                "period": "1-3일",
+                "up_prob": round(short_term_up),
+                "down_prob": round(short_term_down),
+                "signal": "bullish" if short_term_up > 55 else "bearish" if short_term_up < 45 else "neutral",
+            },
+            "mid_term": {
+                "period": "5-10일",
+                "up_prob": round(mid_term_up),
+                "down_prob": round(mid_term_down),
+                "signal": "bullish" if mid_term_up > 55 else "bearish" if mid_term_up < 45 else "neutral",
+            },
+            "indicators": {
+                "rsi": round(latest_rsi, 1),
+                "macd": round(latest_macd, 2),
+                "stoch_k": round(latest_stoch_k, 1),
+                "ema20_position": "above" if current_price > latest_ema20 else "below",
+                "ema200_position": "above" if current_price > latest_ema200 else "below",
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ai/lstm_predict")
+async def ai_lstm_predict(
+    symbol: str = Query(..., description="Stock symbol"),
+    market: str = Query("US", description="Market (KR or US)"),
+):
+    """
+    LSTM Price Prediction - Predicts next 5-10 days prices.
+    Note: This is a simplified simulation. Real LSTM would require trained models.
+    """
+    try:
+        # Load data
+        ohlcv = load_with_refresh(symbol, market, "1D")
+        if ohlcv is None or len(ohlcv.close) < 60:
+            raise HTTPException(status_code=404, detail=f"Not enough data for {symbol}")
+
+        # Get recent data for prediction basis
+        closes = ohlcv.close[-60:]
+        current_price = float(closes[-1])
+
+        # Calculate trend and volatility
+        returns = np.diff(closes) / closes[:-1]
+        avg_return = float(np.mean(returns))
+        volatility = float(np.std(returns))
+
+        # Simple trend-based prediction (simulating LSTM output)
+        # In reality, this would be a trained LSTM model
+        predictions = []
+        predicted_price = current_price
+
+        for day in [1, 2, 3, 5, 7, 10]:
+            # Trend continuation with some mean reversion
+            trend_component = avg_return * day * 0.7
+            random_component = volatility * np.sqrt(day) * 0.5
+
+            predicted_price = current_price * (1 + trend_component)
+            upper_bound = predicted_price * (1 + random_component * 1.5)
+            lower_bound = predicted_price * (1 - random_component * 1.5)
+
+            predictions.append({
+                "day": day,
+                "price": round(predicted_price, 2),
+                "upper": round(upper_bound, 2),
+                "lower": round(lower_bound, 2),
+            })
+
+        # Determine overall trend
+        final_prediction = predictions[-1]["price"]
+        trend = "upward" if final_prediction > current_price * 1.01 else \
+                "downward" if final_prediction < current_price * 0.99 else "sideways"
+
+        # Calculate confidence based on volatility
+        confidence = max(40, min(85, int(80 - volatility * 500)))
+
+        return {
+            "symbol": symbol,
+            "market": market,
+            "current_price": current_price,
+            "predictions": predictions,
+            "trend": trend,
+            "confidence": confidence,
+            "volatility": round(volatility * 100, 2),
+            "avg_daily_return": round(avg_return * 100, 3),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ai/lh_analysis")
+async def ai_lh_analysis(
+    symbol: str = Query(..., description="Stock symbol"),
+    market: str = Query("US", description="Market (KR or US)"),
+):
+    """
+    LH AI Analysis - Custom analysis using BBs, OBs, FVGs, and RSI.
+    """
+    try:
+        # Load data
+        ohlcv = load_with_refresh(symbol, market, "1D")
+        if ohlcv is None or len(ohlcv.close) < 50:
+            raise HTTPException(status_code=404, detail=f"Not enough data for {symbol}")
+
+        # Calculate Bollinger Bands
+        bb1_upper, bb1_middle, bb1_lower = calculate_bb1(ohlcv.close)  # 20, 0.5
+        bb2_upper, bb2_middle, bb2_lower = calculate_bb2(ohlcv.close)  # 20, 3.0
+
+        # Calculate BB3 (30, 3.0) for longer term
+        bb3_upper, bb3_middle, bb3_lower = calculate_bollinger_bands(ohlcv.close, length=30, std_dev=3.0)
+
+        # Calculate RSI
+        rsi = calculate_rsi(ohlcv.close, 14)
+
+        # Calculate EMA for trend
+        ema200 = calculate_ema(ohlcv.close, 200)
+
+        # Detect Order Blocks and FVGs
+        ob, _ = detect_orderblock(ohlcv.open, ohlcv.high, ohlcv.low, ohlcv.close, ohlcv.volume)
+        fvgs = find_all_fvgs(ohlcv.open, ohlcv.high, ohlcv.low, ohlcv.close)
+
+        # Get latest values
+        current_price = float(ohlcv.close[-1])
+        latest_rsi = float(rsi[-1]) if rsi[-1] > 0 else 50
+        latest_ema200 = float(ema200[-1]) if ema200[-1] > 0 else current_price
+
+        # BB values
+        bb1_u, bb1_l = float(bb1_upper[-1]), float(bb1_lower[-1])
+        bb2_u, bb2_l = float(bb2_upper[-1]), float(bb2_lower[-1])
+        bb3_u, bb3_l = float(bb3_upper[-1]), float(bb3_lower[-1])
+
+        # Analysis
+        signals = []
+        confidence = 50  # Base confidence
+
+        # BB1 analysis (tight band - short term)
+        if current_price <= bb1_l:
+            signals.append("🎯 BB1 하단 터치 - 단기 반등 시그널")
+            confidence += 15
+        elif current_price >= bb1_u:
+            signals.append("⚠️ BB1 상단 터치 - 단기 조정 가능")
+            confidence -= 8
+
+        # BB2 analysis (wide band - medium term trend)
+        bb2_position = (current_price - bb2_l) / (bb2_u - bb2_l) if bb2_u != bb2_l else 0.5
+        if bb2_position > 0.6:
+            signals.append("📈 BB2 상단권 - 상승 추세 지속")
+            confidence += 10
+        elif bb2_position < 0.4:
+            signals.append("📉 BB2 하단권 - 하락 압력")
+            confidence -= 10
+
+        # BB3 analysis (long term)
+        if current_price >= bb3_u:
+            signals.append("🔴 BB3 상단 돌파 - 장기 과매수 주의")
+            confidence -= 15
+        elif current_price <= bb3_l:
+            signals.append("🟢 BB3 하단 - 장기 과매도, 반등 기회")
+            confidence += 20
+
+        # RSI analysis
+        if latest_rsi > 70:
+            signals.append(f"⚠️ RSI {latest_rsi:.0f} - 과매수")
+            confidence -= 10
+        elif latest_rsi < 30:
+            signals.append(f"✅ RSI {latest_rsi:.0f} - 과매도 반등 가능")
+            confidence += 15
+        elif latest_rsi > 50:
+            signals.append(f"✅ RSI {latest_rsi:.0f} - 상승 모멘텀")
+            confidence += 5
+        else:
+            signals.append(f"⚠️ RSI {latest_rsi:.0f} - 하락 모멘텀")
+            confidence -= 5
+
+        # EMA200 trend
+        ema200_trend = "bullish" if current_price > latest_ema200 else "bearish"
+        if ema200_trend == "bullish":
+            signals.append("📊 EMA200 위 - 장기 상승 추세")
+            confidence += 10
+        else:
+            signals.append("📊 EMA200 아래 - 장기 하락 추세")
+            confidence -= 10
+
+        # Order Block analysis
+        ob_nearby = False
+        ob_price = None
+        ob_type = None
+        if ob is not None:
+            ob_distance_pct = abs(current_price - ob.zone_top) / current_price * 100
+            if ob_distance_pct < 5:
+                ob_nearby = True
+                ob_price = ob.zone_top
+                ob_type = ob.direction
+                if ob.direction == "buy":
+                    signals.append(f"💪 Bullish OB @ {ob_price:.2f} (근접)")
+                    confidence += 15
+                else:
+                    signals.append(f"⚠️ Bearish OB @ {ob_price:.2f} (근접)")
+                    confidence -= 10
+
+        # FVG analysis
+        fvg_below = None
+        for fvg in fvgs[-5:]:  # Check recent FVGs
+            if fvg.direction == "buy" and fvg.gap_high < current_price:
+                fvg_below = fvg.gap_high
+                signals.append(f"📊 미채움 FVG @ {fvg_below:.2f} (지지)")
+                confidence += 10
+                break
+
+        # Determine scenario
+        scenario = ""
+        if current_price <= bb1_l and ob_nearby and ob_type == "buy" and latest_rsi < 50:
+            scenario = "🟢 강력 매수 시그널: BB1 하단 + Bullish OB + RSI 약세 반전"
+            confidence += 15
+        elif current_price >= bb3_u and latest_rsi > 70:
+            scenario = "🔴 조정 시그널: BB3 과매수 + RSI 과열"
+            confidence -= 10
+        elif bb2_position > 0.5 and latest_rsi > 50 and ema200_trend == "bullish":
+            scenario = "📈 추세 지속: BB2 상단 + RSI 강세 + EMA200 위"
+        elif bb2_position < 0.5 and latest_rsi < 50 and ema200_trend == "bearish":
+            scenario = "📉 하락 지속: BB2 하단 + RSI 약세 + EMA200 아래"
+        else:
+            scenario = "⏸️ 관망 - 명확한 시그널 대기"
+
+        # Normalize confidence
+        confidence = max(10, min(95, confidence))
+
+        # Key levels
+        entry_price = ob_price if ob_price else current_price
+        stop_loss = entry_price * 0.98
+        target1 = fvg_below if fvg_below and fvg_below > current_price else current_price * 1.03
+
+        return {
+            "symbol": symbol,
+            "market": market,
+            "current_price": current_price,
+            "scenario": scenario,
+            "confidence": confidence,
+            "signals": signals,
+            "custom_bb_status": {
+                "bb1": "lower_touch" if current_price <= bb1_l else "upper_touch" if current_price >= bb1_u else "neutral",
+                "bb2": "upper_half" if bb2_position > 0.5 else "lower_half",
+                "bb3": "overbought" if current_price >= bb3_u else "oversold" if current_price <= bb3_l else "neutral",
+                "bb2_position_pct": round(bb2_position * 100, 1),
+            },
+            "indicators": {
+                "rsi": round(latest_rsi, 1),
+                "ema200": round(latest_ema200, 2),
+                "ema200_trend": ema200_trend,
+            },
+            "key_levels": {
+                "entry": round(entry_price, 2),
+                "stop_loss": round(stop_loss, 2),
+                "target1": round(target1, 2),
+                "bb1_lower": round(bb1_l, 2),
+                "bb2_lower": round(bb2_l, 2),
+                "bb3_lower": round(bb3_l, 2),
+            },
+            "order_block": {
+                "nearby": ob_nearby,
+                "price": ob_price,
+                "type": ob_type,
+            } if ob_nearby else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

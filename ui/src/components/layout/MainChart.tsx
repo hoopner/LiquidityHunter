@@ -13,6 +13,7 @@ import type {
 } from 'lightweight-charts';
 import { fetchOHLCV, fetchAnalyze, fetchVolumeProfile, fetchMTFAnalyze, addToWatchlist, removeFromWatchlist } from '../../api/client';
 import type { OHLCVResponse, AnalyzeResponse, WatchlistItem, VolumeProfileResponse, MTFAnalyzeResponse } from '../../api/types';
+import type { RealtimePrice } from '../../hooks/useRealtimePrice';
 import { useDrawings } from '../../hooks/useDrawings';
 import { DrawingToolbar } from '../chart/DrawingToolbar';
 import { DrawingCanvas } from '../chart/DrawingCanvas';
@@ -31,15 +32,21 @@ interface MainChartProps {
   isSelected?: boolean;
   onDoubleClick?: () => void;
   showHeader?: boolean;
+  // Hide main chart's time scale when subcharts are visible (timeline shown on bottom panel only)
+  showTimeScale?: boolean;
   onSymbolChange?: (symbol: string, market: string) => void;
   watchlistSymbols?: WatchlistItem[];
   onWatchlistChange?: () => void;
   onChartReady?: (chartRef: React.RefObject<IChartApi | null>) => void;
   onVisibleRangeChange?: (range: { from: number; to: number } | null) => void;
+  // Callback to share OHLCV data with subcharts (for timeline sync)
+  onDataLoaded?: (data: OHLCVResponse | null) => void;
   // Drawing tool coordination with subcharts
   onDrawingToolChange?: (tool: DrawingToolType | null, showTools: boolean) => void;
   onMainChartActivate?: () => void;
   isActiveForDrawing?: boolean;
+  // Real-time price update from WebSocket
+  realtimePrice?: RealtimePrice | null;
 }
 
 interface BoxPosition {
@@ -62,20 +69,25 @@ export function MainChart({
   isSelected = false,
   onDoubleClick,
   showHeader = true,
+  showTimeScale = true,  // Default true, set false when subcharts visible
   onSymbolChange,
   watchlistSymbols = [],
   onWatchlistChange,
   onChartReady,
   onVisibleRangeChange,
+  onDataLoaded,
   onDrawingToolChange,
   onMainChartActivate,
   isActiveForDrawing = true,
+  realtimePrice,
 }: MainChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const ema20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const ema200SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const sma20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const sma200SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   // Bollinger Band series refs
   const bb1UpperRef = useRef<ISeriesApi<'Line'> | null>(null);
   const bb1MiddleRef = useRef<ISeriesApi<'Line'> | null>(null);
@@ -98,6 +110,40 @@ export function MainChart({
   const [error, setError] = useState<string | null>(null);
   const [internalTimeframe, setInternalTimeframe] = useState<Timeframe>('1D');
   const [noData, setNoData] = useState(false);
+
+  // Range preset for visible data (in trading days for daily, bars for intraday)
+  const [rangePreset, setRangePreset] = useState<'1M' | '3M' | '4M' | '6M' | '1Y' | 'ALL'>('4M');
+
+  // Share data with SubCharts when it changes
+  useEffect(() => {
+    onDataLoaded?.(data);
+  }, [data, onDataLoaded]);
+
+  // Calculate default visible range based on timeframe
+  const getDefaultVisibleBars = useCallback((tf: string, preset: typeof rangePreset): number => {
+    // For daily timeframe, preset is in months (trading days)
+    const dailyPresets: Record<typeof rangePreset, number> = {
+      '1M': 22,    // ~1 month of trading days
+      '3M': 66,    // ~3 months
+      '4M': 88,    // ~4 months (default)
+      '6M': 132,   // ~6 months
+      '1Y': 252,   // ~1 year
+      'ALL': 9999, // Show all
+    };
+
+    // For intraday, use different multipliers
+    if (tf === '1D' || tf === '1W' || tf === '1M') {
+      return dailyPresets[preset];
+    } else {
+      // Intraday: scale based on daily equivalent
+      const multiplier = tf === '1h' ? 7 : tf === '15m' ? 28 : tf === '5m' ? 84 : 420;
+      return Math.min(dailyPresets[preset] * multiplier / 22, 500); // Cap at 500 bars for performance
+    }
+  }, []);
+
+  // Track if intraday data is available for this ticker
+  const [intradayAvailable, setIntradayAvailable] = useState(true);
+  const [intradayMessage, setIntradayMessage] = useState<string | null>(null);
 
   // Editable symbol state (for compact mode)
   const [isEditing, setIsEditing] = useState(false);
@@ -142,6 +188,8 @@ export function MainChart({
   // Order Block state
   const [analyzeData, setAnalyzeData] = useState<AnalyzeResponse | null>(null);
   const [showOB, setShowOB] = useState(true);
+  // FVG toggle (independent from OB)
+  const [showFVG, setShowFVG] = useState(true);
 
   // Bollinger Band toggle states
   const [showBB1, setShowBB1] = useState(false);  // BB1 (20, 0.5) - Green
@@ -152,6 +200,11 @@ export function MainChart({
   const [showKC, setShowKC] = useState(false);
   // TTM Squeeze toggle state
   const [showSqueeze, setShowSqueeze] = useState(false);
+  // Moving Average toggle states (EMA and SMA)
+  const [showEMA20, setShowEMA20] = useState(true);   // Default ON
+  const [showSMA20, setShowSMA20] = useState(false);  // Default OFF
+  const [showEMA200, setShowEMA200] = useState(true); // Default ON
+  const [showSMA200, setShowSMA200] = useState(false); // Default OFF
   const [obBoxPosition, setObBoxPosition] = useState<BoxPosition>({ left: 0, right: 0, top: 0, bottom: 0, visible: false });
   // FVG positions - now supports multiple independent FVGs
   const [fvgBoxPositions, setFvgBoxPositions] = useState<(BoxPosition & { direction: string })[]>([]);
@@ -296,60 +349,133 @@ export function MainChart({
     }
   };
 
+  // Check if timeframe is intraday (minute/hour based)
+  const isIntradayTimeframe = (tf: string) => ['1m', '5m', '15m', '1h'].includes(tf);
+
   // Fetch OHLCV data
   useEffect(() => {
     setLoading(true);
     setError(null);
     setNoData(false);
     setAnalyzeData(null);
+    setIntradayMessage(null);
+
+    // Debug logging
+    console.log('[OHLCV Fetch]', { symbol, market, timeframe });
 
     fetchOHLCV(symbol, market, timeframe)
       .then((response) => {
+        // Debug logging - EXTENSIVE for troubleshooting
+        const validEma200Count = response.ema200?.filter((v) => v != null && v > 0).length || 0;
+        const validEma20Count = response.ema20?.filter((v) => v != null && v > 0).length || 0;
+        console.log('[OHLCV Response]', {
+          symbol,
+          timeframe,
+          barsCount: response.bars.length,
+          ema20: { total: response.ema20?.length || 0, valid: validEma20Count },
+          ema200: { total: response.ema200?.length || 0, valid: validEma200Count },
+          firstEma200: response.ema200?.find((v) => v != null && v > 0),
+          lastEma200: response.ema200?.[response.ema200.length - 1],
+        });
+
         if (response.bars.length === 0) {
+          // Check if this is an intraday timeframe failure
+          if (isIntradayTimeframe(timeframe)) {
+            console.log('[OHLCV] Intraday data not available, switching to 1D');
+            setIntradayAvailable(false);
+            setIntradayMessage(`분/시간 데이터 없음 - ${symbol}은(는) 일봉만 제공됩니다`);
+            // Auto-switch to 1D timeframe
+            setTimeframe('1D');
+            return;
+          }
           setNoData(true);
           setData(null);
         } else {
-          // Remove trailing bars with invalid (zero) OHLC values to prevent chart distortion
-          // This can happen when yfinance returns incomplete data for the current day
-          let validEndIdx = response.bars.length;
-          while (validEndIdx > 0) {
-            const bar = response.bars[validEndIdx - 1];
-            if (bar.open > 0 && bar.high > 0 && bar.low > 0 && bar.close > 0) {
-              break;
-            }
-            validEndIdx--;
+          // Intraday data is available for this ticker
+          if (isIntradayTimeframe(timeframe)) {
+            setIntradayAvailable(true);
+            setIntradayMessage(null);
           }
 
-          if (validEndIdx === 0) {
+          // CRITICAL: Filter ALL invalid bars (not just trailing) to ensure timeline sync
+          // This ensures candlestick chart and all subcharts have identical bar indices
+          // Invalid bars have zero OHLC values (incomplete data from yfinance)
+          const validIndices: number[] = [];
+          response.bars.forEach((bar, i) => {
+            if (bar.open > 0 && bar.high > 0 && bar.low > 0 && bar.close > 0) {
+              validIndices.push(i);
+            }
+          });
+
+          if (validIndices.length === 0) {
             setNoData(true);
             setData(null);
-          } else if (validEndIdx < response.bars.length) {
-            // Trim invalid trailing bars and corresponding indicator values
-            setData({
-              ...response,
-              bars: response.bars.slice(0, validEndIdx),
-              ema20: response.ema20.slice(0, validEndIdx),
-              ema200: response.ema200.slice(0, validEndIdx),
-              rsi: response.rsi.slice(0, validEndIdx),
-              rsi_signal: response.rsi_signal.slice(0, validEndIdx),
-              macd_line: response.macd_line.slice(0, validEndIdx),
-              macd_signal: response.macd_signal.slice(0, validEndIdx),
-              macd_histogram: response.macd_histogram.slice(0, validEndIdx),
-              stoch_slow_k: response.stoch_slow_k.slice(0, validEndIdx),
-              stoch_slow_d: response.stoch_slow_d.slice(0, validEndIdx),
-              stoch_med_k: response.stoch_med_k.slice(0, validEndIdx),
-              stoch_med_d: response.stoch_med_d.slice(0, validEndIdx),
-              stoch_fast_k: response.stoch_fast_k.slice(0, validEndIdx),
-              stoch_fast_d: response.stoch_fast_d.slice(0, validEndIdx),
-            });
           } else {
-            setData(response);
+            // Create filtered arrays using valid indices - ALL charts will use same data
+            const filterByValidIndices = <T,>(arr: T[] | undefined): T[] => {
+              if (!arr) return [];
+              return validIndices.map(i => arr[i]);
+            };
+
+            const filteredData: OHLCVResponse = {
+              ...response,
+              bars: filterByValidIndices(response.bars),
+              ema20: filterByValidIndices(response.ema20),
+              ema200: filterByValidIndices(response.ema200),
+              sma20: filterByValidIndices(response.sma20),
+              sma200: filterByValidIndices(response.sma200),
+              rsi: filterByValidIndices(response.rsi),
+              rsi_signal: filterByValidIndices(response.rsi_signal),
+              macd_line: filterByValidIndices(response.macd_line),
+              macd_signal: filterByValidIndices(response.macd_signal),
+              macd_histogram: filterByValidIndices(response.macd_histogram),
+              stoch_slow_k: filterByValidIndices(response.stoch_slow_k),
+              stoch_slow_d: filterByValidIndices(response.stoch_slow_d),
+              stoch_med_k: filterByValidIndices(response.stoch_med_k),
+              stoch_med_d: filterByValidIndices(response.stoch_med_d),
+              stoch_fast_k: filterByValidIndices(response.stoch_fast_k),
+              stoch_fast_d: filterByValidIndices(response.stoch_fast_d),
+              bb1_upper: filterByValidIndices(response.bb1_upper),
+              bb1_middle: filterByValidIndices(response.bb1_middle),
+              bb1_lower: filterByValidIndices(response.bb1_lower),
+              bb2_upper: filterByValidIndices(response.bb2_upper),
+              bb2_middle: filterByValidIndices(response.bb2_middle),
+              bb2_lower: filterByValidIndices(response.bb2_lower),
+              rsi_bb_upper: filterByValidIndices(response.rsi_bb_upper),
+              rsi_bb_middle: filterByValidIndices(response.rsi_bb_middle),
+              rsi_bb_lower: filterByValidIndices(response.rsi_bb_lower),
+              vwap: filterByValidIndices(response.vwap),
+              kc_upper: filterByValidIndices(response.kc_upper),
+              kc_middle: filterByValidIndices(response.kc_middle),
+              kc_lower: filterByValidIndices(response.kc_lower),
+              squeeze: filterByValidIndices(response.squeeze),
+            };
+
+            console.log('[OHLCV] Filtered data:', {
+              original: response.bars.length,
+              filtered: filteredData.bars.length,
+              removed: response.bars.length - filteredData.bars.length,
+            });
+
+            setData(filteredData);
           }
         }
         setLoading(false);
       })
       .catch((err) => {
+        console.log('[OHLCV Error]', { symbol, timeframe, error: err.message });
+
         if (err.message.includes('not found') || err.message.includes('404')) {
+          // Check if this is an intraday timeframe failure
+          if (isIntradayTimeframe(timeframe)) {
+            console.log('[OHLCV] Intraday data error, switching to 1D');
+            setIntradayAvailable(false);
+            setIntradayMessage(`분/시간 데이터 없음 - ${symbol}은(는) 일봉만 제공됩니다`);
+            // Auto-switch to 1D timeframe
+            setTimeframe('1D');
+            setLoading(false);
+            return;
+          }
           setNoData(true);
           setData(null);
         } else {
@@ -359,14 +485,41 @@ export function MainChart({
       });
   }, [symbol, market, timeframe]);
 
+  // Reset intraday availability when symbol changes
+  useEffect(() => {
+    setIntradayAvailable(true);
+    setIntradayMessage(null);
+  }, [symbol, market]);
+
   // Fetch Order Block analysis after data loads
   useEffect(() => {
     if (!data || data.bars.length === 0) return;
 
     const barIndex = data.bars.length - 1;
+    console.log('[OB Analyze Request]', { symbol, market, timeframe, barIndex, hideWeakOB });
+
     fetchAnalyze(symbol, market, timeframe, barIndex, hideWeakOB)
-      .then(setAnalyzeData)
-      .catch(() => setAnalyzeData(null));
+      .then((result) => {
+        // Debug logging for OB detection
+        console.log('[OB Analyze Result]', {
+          symbol,
+          timeframe,
+          hasOB: !!result.current_valid_ob,
+          obDirection: result.current_valid_ob?.direction,
+          obZone: result.current_valid_ob
+            ? `${result.current_valid_ob.zone_bottom.toFixed(2)}-${result.current_valid_ob.zone_top.toFixed(2)}`
+            : null,
+          fvgCount: result.fvgs?.length || 0,
+          confluenceScore: result.confluence?.score,
+          reasonCode: result.reason_code,
+          filteredWeakObs: result.filtered_weak_obs,
+        });
+        setAnalyzeData(result);
+      })
+      .catch((err) => {
+        console.log('[OB Analyze Error]', { symbol, timeframe, error: err.message });
+        setAnalyzeData(null);
+      });
   }, [data, symbol, market, timeframe, hideWeakOB]);
 
   // Show alert toast when retest signal is detected
@@ -410,6 +563,8 @@ export function MainChart({
 
   // Fetch MTF (Multi-Timeframe) zones when enabled
   useEffect(() => {
+    console.log('[MTF Effect]', { showMTF, hasData: !!data, barsCount: data?.bars?.length || 0 });
+
     if (!showMTF || !data || data.bars.length === 0) {
       setMtfData(null);
       return;
@@ -424,12 +579,19 @@ export function MainChart({
     };
     const ltf = ltfMap[timeframe] || '1D';
 
+    console.log('[MTF Fetch Request]', { symbol, market, ltf });
     fetchMTFAnalyze(symbol, market, ltf, '', 20, true)
       .then((mtf) => {
+        console.log('[MTF Fetch Result]', {
+          htfObCount: mtf.htf_obs?.length || 0,
+          htfFvgCount: mtf.htf_fvgs?.length || 0,
+          currentPrice: mtf.current_price,
+        });
         setMtfData(mtf);
         setMtfLoading(false);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.log('[MTF Fetch Error]', err.message);
         setMtfData(null);
         setMtfLoading(false);
       });
@@ -440,6 +602,18 @@ export function MainChart({
 
   // Calculate box positions for OB and FVGs
   const updateBoxPositions = useCallback(() => {
+    // Debug logging for OB/FVG rendering
+    console.log('[updateBoxPositions] Called', {
+      hasChart: !!chartRef.current,
+      hasSeries: !!candlestickSeriesRef.current,
+      hasContainer: !!chartContainerRef.current,
+      hasData: !!data,
+      hasAnalyzeData: !!analyzeData,
+      hasOB: !!analyzeData?.current_valid_ob,
+      fvgCount: analyzeData?.fvgs?.length || 0,
+      showOB,
+    });
+
     if (!chartRef.current || !candlestickSeriesRef.current || !chartContainerRef.current || !data) {
       setObBoxPosition(prev => ({ ...prev, visible: false }));
       setFvgBoxPositions([]);
@@ -488,53 +662,55 @@ export function MainChart({
       setObBoxPosition(prev => ({ ...prev, visible: false }));
     }
 
-    // Handle independent FVGs - only show FVGs close to current price
+    // Handle ALL FVGs - show multiple FVGs within reasonable price range
     if (analyzeData?.fvgs && analyzeData.fvgs.length > 0 && analyzeData.current_price > 0) {
       const currentPrice = analyzeData.current_price;
+      const chartHeight = container.clientHeight || 500;
 
-      // Filter FVGs to only those within 30% of current price (to avoid Y-axis distortion)
+      // Filter FVGs to only those within 50% of current price (expanded from 30%)
       const validFvgs = analyzeData.fvgs.filter(fvg => {
         const gapMid = (fvg.gap_high + fvg.gap_low) / 2;
         const distancePercent = Math.abs(gapMid - currentPrice) / currentPrice * 100;
-        return distancePercent <= 30; // Only show FVGs within 30% of current price
+        return distancePercent <= 50;
       });
 
-      // Get the most recent valid FVG
-      const mostRecentFvg = validFvgs.length > 0 ? validFvgs[validFvgs.length - 1] : null;
+      console.log('[FVG Calculation]', {
+        totalFvgs: analyzeData.fvgs.length,
+        validFvgs: validFvgs.length,
+        currentPrice,
+      });
 
-      if (mostRecentFvg) {
-        // FVG starts at the middle candle (i-1) where the gap becomes apparent
-        const fvgStartIdx = Math.max(0, mostRecentFvg.index - 1);
+      // Calculate positions for ALL valid FVGs (up to 5 most recent)
+      const fvgPositions: (BoxPosition & { direction: string })[] = [];
+      const recentFvgs = validFvgs.slice(-5); // Show up to 5 most recent FVGs
+
+      for (const fvg of recentFvgs) {
+        const fvgStartIdx = Math.max(0, fvg.index - 1);
         const fvgStartTime = data.bars[fvgStartIdx]?.time;
 
         if (fvgStartTime) {
           const fvgLeftX = timeScale.timeToCoordinate(fvgStartTime as Time);
-          const fvgTopY = series.priceToCoordinate(mostRecentFvg.gap_high);
-          const fvgBottomY = series.priceToCoordinate(mostRecentFvg.gap_low);
+          const fvgTopY = series.priceToCoordinate(fvg.gap_high);
+          const fvgBottomY = series.priceToCoordinate(fvg.gap_low);
 
-          // Validate coordinates are reasonable (not NaN, not extreme values)
-          const chartHeight = container.clientHeight || 500;
           if (fvgLeftX !== null && fvgTopY !== null && fvgBottomY !== null &&
               !isNaN(fvgTopY) && !isNaN(fvgBottomY) &&
               fvgTopY >= -100 && fvgBottomY >= -100 &&
               fvgTopY <= chartHeight + 100 && fvgBottomY <= chartHeight + 100) {
-            setFvgBoxPositions([{
+            fvgPositions.push({
               left: fvgLeftX,
               right: chartRightEdge,
               top: Math.min(fvgTopY, fvgBottomY),
               bottom: Math.max(fvgTopY, fvgBottomY),
               visible: true,
-              direction: mostRecentFvg.direction,
-            }]);
-          } else {
-            setFvgBoxPositions([]);
+              direction: fvg.direction,
+            });
           }
-        } else {
-          setFvgBoxPositions([]);
         }
-      } else {
-        setFvgBoxPositions([]);
       }
+
+      console.log('[FVG Positions]', { count: fvgPositions.length });
+      setFvgBoxPositions(fvgPositions);
     } else {
       setFvgBoxPositions([]);
     }
@@ -630,11 +806,19 @@ export function MainChart({
       },
       rightPriceScale: {
         borderColor: '#2a2e39',
+        scaleMargins: {
+          top: 0.1,    // 10% padding at top
+          bottom: 0.1, // 10% padding at bottom
+        },
+        autoScale: true,
+        minimumWidth: 60,  // Fixed width for alignment with subcharts
       },
       timeScale: {
         borderColor: '#2a2e39',
+        visible: showTimeScale,  // Hide when subcharts show timeline at bottom
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 20,  // Increased padding for price label visibility
       },
       handleScale: {
         // Make default wheel zoom more gradual
@@ -663,6 +847,11 @@ export function MainChart({
       borderDownColor: '#ef5350',
       wickUpColor: '#26a69a',
       wickDownColor: '#ef5350',
+      // Show current price on right axis
+      lastValueVisible: true,
+      priceLineVisible: true,
+      priceLineWidth: 1,
+      priceLineStyle: 2, // Dashed line
     });
     candlestickSeriesRef.current = candlestickSeries;
 
@@ -674,13 +863,31 @@ export function MainChart({
     });
     ema20SeriesRef.current = ema20Series;
 
-    // Create EMA200 line series - Green
+    // Create EMA200 line series - Sky Blue, thicker for visibility
     const ema200Series = chart.addSeries(LineSeries, {
-      color: '#22c55e',
-      lineWidth: 2,
+      color: '#00BFFF',  // Sky blue / cyan
+      lineWidth: 3,      // Thicker for better visibility
       title: 'EMA200',
     });
     ema200SeriesRef.current = ema200Series;
+
+    // Create SMA20 line series - Dark Red
+    const sma20Series = chart.addSeries(LineSeries, {
+      color: '#B22222',  // Dark Red (Firebrick)
+      lineWidth: 2,
+      title: 'SMA20',
+      visible: false,  // Default OFF
+    });
+    sma20SeriesRef.current = sma20Series;
+
+    // Create SMA200 line series - Blue, thicker for visibility
+    const sma200Series = chart.addSeries(LineSeries, {
+      color: '#0066FF',  // Blue
+      lineWidth: 3,      // Thicker for better visibility
+      title: 'SMA200',
+      visible: false,  // Default OFF
+    });
+    sma200SeriesRef.current = sma200Series;
 
     // Create BB1 (Tight 0.5) line series - Green
     const bb1Upper = chart.addSeries(LineSeries, {
@@ -889,6 +1096,7 @@ export function MainChart({
 
     // Convert bars to candlestick data with explicit colors
     // close > open = UP (green), close < open = DOWN (red)
+    // NOTE: Invalid bars already filtered during data loading (no need to filter again)
     const candlestickData: CandlestickData<Time>[] = data.bars.map((bar) => {
       const isUp = bar.close > bar.open;
       return {
@@ -918,9 +1126,28 @@ export function MainChart({
       }))
       .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
 
+
     candlestickSeriesRef.current.setData(candlestickData);
     ema20SeriesRef.current.setData(ema20Data);
     ema200SeriesRef.current.setData(ema200Data);
+
+    // Convert SMA data to line data (skip null/zero values at the beginning)
+    const sma20Data: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.sma20?.[i],
+      }))
+      .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
+
+    const sma200Data: LineData<Time>[] = data.bars
+      .map((bar, i) => ({
+        time: bar.time as Time,
+        value: data.sma200?.[i],
+      }))
+      .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
+
+    sma20SeriesRef.current?.setData(sma20Data);
+    sma200SeriesRef.current?.setData(sma200Data);
 
     // Set BB1 data (skip zero values at beginning)
     const bb1UpperData: LineData<Time>[] = data.bars
@@ -968,7 +1195,7 @@ export function MainChart({
     bb2UpperRef.current?.setData(bb2UpperData);
     bb2LowerRef.current?.setData(bb2LowerData);
 
-    // Set VWAP data (skip zero values - VWAP is intraday only)
+    // Set VWAP data (skip zero/NaN values - now works on all timeframes)
     const vwapData: LineData<Time>[] = data.bars
       .map((bar, i) => ({
         time: bar.time as Time,
@@ -976,6 +1203,15 @@ export function MainChart({
       }))
       .filter((d): d is LineData<Time> => d.value > 0);
     vwapRef.current?.setData(vwapData);
+
+    // Debug VWAP data
+    if (vwapData.length > 0) {
+      console.log('[VWAP Data]', {
+        timeframe,
+        dataPoints: vwapData.length,
+        lastValue: vwapData[vwapData.length - 1]?.value,
+      });
+    }
 
     // Set Keltner Channel data (skip zero values at beginning)
     const kcUpperData: LineData<Time>[] = data.bars
@@ -1003,8 +1239,22 @@ export function MainChart({
     kcMiddleRef.current?.setData(kcMiddleData);
     kcLowerRef.current?.setData(kcLowerData);
 
-    // Fit content
-    chartRef.current?.timeScale().fitContent();
+    // Set default visible range based on timeframe and preset
+    const totalBars = data.bars.length;
+    const visibleBars = getDefaultVisibleBars(timeframe, rangePreset);
+    const endIndex = totalBars - 1;
+    const startIndex = rangePreset === 'ALL' ? 0 : Math.max(0, endIndex - visibleBars);
+
+    // Apply the visible range
+    chartRef.current?.timeScale().setVisibleLogicalRange({
+      from: startIndex,
+      to: endIndex + 10, // Add padding on right side
+    });
+
+    // Force price scale to recalculate based on visible data
+    chartRef.current?.priceScale('right').applyOptions({
+      autoScale: true,
+    });
 
     // Update box positions after data loads
     setTimeout(updateBoxPositions, 100);
@@ -1018,12 +1268,66 @@ export function MainChart({
         }
       }
     }, 150);
-  }, [data, updateBoxPositions]);
+  }, [data, updateBoxPositions, timeframe, rangePreset, getDefaultVisibleBars]);
 
   // Update box positions when analyze data changes
   useEffect(() => {
     updateBoxPositions();
   }, [analyzeData, updateBoxPositions]);
+
+  // Toggle EMA20 visibility
+  useEffect(() => {
+    ema20SeriesRef.current?.applyOptions({ visible: showEMA20 });
+  }, [showEMA20]);
+
+  // Toggle SMA20 visibility
+  useEffect(() => {
+    sma20SeriesRef.current?.applyOptions({ visible: showSMA20 });
+  }, [showSMA20]);
+
+  // Toggle EMA200 visibility
+  useEffect(() => {
+    ema200SeriesRef.current?.applyOptions({ visible: showEMA200 });
+  }, [showEMA200]);
+
+  // Toggle SMA200 visibility
+  useEffect(() => {
+    sma200SeriesRef.current?.applyOptions({ visible: showSMA200 });
+  }, [showSMA200]);
+
+  // Real-time last candle update
+  // ONLY updates the last candle - does NOT recalculate indicators or touch historical data
+  useEffect(() => {
+    if (!realtimePrice || !data || !candlestickSeriesRef.current) return;
+
+    // Get the last bar's time
+    const lastBar = data.bars[data.bars.length - 1];
+    if (!lastBar) return;
+
+    // Update only the last candle with real-time data
+    const isUp = realtimePrice.price >= lastBar.open;
+    const candleColor = isUp ? '#26a69a' : '#ef5350';
+
+    const updatedCandle: CandlestickData<Time> = {
+      time: lastBar.time as Time,
+      open: lastBar.open,
+      high: Math.max(lastBar.high, realtimePrice.high),
+      low: Math.min(lastBar.low, realtimePrice.low),
+      close: realtimePrice.price,
+      // Color based on real-time price vs open
+      color: candleColor,
+      wickColor: candleColor,
+      borderColor: candleColor,
+    };
+
+    // Update just the last candle (lightweight-charts handles this efficiently)
+    candlestickSeriesRef.current.update(updatedCandle);
+  }, [realtimePrice, data]);
+
+  // Toggle time scale visibility (hide when subcharts show timeline at bottom)
+  useEffect(() => {
+    chartRef.current?.timeScale().applyOptions({ visible: showTimeScale });
+  }, [showTimeScale]);
 
   // Toggle BB1 visibility
   useEffect(() => {
@@ -1049,6 +1353,11 @@ export function MainChart({
     kcMiddleRef.current?.applyOptions({ visible: showKC });
     kcLowerRef.current?.applyOptions({ visible: showKC });
   }, [showKC]);
+
+  // REAL-TIME UPDATES DISABLED FOR STABILITY
+  // TODO: Re-enable after proper subscription management is implemented
+  // The real-time candle update logic has been removed to prevent
+  // flickering issues when switching between tickers.
 
   // Get current price info
   const lastBar = data?.bars[data.bars.length - 1];
@@ -1234,20 +1543,35 @@ export function MainChart({
 
           {/* Timeframe selector */}
           <div className="flex items-center gap-1 ml-4 bg-[var(--bg-tertiary)] rounded p-0.5">
-            {TIMEFRAMES.map((tf) => (
-              <button
-                key={tf}
-                onClick={() => setTimeframe(tf)}
-                className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                  timeframe === tf
-                    ? 'bg-[var(--accent-blue)] text-white'
-                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]'
-                }`}
-              >
-                {tf}
-              </button>
-            ))}
+            {TIMEFRAMES.map((tf) => {
+              const isIntraday = ['1m', '5m', '15m', '1h'].includes(tf);
+              const isDisabled = isIntraday && !intradayAvailable;
+
+              return (
+                <button
+                  key={tf}
+                  onClick={() => !isDisabled && setTimeframe(tf)}
+                  disabled={isDisabled}
+                  className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                    timeframe === tf
+                      ? 'bg-[var(--accent-blue)] text-white'
+                      : isDisabled
+                      ? 'text-gray-500 cursor-not-allowed opacity-50'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]'
+                  }`}
+                  title={isDisabled ? '이 종목은 분/시간 데이터가 제공되지 않습니다 (일봉만 가능)' : undefined}
+                >
+                  {tf}
+                </button>
+              );
+            })}
           </div>
+          {/* Intraday not available message */}
+          {intradayMessage && (
+            <span className="ml-2 text-xs text-yellow-500 animate-pulse">
+              ⚠️ {intradayMessage}
+            </span>
+          )}
 
           {/* OB Toggle */}
           <div className="flex items-center gap-1 ml-2">
@@ -1285,6 +1609,19 @@ export function MainChart({
             )}
           </div>
 
+          {/* FVG Toggle */}
+          <button
+            onClick={() => setShowFVG(!showFVG)}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              showFVG
+                ? 'bg-[#14b8a6] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title="Fair Value Gaps"
+          >
+            FVG
+          </button>
+
           {/* VP Toggle */}
           <button
             onClick={() => setShowVP(!showVP)}
@@ -1297,6 +1634,78 @@ export function MainChart({
           >
             {vpLoading ? '...' : 'VP'}
           </button>
+
+          {/* Moving Averages Toggles */}
+          <div className="flex items-center gap-1 border-l border-[var(--border-primary)] pl-2 ml-1">
+            <span className="text-xs text-[var(--text-secondary)] mr-1">MA:</span>
+            {/* EMA20 Toggle - Pink */}
+            <button
+              onClick={() => setShowEMA20(!showEMA20)}
+              className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                showEMA20
+                  ? 'bg-[#f472b6] text-white'
+                  : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              title="EMA 20 (Exponential)"
+            >
+              E20
+            </button>
+            {/* SMA20 Toggle - Dark Red */}
+            <button
+              onClick={() => setShowSMA20(!showSMA20)}
+              className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                showSMA20
+                  ? 'bg-[#B22222] text-white'
+                  : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              title="SMA 20 (Simple)"
+            >
+              S20
+            </button>
+            {/* EMA200 Toggle - Sky Blue */}
+            <button
+              onClick={() => setShowEMA200(!showEMA200)}
+              className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                showEMA200
+                  ? 'bg-[#00BFFF] text-white'
+                  : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              title="EMA 200 (Exponential)"
+            >
+              E200
+            </button>
+            {/* SMA200 Toggle - Blue */}
+            <button
+              onClick={() => setShowSMA200(!showSMA200)}
+              className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                showSMA200
+                  ? 'bg-[#0066FF] text-white'
+                  : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              title="SMA 200 (Simple)"
+            >
+              S200
+            </button>
+          </div>
+
+          {/* Range Presets */}
+          <div className="flex items-center gap-1 border-l border-[var(--border-primary)] pl-2 ml-1">
+            <span className="text-xs text-[var(--text-secondary)] mr-1">범위:</span>
+            {(['1M', '3M', '4M', '6M', '1Y', 'ALL'] as const).map((preset) => (
+              <button
+                key={preset}
+                onClick={() => setRangePreset(preset)}
+                className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                  rangePreset === preset
+                    ? 'bg-[var(--accent-blue)] text-white'
+                    : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title={`Show last ${preset === 'ALL' ? 'all data' : preset}`}
+              >
+                {preset}
+              </button>
+            ))}
+          </div>
 
           {/* MTF Toggle */}
           <button
@@ -1337,21 +1746,27 @@ export function MainChart({
             BB2
           </button>
 
-          {/* VWAP Toggle - Orange (intraday only) */}
+          {/* VWAP Toggle - Orange (works on all timeframes now) */}
           <button
-            onClick={() => setShowVWAP(!showVWAP)}
+            onClick={() => {
+              setShowVWAP(!showVWAP);
+              // Debug logging for VWAP
+              console.log('[VWAP Toggle]', {
+                timeframe,
+                newShowVWAP: !showVWAP,
+                isDaily: ['1D', '1W', '1M'].includes(timeframe),
+              });
+            }}
             className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
               showVWAP
-                ? ['1D', '1W', '1M'].includes(timeframe)
-                  ? 'bg-[#6b7280] text-white'  // Gray when daily+ (VWAP not meaningful)
-                  : 'bg-[#eab308] text-white'
+                ? 'bg-[#eab308] text-white'
                 : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
             title={['1D', '1W', '1M'].includes(timeframe)
-              ? 'VWAP - Not available for daily+ timeframes (use 1h, 5m, etc.)'
-              : 'VWAP - Volume Weighted Average Price (intraday)'}
+              ? 'VWAP - Cumulative Volume Weighted Average Price (daily+)'
+              : 'VWAP - Volume Weighted Average Price (resets daily for intraday)'}
           >
-            VWAP{showVWAP && ['1D', '1W', '1M'].includes(timeframe) ? ' (N/A)' : ''}
+            VWAP
           </button>
 
           {/* Keltner Channel Toggle - Cyan */}
@@ -1427,12 +1842,27 @@ export function MainChart({
                 ({analyzeData.filtered_weak_obs}개 약한 OB 숨김)
               </span>
             )}
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-0.5 bg-[#f472b6]"></span> EMA20
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-0.5 bg-[#22c55e]"></span> EMA200
-            </span>
+            {/* Moving Average legends - only show if enabled */}
+            {showEMA20 && (
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-0.5 bg-[#f472b6]"></span> EMA20
+              </span>
+            )}
+            {showSMA20 && (
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-0.5 bg-[#B22222]"></span> SMA20
+              </span>
+            )}
+            {showEMA200 && (
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-0.5 bg-[#00BFFF]"></span> EMA200
+              </span>
+            )}
+            {showSMA200 && (
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-0.5 bg-[#0066FF]"></span> SMA200
+              </span>
+            )}
             {/* VWAP legend */}
             {showVWAP && (
               <span className="flex items-center gap-1">
@@ -1670,7 +2100,6 @@ export function MainChart({
           const ageStatus = ob.age_status || 'fresh';
           const ageCandles = ob.age_candles || 0;
           const volumaticScore = ob.volumatic_score || 0;
-          const fvgFresh = ob.fvg_fresh || false;
           const isAged = ageStatus === 'aged';
           const isVolumatic = volumaticScore >= 80; // High volumatic score
 
@@ -1683,9 +2112,10 @@ export function MainChart({
           // Aged OBs get grayed out regardless of volume strength
           // Strong volumatic OBs get gold border
           // Retest active: extra thick border + animation
-          const borderWidth = isRetestActive ? '4px' : isAged ? '1px' : isVolumatic ? '4px' : isStrong ? '3px' : isWeak ? '1px' : '2px';
-          const bgOpacity = isAged ? 0.1 : isWeak ? 0.15 : 0.35;
-          const borderOpacity = isAged ? 0.3 : isWeak ? 0.4 : 0.9;
+          // INCREASED VISIBILITY: thicker borders and higher opacity
+          const borderWidth = isRetestActive ? '4px' : isAged ? '2px' : isVolumatic ? '4px' : isStrong ? '3px' : isWeak ? '2px' : '3px';
+          const bgOpacity = isAged ? 0.2 : isWeak ? 0.25 : 0.4;
+          const borderOpacity = isAged ? 0.5 : isWeak ? 0.6 : 1.0;
           const glowIntensity = isRetestActive ? '20px' : isVolumatic ? '15px' : isHighConfluence ? '12px' : isStrong ? '10px' : '6px';
 
           // Gold border for high volumatic score, gray for aged, special for retest
@@ -1748,128 +2178,30 @@ export function MainChart({
               }}
               title={`볼륨: ${volRatio.toFixed(1)}x 평균 (${volStrength === 'strong' ? '강함' : volStrength === 'weak' ? '약함' : '보통'}) | 나이: ${ageCandles}캔들 (${ageStatus === 'fresh' ? '신선' : ageStatus === 'mature' ? '성숙' : '노후'})${isRetestActive ? ` | 리테스트 활성: ${retestDirection === 'bull' ? '매수' : '매도'} 볼륨 ${retestVolConfirm.toFixed(1)}x` : ''}`}
             >
-              {/* OB label with optional gold star for high confluence or volumatic */}
+              {/* Simple OB label - clean and minimal */}
               <div className="absolute top-1 left-1 flex items-center gap-1">
                 <div
-                  className="px-1.5 py-0.5 text-xs font-black rounded"
+                  className="px-2 py-0.5 text-xs font-bold rounded"
                   style={{
-                    backgroundColor: isAged ? 'rgba(128, 128, 128, 0.8)' : isBuyOB ? 'rgba(38, 166, 154, 1)' : 'rgba(239, 83, 80, 1)',
+                    backgroundColor: isAged ? 'rgba(128, 128, 128, 0.9)' : isBuyOB ? 'rgba(0, 200, 100, 0.95)' : 'rgba(220, 50, 50, 0.95)',
                     color: 'white',
-                    textShadow: '0 1px 2px rgba(0,0,0,0.3)',
-                    opacity: isAged ? 0.7 : isWeak ? 0.6 : 1,
+                    textShadow: '0 1px 2px rgba(0,0,0,0.5)',
                   }}
                 >
-                  OB
+                  {isBuyOB ? '▲ OB' : '▼ OB'}
                 </div>
-                {/* Volume strength badge */}
-                <div
-                  className="px-1 py-0.5 text-[9px] font-bold rounded"
-                  style={{
-                    backgroundColor: isAged ? 'rgba(128, 128, 128, 0.6)' : isStrong ? 'rgba(34, 197, 94, 0.9)' : isWeak ? 'rgba(156, 163, 175, 0.7)' : 'rgba(100, 100, 100, 0.7)',
-                    color: 'white',
-                  }}
-                  title={`볼륨: ${volRatio.toFixed(1)}x 평균`}
-                >
-                  {volRatio.toFixed(1)}x
-                </div>
-                {/* Age status badge */}
-                {ageStatus !== 'fresh' && (
-                  <div
-                    className="px-1 py-0.5 text-[9px] font-bold rounded"
-                    style={{
-                      backgroundColor: isAged ? 'rgba(239, 68, 68, 0.8)' : 'rgba(251, 191, 36, 0.8)',
-                      color: 'white',
-                    }}
-                    title={`${ageCandles}캔들 경과`}
-                  >
-                    {isAged ? '노후' : '성숙'}
-                  </div>
-                )}
-                {/* Volumatic score badge - gold for high score */}
-                {volumaticScore > 0 && (
-                  <div
-                    className="px-1.5 py-0.5 text-xs font-bold rounded flex items-center gap-0.5"
-                    style={{
-                      backgroundColor: isVolumatic ? 'rgba(255, 215, 0, 0.95)' : 'rgba(100, 100, 100, 0.8)',
-                      color: isVolumatic ? '#1a1a1a' : 'white',
-                      textShadow: isVolumatic ? '0 1px 1px rgba(255,255,255,0.3)' : 'none',
-                    }}
-                    title={`Volumatic Score: ${volumaticScore}점${fvgFresh ? ' (Fresh FVG)' : ''}`}
-                  >
-                    {isVolumatic && <span>★</span>}
-                    <span>V{volumaticScore}</span>
-                  </div>
-                )}
-                {/* Gold star for high confluence (only if not already showing volumatic) */}
-                {isHighConfluence && !isVolumatic && (
-                  <div
-                    className="px-1.5 py-0.5 text-xs font-bold rounded flex items-center gap-0.5"
-                    style={{
-                      backgroundColor: 'rgba(255, 215, 0, 0.9)',
-                      color: '#1a1a1a',
-                      textShadow: '0 1px 1px rgba(255,255,255,0.3)',
-                    }}
-                    title={`High Confluence: ${confluenceScore}점`}
-                  >
-                    <span>★</span>
-                    <span>{confluenceScore}</span>
-                  </div>
-                )}
-                {/* Normal score badge (50-79) - only if no volumatic or high confluence */}
-                {!isHighConfluence && !isVolumatic && confluenceScore >= 50 && (
-                  <div
-                    className="px-1 py-0.5 text-[10px] font-medium rounded"
-                    style={{
-                      backgroundColor: 'rgba(100, 100, 100, 0.8)',
-                      color: 'white',
-                    }}
-                    title={`Confluence Score: ${confluenceScore}점`}
-                  >
-                    {confluenceScore}
-                  </div>
-                )}
-                {/* Retest signal badge - blinking with direction arrow */}
+                {/* Only show retest badge when active */}
                 {isRetestActive && (
                   <div
-                    className="px-1.5 py-0.5 text-xs font-black rounded flex items-center gap-0.5 animate-pulse"
+                    className="px-1.5 py-0.5 text-xs font-black rounded animate-pulse"
                     style={{
                       backgroundColor: retestDirection === 'bull' ? 'rgba(0, 255, 200, 0.95)' : 'rgba(255, 50, 150, 0.95)',
                       color: retestDirection === 'bull' ? '#003d33' : '#4d0026',
-                      textShadow: '0 1px 2px rgba(255,255,255,0.3)',
                     }}
-                    title={`리테스트 활성! ${retestDirection === 'bull' ? '매수' : '매도'} 신호 - 볼륨 ${retestVolConfirm.toFixed(1)}x 확인`}
                   >
-                    <span className="text-sm">{retestDirection === 'bull' ? '▲' : '▼'}</span>
-                    <span>RET</span>
+                    RET
                   </div>
                 )}
-                {/* Williams %R OB confluence bonus */}
-                {analyzeData?.williams_r && analyzeData.williams_r.ob_bonus > 0 && (
-                  <div
-                    className="px-1 py-0.5 text-[9px] font-bold rounded flex items-center gap-0.5"
-                    style={{
-                      backgroundColor: analyzeData.williams_r.ob_bonus >= 15
-                        ? 'rgba(236, 72, 153, 0.95)' // Pink for strong confluence
-                        : 'rgba(168, 85, 247, 0.8)', // Purple for moderate
-                      color: 'white',
-                    }}
-                    title={`Williams %R: ${analyzeData.williams_r.value.toFixed(1)} (${analyzeData.williams_r.zone}) | ${analyzeData.williams_r.summary}`}
-                  >
-                    <span>%R</span>
-                    <span>+{analyzeData.williams_r.ob_bonus}</span>
-                  </div>
-                )}
-              </div>
-              {/* Price label */}
-              <div
-                className="absolute top-1 right-8 text-[10px] font-medium px-1 rounded"
-                style={{
-                  backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
-                  color: 'white',
-                  opacity: isWeak ? 0.6 : 1,
-                }}
-              >
-                {ob.zone_top.toLocaleString(undefined, { maximumFractionDigits: 0 })} - {ob.zone_bottom.toLocaleString(undefined, { maximumFractionDigits: 0 })}
               </div>
               {/* Right resize handle ONLY - drag to extend/shorten forward in time */}
               <div
@@ -1893,7 +2225,7 @@ export function MainChart({
         })()}
 
         {/* FVG overlays - independent from OB, multiple FVGs supported */}
-        {!compact && showOB && fvgBoxPositions.map((fvgPos, idx) => {
+        {!compact && showFVG && fvgBoxPositions.map((fvgPos, idx) => {
           const isBuyFVG = fvgPos.direction === 'buy';
           const fvgWidth = fvgPos.right - fvgPos.left;
           const fvgHeight = fvgPos.bottom - fvgPos.top;
@@ -1990,11 +2322,142 @@ export function MainChart({
           />
         )}
 
-        <div
-          ref={chartContainerRef}
-          className="w-full h-full"
-          style={{ marginLeft: !compact && showDrawingTools ? 48 : 0 }}
-        />
+        <div className="relative w-full h-full">
+          <div
+            ref={chartContainerRef}
+            className="w-full h-full"
+            style={{ marginLeft: !compact && showDrawingTools ? 48 : 0 }}
+          />
+
+          {/* Current Price Label Overlay - aligned with Y-axis */}
+          {/* Uses real-time price when available, falls back to last bar close */}
+          {!compact && data && data.bars.length > 0 && chartRef.current && candlestickSeriesRef.current && lastBar && (
+            <CurrentPriceLabel
+              price={realtimePrice?.price ?? lastBar.close}
+              prevClose={realtimePrice?.prevClose ?? prevBar?.close ?? lastBar.open}
+              market={market}
+              chart={chartRef.current}
+              series={candlestickSeriesRef.current}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Current price label component for chart overlay - aligned with Y-axis
+ */
+function CurrentPriceLabel({
+  price,
+  prevClose,
+  market,
+  chart,
+  series,
+}: {
+  price: number;
+  prevClose: number;
+  market: string;
+  chart: IChartApi;
+  series: ISeriesApi<'Candlestick'>;
+}) {
+  const [yPosition, setYPosition] = useState<number | null>(null);
+
+  // Update Y position when price changes
+  useEffect(() => {
+    if (price <= 0) {
+      setYPosition(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const y = series.priceToCoordinate(price);
+      if (y !== null && y > 0) {
+        setYPosition(y);
+        // Debug logging
+        console.log('[Price Label Position]', {
+          price,
+          yCoordinate: y,
+          prevClose,
+          changePct: prevClose > 0 ? ((price - prevClose) / prevClose * 100).toFixed(2) : 0,
+        });
+      }
+    };
+
+    updatePosition();
+
+    // Subscribe to chart crosshair move to update on scroll/zoom
+    const handler = () => updatePosition();
+    chart.subscribeCrosshairMove(handler);
+
+    return () => {
+      chart.unsubscribeCrosshairMove(handler);
+    };
+  }, [price, prevClose, chart, series]);
+
+  if (price <= 0 || yPosition === null) return null;
+
+  const change = price - prevClose;
+  const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+  const isUp = change >= 0;
+
+  // Debug logging - MUST match header price color logic
+  console.log('[Right Label Price Color]', {
+    currentPrice: price,
+    prevClose,
+    change,
+    isUp,
+    color: isUp ? 'GREEN' : 'RED',
+  });
+
+  // Format price
+  const formatPrice = (value: number) => {
+    if (market === 'KR') {
+      return value.toLocaleString('ko-KR');
+    }
+    return value.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
+
+  // Format change percentage
+  const formatChangePct = (value: number) => {
+    const sign = value >= 0 ? '+' : '';
+    return `${sign}${value.toFixed(2)}%`;
+  };
+
+  return (
+    <div
+      className="absolute right-0 z-20"
+      style={{
+        pointerEvents: 'none',
+        top: yPosition - 14, // Center the label vertically on the price line
+        transform: 'translateX(-60px)', // Position to left of Y-axis
+      }}
+    >
+      <div
+        className={`px-2 py-1 rounded shadow-lg border ${
+          isUp
+            ? 'bg-green-600 border-green-500'
+            : 'bg-red-600 border-red-500'
+        }`}
+      >
+        <div className="flex items-baseline gap-1.5">
+          <span
+            className={`text-sm font-bold font-mono text-white`}
+          >
+            {market === 'KR' ? '₩' : '$'}{formatPrice(price)}
+          </span>
+          <span
+            className={`text-sm font-semibold ${
+              isUp ? 'text-green-400' : 'text-red-400'
+            }`}
+          >
+            {formatChangePct(changePct)}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -2212,9 +2675,9 @@ function MTFZonesOverlay({
           return null;
         }
 
-        // Check for reasonable height
+        // Check for reasonable height (HTF zones can be large, so allow up to 2x chart height)
         const height = Math.abs(bottomY - topY);
-        if (height < 1 || height > chartHeight) {
+        if (height < 1 || height > chartHeight * 2) {
           return null;
         }
 
@@ -2259,9 +2722,9 @@ function MTFZonesOverlay({
           return null;
         }
 
-        // Check for reasonable height (not a vertical line)
+        // Check for reasonable height (HTF FVGs can be large, allow up to 2x chart height)
         const height = Math.abs(bottomY - topY);
-        if (height < 1 || height > chartHeight) {
+        if (height < 1 || height > chartHeight * 2) {
           return null;
         }
 

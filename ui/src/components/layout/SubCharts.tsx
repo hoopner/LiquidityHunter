@@ -27,6 +27,8 @@ interface SubChartsProps {
   market?: string;
   timeframe?: string;
   visibleRange?: { from: number; to: number } | null;
+  // Shared OHLCV data from MainChart (for timeline sync)
+  sharedData?: OHLCVResponse | null;
   // Drawing support
   drawingToolActive?: DrawingToolType | null;
   activeChartType?: ChartType | null;
@@ -107,13 +109,15 @@ export function SubCharts({
   market = 'KR',
   timeframe = '1D',
   visibleRange: externalVisibleRange,
+  sharedData,
   drawingToolActive,
   activeChartType,
   onChartActivate,
   onDrawingComplete,
 }: SubChartsProps) {
-  // Single data source for ALL charts
-  const [data, setData] = useState<OHLCVResponse | null>(null);
+  // Use shared data from MainChart if provided, otherwise fetch independently (fallback)
+  const [localData, setLocalData] = useState<OHLCVResponse | null>(null);
+  const data = sharedData ?? localData;
   // RSI BB is off by default (user can toggle it on)
   const [activeIndicators, setActiveIndicators] = useState<Set<IndicatorType>>(
     new Set(['stoch_slow', 'stoch_med', 'stoch_fast', 'rsi', 'macd', 'volume'])
@@ -154,12 +158,13 @@ export function SubCharts({
   };
 
 
-  // Fetch data ONCE - same data for all charts
+  // Only fetch data if sharedData is not provided (fallback mode)
   useEffect(() => {
+    if (sharedData) return; // Use shared data from MainChart instead
     fetchOHLCV(symbol, market, timeframe)
-      .then(setData)
-      .catch(() => setData(null));
-  }, [symbol, market, timeframe]);
+      .then(setLocalData)
+      .catch(() => setLocalData(null));
+  }, [symbol, market, timeframe, sharedData]);
 
   // CRITICAL: Sync ALL subcharts to main chart's visible range
   useEffect(() => {
@@ -422,7 +427,8 @@ export function SubCharts({
       </div>
 
       {/* Subcharts - all use same data, all synced, draggable for reordering */}
-      <div className="flex-1 overflow-y-auto">
+      {/* scrollbar-gutter: stable reserves space for scrollbar to prevent width changes */}
+      <div className="flex-1 overflow-y-auto" style={{ scrollbarGutter: 'stable' }}>
         {indicatorOrder.map(indicator => {
           if (!activeIndicators.has(indicator)) return null;
           const config = indicatorConfig[indicator];
@@ -532,12 +538,18 @@ function IndicatorChart({
       rightPriceScale: {
         borderColor: '#2a2e39',
         scaleMargins: { top: 0.1, bottom: 0.1 },
+        minimumWidth: 60,  // Fixed width for alignment with main chart
       },
       timeScale: {
         borderColor: '#2a2e39',
         visible: showTimeScale,
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 20,  // MUST match main chart exactly for timeline sync
+        // CRITICAL: These settings must match MainChart for consistent labels
+        tickMarkFormatter: undefined,  // Use default formatter
+        fixLeftEdge: false,
+        fixRightEdge: false,
       },
       crosshair: {
         mode: 1,
@@ -750,10 +762,11 @@ function IndicatorChart({
       }
       case 'volume': {
         const [main] = seriesRef.current;
+        // Use more opaque colors for better visibility
         const volumeData: HistogramData<Time>[] = data.bars.map(bar => ({
           time: bar.time as Time,
           value: bar.volume,
-          color: bar.close >= bar.open ? '#26a69a80' : '#ef535080',
+          color: bar.close >= bar.open ? '#26a69aCC' : '#ef5350CC',  // CC = 80% opacity
         }));
         (main as ISeriesApi<'Histogram'>).setData(volumeData);
         break;

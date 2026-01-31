@@ -5,6 +5,7 @@ import { fetchWatchlist, fetchPortfolio } from '../../api/client';
 import type { WatchlistItem } from '../../api/types';
 import type { DrawingToolType } from '../../types/drawings';
 import type { ChartType } from '../../utils/DrawingManager';
+import type { RealtimePrice } from '../../hooks/useRealtimePrice';
 
 export type LayoutType = 1 | 2 | 4 | 8;
 
@@ -17,6 +18,7 @@ interface MultiChartLayoutProps {
   selectedSymbol: string;
   selectedMarket: string;
   onStockSelect: (symbol: string, market: string) => void;
+  realtimePrice?: RealtimePrice | null;
 }
 
 const DEFAULT_SYMBOLS: ChartCell[] = [
@@ -30,7 +32,7 @@ const DEFAULT_SYMBOLS: ChartCell[] = [
   { symbol: 'AMZN', market: 'US' },
 ];
 
-export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect }: MultiChartLayoutProps) {
+export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect, realtimePrice }: MultiChartLayoutProps) {
   const [layout, setLayout] = useState<LayoutType>(1);
   const [cells, setCells] = useState<ChartCell[]>(DEFAULT_SYMBOLS);
   const [selectedCell, setSelectedCell] = useState(0);
@@ -43,6 +45,12 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
   const [visibleRange, setVisibleRange] = useState<{ from: number; to: number } | null>(null);
   const handleVisibleRangeChange = useCallback((range: { from: number; to: number } | null) => {
     setVisibleRange(range);
+  }, []);
+
+  // Shared OHLCV data from MainChart - SubCharts use this instead of fetching independently
+  const [sharedData, setSharedData] = useState<import('../../api/types').OHLCVResponse | null>(null);
+  const handleDataLoaded = useCallback((data: import('../../api/types').OHLCVResponse | null) => {
+    setSharedData(data);
   }, []);
 
   // Drawing tool coordination between main chart and subcharts
@@ -256,8 +264,8 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
           </div>
         </div>
 
-        {/* Main chart */}
-        <div className="flex-1">
+        {/* Main chart - scrollbar-gutter matches SubCharts for alignment */}
+        <div className="flex-1" style={{ scrollbarGutter: 'stable' }}>
           <MainChart
             symbol={selectedSymbol}
             market={selectedMarket}
@@ -268,9 +276,11 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             onWatchlistChange={refreshWatchlist}
             onSymbolChange={(newSymbol, newMarket) => onStockSelect(newSymbol, newMarket)}
             onVisibleRangeChange={handleVisibleRangeChange}
+            onDataLoaded={handleDataLoaded}
             onDrawingToolChange={handleDrawingToolChange}
             onMainChartActivate={handleMainChartActivate}
             isActiveForDrawing={activeChartType === 'main'}
+            realtimePrice={realtimePrice}
           />
         </div>
 
@@ -281,6 +291,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             market={selectedMarket}
             timeframe={timeframe}
             visibleRange={visibleRange}
+            sharedData={sharedData}
             drawingToolActive={showDrawingTools ? drawingToolActive : null}
             activeChartType={activeChartType}
             onChartActivate={handleSubchartActivate}
@@ -323,8 +334,8 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
           </button>
         </div>
 
-        {/* Full screen chart with all indicators */}
-        <div className="flex-1">
+        {/* Full screen chart with all indicators - scrollbar-gutter matches SubCharts */}
+        <div className="flex-1" style={{ scrollbarGutter: 'stable' }}>
           <MainChart
             symbol={cell.symbol}
             market={cell.market}
@@ -337,6 +348,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
               handleSymbolChange(maximizedCell, newSymbol, newMarket);
             }}
             onVisibleRangeChange={handleVisibleRangeChange}
+            onDataLoaded={handleDataLoaded}
             onDrawingToolChange={handleDrawingToolChange}
             onMainChartActivate={handleMainChartActivate}
             isActiveForDrawing={activeChartType === 'main'}
@@ -350,6 +362,7 @@ export function MultiChartLayout({ selectedSymbol, selectedMarket, onStockSelect
             market={cell.market}
             timeframe={timeframe}
             visibleRange={visibleRange}
+            sharedData={sharedData}
             drawingToolActive={showDrawingTools ? drawingToolActive : null}
             activeChartType={activeChartType}
             onChartActivate={handleSubchartActivate}
