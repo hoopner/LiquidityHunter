@@ -10,6 +10,8 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { subscriptionManager } from '../utils/subscriptionManager';
+import { throttle } from '../utils/performance';
+import { logger } from '../utils/logger';
 
 export interface RealtimePrice {
   price: number;
@@ -67,18 +69,35 @@ export function useRealtimePrice(
   const currentSymbolRef = useRef(symbol);
   const currentMarketRef = useRef(market);
 
+  // Performance: Throttled price update setter to prevent excessive re-renders
+  // Max update rate of ~60fps (16ms)
+  const throttledPriceUpdateRef = useRef(
+    throttle((newPrice: RealtimePrice, newDirection: 'up' | 'down' | 'unchanged', callback?: (price: RealtimePrice) => void) => {
+      setPrice(newPrice);
+      setDirection(newDirection);
+      callback?.(newPrice);
+    }, 16, { leading: true, trailing: true })
+  );
+
   // Update refs when props change
   useEffect(() => {
     currentSymbolRef.current = symbol;
     currentMarketRef.current = market;
   }, [symbol, market]);
 
+  // Cleanup throttled function on unmount
+  useEffect(() => {
+    return () => {
+      throttledPriceUpdateRef.current.cancel();
+    };
+  }, []);
+
   // Cleanup function for this instance
   const cleanupConnection = useCallback(() => {
-    const instanceId = instanceIdRef.current;
-    console.log(`[${instanceId}] Cleaning up connection for:`, currentSymbolRef.current);
+    logger.websocket.debug('Cleaning up connection for:', currentSymbolRef.current);
 
     // Unregister all subscriptions for this instance
+    const instanceId = instanceIdRef.current;
     subscriptionManager.unregister(`${instanceId}-ws`);
     subscriptionManager.unregister(`${instanceId}-ping`);
     subscriptionManager.unregister(`${instanceId}-reconnect`);
@@ -100,7 +119,7 @@ export function useRealtimePrice(
   // Connect function
   const connect = useCallback(() => {
     if (!enabled || !symbol) {
-      console.log(`[${instanceIdRef.current}] Not connecting - enabled:${enabled}, symbol:${symbol}`);
+      logger.websocket.debug('Not connecting - enabled:', enabled, 'symbol:', symbol);
       return;
     }
 
@@ -113,7 +132,7 @@ export function useRealtimePrice(
 
     if (!isMountedRef.current) return;
 
-    console.log(`[${instanceId}] Connecting to:`, connectionSymbol, connectionMarket);
+    logger.websocket.log('Connecting to:', connectionSymbol, connectionMarket);
     setStatus('connecting');
     setError(null);
 
@@ -129,14 +148,14 @@ export function useRealtimePrice(
       ws.onopen = () => {
         // Validate we're still on the same symbol
         if (currentSymbolRef.current !== connectionSymbol) {
-          console.log(`[${instanceId}] Symbol changed during connect, closing stale connection`);
+          logger.websocket.debug('Symbol changed during connect, closing stale connection');
           ws.close();
           return;
         }
 
         if (!isMountedRef.current) return;
 
-        console.log(`[${instanceId}] Connected to:`, connectionSymbol);
+        logger.websocket.log('Connected to:', connectionSymbol);
         setStatus('connected');
         setError(null);
 
@@ -156,7 +175,7 @@ export function useRealtimePrice(
       ws.onmessage = (event) => {
         // CRITICAL: Validate this message is for the current symbol
         if (currentSymbolRef.current !== connectionSymbol) {
-          console.log(`[${instanceId}] Ignoring message for stale symbol:`, connectionSymbol);
+          logger.websocket.debug('Ignoring message for stale symbol:', connectionSymbol);
           return;
         }
 
@@ -179,29 +198,21 @@ export function useRealtimePrice(
               symbol: connectionSymbol,
             };
 
-            // Debug logging
-            console.log(`[${instanceId}] Price update:`, {
-              symbol: connectionSymbol,
-              price: newPrice.price,
-              prevClose: newPrice.prevClose,
-            });
-
             // Determine price direction
+            let newDirection: 'up' | 'down' | 'unchanged' = 'unchanged';
             if (lastPriceRef.current !== null) {
               if (newPrice.price > lastPriceRef.current) {
-                setDirection('up');
+                newDirection = 'up';
               } else if (newPrice.price < lastPriceRef.current) {
-                setDirection('down');
-              } else {
-                setDirection('unchanged');
+                newDirection = 'down';
               }
             }
             lastPriceRef.current = newPrice.price;
 
-            setPrice(newPrice);
-            onPriceUpdate?.(newPrice);
+            // Performance: Use throttled update to prevent excessive re-renders
+            throttledPriceUpdateRef.current(newPrice, newDirection, onPriceUpdate);
           } else if (data.type === 'error') {
-            console.log(`[${instanceId}] Error from server:`, data.message);
+            logger.websocket.error('Error from server:', data.message);
             setError(data.message);
             if (data.code === 'KIS_NOT_CONFIGURED') {
               setStatus('error');
@@ -217,13 +228,13 @@ export function useRealtimePrice(
       ws.onclose = () => {
         // Only handle if this is still the current connection
         if (currentSymbolRef.current !== connectionSymbol) {
-          console.log(`[${instanceId}] Closed stale connection for:`, connectionSymbol);
+          logger.websocket.debug('Closed stale connection for:', connectionSymbol);
           return;
         }
 
         if (!isMountedRef.current) return;
 
-        console.log(`[${instanceId}] Disconnected from:`, connectionSymbol);
+        logger.websocket.log('Disconnected from:', connectionSymbol);
         setStatus('disconnected');
 
         // Cleanup ping interval
@@ -232,7 +243,7 @@ export function useRealtimePrice(
         // Auto-reconnect with backoff (only if still same symbol and enabled)
         if (enabled && currentSymbolRef.current === connectionSymbol) {
           const delay = 3000; // 3 second reconnect delay
-          console.log(`[${instanceId}] Scheduling reconnect in ${delay}ms`);
+          logger.websocket.debug('Scheduling reconnect in', delay, 'ms');
 
           subscriptionManager.registerTimeout(
             `${instanceId}-reconnect`,
@@ -251,13 +262,13 @@ export function useRealtimePrice(
         if (currentSymbolRef.current !== connectionSymbol) return;
         if (!isMountedRef.current) return;
 
-        console.log(`[${instanceId}] WebSocket error for:`, connectionSymbol);
+        logger.websocket.error('WebSocket error for:', connectionSymbol);
         setStatus('error');
         setError('WebSocket connection error');
       };
     } catch (err) {
       if (!isMountedRef.current) return;
-      console.log(`[${instanceId}] Connection failed:`, err);
+      logger.websocket.error('Connection failed:', err);
       setStatus('error');
       setError(err instanceof Error ? err.message : 'Connection failed');
     }
@@ -265,16 +276,15 @@ export function useRealtimePrice(
 
   // Manual reconnect
   const reconnect = useCallback(() => {
-    console.log(`[${instanceIdRef.current}] Manual reconnect requested`);
+    logger.websocket.log('Manual reconnect requested');
     connect();
   }, [connect]);
 
   // Effect: Connect on mount and symbol change
   useEffect(() => {
     isMountedRef.current = true;
-    const instanceId = instanceIdRef.current;
 
-    console.log(`[${instanceId}] Symbol effect triggered:`, { symbol, market, enabled });
+    logger.websocket.debug('Symbol effect triggered:', { symbol, market, enabled });
 
     if (enabled && symbol) {
       // CRITICAL: Reset ALL state when symbol changes
@@ -291,7 +301,7 @@ export function useRealtimePrice(
     }
 
     return () => {
-      console.log(`[${instanceId}] Cleanup effect for:`, symbol);
+      logger.websocket.debug('Cleanup effect for:', symbol);
       isMountedRef.current = false;
       cleanupConnection();
     };

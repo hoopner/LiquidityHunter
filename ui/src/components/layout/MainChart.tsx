@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import {
   createChart,
   CandlestickSeries,
   LineSeries,
 } from 'lightweight-charts';
+import { debounce, throttle, CleanupManager } from '../../utils/performance';
+import { logger } from '../../utils/logger';
 import type {
   IChartApi,
   ISeriesApi,
@@ -15,6 +17,7 @@ import { fetchOHLCV, fetchAnalyze, fetchVolumeProfile, fetchMTFAnalyze, addToWat
 import type { OHLCVResponse, AnalyzeResponse, WatchlistItem, VolumeProfileResponse, MTFAnalyzeResponse } from '../../api/types';
 import type { RealtimePrice } from '../../hooks/useRealtimePrice';
 import type { TradingLevels } from '../ai/AIPredictionsPanel';
+import { useAIPredictions, type AIType, type OHLCVBar } from '../../hooks/useAIPredictions';
 import { useDrawings } from '../../hooks/useDrawings';
 import { DrawingToolbar } from '../chart/DrawingToolbar';
 import { DrawingCanvas } from '../chart/DrawingCanvas';
@@ -62,8 +65,9 @@ interface BoxPosition {
 
 /**
  * Main chart area with TradingView lightweight-charts
+ * Performance: Wrapped with React.memo to prevent unnecessary re-renders
  */
-export function MainChart({
+export const MainChart = memo(function MainChart({
   symbol = '005930',
   market = 'KR',
   compact = false,
@@ -108,6 +112,17 @@ export function MainChart({
   // Trading level price lines (stored to allow removal)
   const tradingLevelLinesRef = useRef<{ id: string; line: ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']> }[]>([]);
   const [showTradingLevels, setShowTradingLevels] = useState(true);
+
+  // AI Prediction line series refs - FUTURE predictions (bold)
+  const aiPredTechnicalRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const aiPredLSTMRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const aiPredLHRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const aiPredConsensusRef = useRef<ISeriesApi<'Line'> | null>(null);
+  // AI Prediction line series refs - BACKTEST predictions (faded)
+  const aiBacktestTechnicalRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const aiBacktestLSTMRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const aiBacktestLHRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const aiBacktestConsensusRef = useRef<ISeriesApi<'Line'> | null>(null);
 
   // Ref to store the latest onVisibleRangeChange callback (avoids stale closure)
   const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
@@ -265,6 +280,137 @@ export function MainChart({
     updateDrawing,
   } = useDrawings(symbol, timeframe);
 
+  // AI Predictions hook - get current price and historical data for backtesting
+  const currentPrice = data?.bars[data.bars.length - 1]?.close ?? null;
+  const historicalBars: OHLCVBar[] | undefined = useMemo(() => {
+    if (!data?.bars) return undefined;
+    const bars = data.bars.map(bar => ({
+      time: String(bar.time), // Ensure time is string for OHLCVBar interface
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
+
+    return bars;
+  }, [data?.bars]);
+
+  // Performance: Memoize candlestick data conversion to prevent recalculation on every render
+  const candlestickData = useMemo((): CandlestickData<Time>[] => {
+    if (!data?.bars) return [];
+    return data.bars.map((bar) => {
+      const isUp = bar.close > bar.open;
+      return {
+        time: bar.time as Time,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        color: isUp ? '#26a69a' : '#ef5350',
+        borderColor: isUp ? '#26a69a' : '#ef5350',
+        wickColor: isUp ? '#26a69a' : '#ef5350',
+      };
+    });
+  }, [data?.bars]);
+
+  // Performance: Memoize moving average data conversions
+  const maData = useMemo(() => {
+    if (!data?.bars) {
+      return {
+        ema20: [] as LineData<Time>[],
+        ema200: [] as LineData<Time>[],
+        sma20: [] as LineData<Time>[],
+        sma200: [] as LineData<Time>[],
+      };
+    }
+
+    const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
+      if (!arr) return [];
+      return data.bars
+        .map((bar, i) => ({
+          time: bar.time as Time,
+          value: arr[i],
+        }))
+        .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
+    };
+
+    return {
+      ema20: toLineData(data.ema20),
+      ema200: toLineData(data.ema200),
+      sma20: toLineData(data.sma20),
+      sma200: toLineData(data.sma200),
+    };
+  }, [data?.bars, data?.ema20, data?.ema200, data?.sma20, data?.sma200]);
+
+  // Performance: Memoize Bollinger Band data
+  const bbData = useMemo(() => {
+    if (!data?.bars) {
+      return {
+        bb1Upper: [] as LineData<Time>[],
+        bb1Middle: [] as LineData<Time>[],
+        bb1Lower: [] as LineData<Time>[],
+        bb2Upper: [] as LineData<Time>[],
+        bb2Lower: [] as LineData<Time>[],
+      };
+    }
+
+    const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
+      if (!arr) return [];
+      return data.bars
+        .map((bar, i) => ({
+          time: bar.time as Time,
+          value: arr[i] || 0,
+        }))
+        .filter((d): d is LineData<Time> => d.value > 0);
+    };
+
+    return {
+      bb1Upper: toLineData(data.bb1_upper),
+      bb1Middle: toLineData(data.bb1_middle),
+      bb1Lower: toLineData(data.bb1_lower),
+      bb2Upper: toLineData(data.bb2_upper),
+      bb2Lower: toLineData(data.bb2_lower),
+    };
+  }, [data?.bars, data?.bb1_upper, data?.bb1_middle, data?.bb1_lower, data?.bb2_upper, data?.bb2_lower]);
+
+  // Performance: Memoize VWAP and Keltner Channel data
+  const otherIndicatorData = useMemo(() => {
+    if (!data?.bars) {
+      return {
+        vwap: [] as LineData<Time>[],
+        kcUpper: [] as LineData<Time>[],
+        kcMiddle: [] as LineData<Time>[],
+        kcLower: [] as LineData<Time>[],
+      };
+    }
+
+    const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
+      if (!arr) return [];
+      return data.bars
+        .map((bar, i) => ({
+          time: bar.time as Time,
+          value: arr[i] || 0,
+        }))
+        .filter((d): d is LineData<Time> => d.value > 0);
+    };
+
+    return {
+      vwap: toLineData(data.vwap),
+      kcUpper: toLineData(data.kc_upper),
+      kcMiddle: toLineData(data.kc_middle),
+      kcLower: toLineData(data.kc_lower),
+    };
+  }, [data?.bars, data?.vwap, data?.kc_upper, data?.kc_middle, data?.kc_lower]);
+
+  const {
+    lines: aiPredLines,
+    loading: aiPredLoading,
+    toggleLine: toggleAIPredLine,
+    generatePredictions,
+    hasEnabledPredictions,
+  } = useAIPredictions(symbol, market, currentPrice, historicalBars);
+
   // Notify parent when drawing tool state changes (for subchart coordination)
   useEffect(() => {
     onDrawingToolChange?.(activeTool, showDrawingTools);
@@ -368,28 +514,16 @@ export function MainChart({
     setAnalyzeData(null);
     setIntradayMessage(null);
 
-    // Debug logging
-    console.log('[OHLCV Fetch]', { symbol, market, timeframe });
+    logger.fetch.log('OHLCV Fetch:', symbol, market, timeframe);
 
     fetchOHLCV(symbol, market, timeframe)
       .then((response) => {
-        // Debug logging - EXTENSIVE for troubleshooting
-        const validEma200Count = response.ema200?.filter((v) => v != null && v > 0).length || 0;
-        const validEma20Count = response.ema20?.filter((v) => v != null && v > 0).length || 0;
-        console.log('[OHLCV Response]', {
-          symbol,
-          timeframe,
-          barsCount: response.bars.length,
-          ema20: { total: response.ema20?.length || 0, valid: validEma20Count },
-          ema200: { total: response.ema200?.length || 0, valid: validEma200Count },
-          firstEma200: response.ema200?.find((v) => v != null && v > 0),
-          lastEma200: response.ema200?.[response.ema200.length - 1],
-        });
+        logger.fetch.debug('OHLCV Response:', { symbol, timeframe, barsCount: response.bars.length });
 
         if (response.bars.length === 0) {
           // Check if this is an intraday timeframe failure
           if (isIntradayTimeframe(timeframe)) {
-            console.log('[OHLCV] Intraday data not available, switching to 1D');
+            logger.fetch.debug('Intraday data not available, switching to 1D');
             setIntradayAvailable(false);
             setIntradayMessage(`분/시간 데이터 없음 - ${symbol}은(는) 일봉만 제공됩니다`);
             // Auto-switch to 1D timeframe
@@ -459,24 +593,18 @@ export function MainChart({
               squeeze: filterByValidIndices(response.squeeze),
             };
 
-            console.log('[OHLCV] Filtered data:', {
-              original: response.bars.length,
-              filtered: filteredData.bars.length,
-              removed: response.bars.length - filteredData.bars.length,
-            });
-
             setData(filteredData);
           }
         }
         setLoading(false);
       })
       .catch((err) => {
-        console.log('[OHLCV Error]', { symbol, timeframe, error: err.message });
+        logger.fetch.error('OHLCV Error:', { symbol, timeframe, error: err.message });
 
         if (err.message.includes('not found') || err.message.includes('404')) {
           // Check if this is an intraday timeframe failure
           if (isIntradayTimeframe(timeframe)) {
-            console.log('[OHLCV] Intraday data error, switching to 1D');
+            logger.fetch.debug('Intraday data error, switching to 1D');
             setIntradayAvailable(false);
             setIntradayMessage(`분/시간 데이터 없음 - ${symbol}은(는) 일봉만 제공됩니다`);
             // Auto-switch to 1D timeframe
@@ -504,28 +632,14 @@ export function MainChart({
     if (!data || data.bars.length === 0) return;
 
     const barIndex = data.bars.length - 1;
-    console.log('[OB Analyze Request]', { symbol, market, timeframe, barIndex, hideWeakOB });
 
     fetchAnalyze(symbol, market, timeframe, barIndex, hideWeakOB)
       .then((result) => {
         // Debug logging for OB detection
-        console.log('[OB Analyze Result]', {
-          symbol,
-          timeframe,
-          hasOB: !!result.current_valid_ob,
-          obDirection: result.current_valid_ob?.direction,
-          obZone: result.current_valid_ob
-            ? `${result.current_valid_ob.zone_bottom.toFixed(2)}-${result.current_valid_ob.zone_top.toFixed(2)}`
-            : null,
-          fvgCount: result.fvgs?.length || 0,
-          confluenceScore: result.confluence?.score,
-          reasonCode: result.reason_code,
-          filteredWeakObs: result.filtered_weak_obs,
-        });
         setAnalyzeData(result);
       })
       .catch((err) => {
-        console.log('[OB Analyze Error]', { symbol, timeframe, error: err.message });
+        logger.fetch.error('OB Analyze Error:', err.message);
         setAnalyzeData(null);
       });
   }, [data, symbol, market, timeframe, hideWeakOB]);
@@ -571,8 +685,6 @@ export function MainChart({
 
   // Fetch MTF (Multi-Timeframe) zones when enabled
   useEffect(() => {
-    console.log('[MTF Effect]', { showMTF, hasData: !!data, barsCount: data?.bars?.length || 0 });
-
     if (!showMTF || !data || data.bars.length === 0) {
       setMtfData(null);
       return;
@@ -587,19 +699,13 @@ export function MainChart({
     };
     const ltf = ltfMap[timeframe] || '1D';
 
-    console.log('[MTF Fetch Request]', { symbol, market, ltf });
     fetchMTFAnalyze(symbol, market, ltf, '', 20, true)
       .then((mtf) => {
-        console.log('[MTF Fetch Result]', {
-          htfObCount: mtf.htf_obs?.length || 0,
-          htfFvgCount: mtf.htf_fvgs?.length || 0,
-          currentPrice: mtf.current_price,
-        });
         setMtfData(mtf);
         setMtfLoading(false);
       })
       .catch((err) => {
-        console.log('[MTF Fetch Error]', err.message);
+        logger.fetch.error('MTF Fetch Error:', err.message);
         setMtfData(null);
         setMtfLoading(false);
       });
@@ -610,18 +716,6 @@ export function MainChart({
 
   // Calculate box positions for OB and FVGs
   const updateBoxPositions = useCallback(() => {
-    // Debug logging for OB/FVG rendering
-    console.log('[updateBoxPositions] Called', {
-      hasChart: !!chartRef.current,
-      hasSeries: !!candlestickSeriesRef.current,
-      hasContainer: !!chartContainerRef.current,
-      hasData: !!data,
-      hasAnalyzeData: !!analyzeData,
-      hasOB: !!analyzeData?.current_valid_ob,
-      fvgCount: analyzeData?.fvgs?.length || 0,
-      showOB,
-    });
-
     if (!chartRef.current || !candlestickSeriesRef.current || !chartContainerRef.current || !data) {
       setObBoxPosition(prev => ({ ...prev, visible: false }));
       setFvgBoxPositions([]);
@@ -682,12 +776,6 @@ export function MainChart({
         return distancePercent <= 50;
       });
 
-      console.log('[FVG Calculation]', {
-        totalFvgs: analyzeData.fvgs.length,
-        validFvgs: validFvgs.length,
-        currentPrice,
-      });
-
       // Calculate positions for ALL valid FVGs (up to 5 most recent)
       const fvgPositions: (BoxPosition & { direction: string })[] = [];
       const recentFvgs = validFvgs.slice(-5); // Show up to 5 most recent FVGs
@@ -717,7 +805,6 @@ export function MainChart({
         }
       }
 
-      console.log('[FVG Positions]', { count: fvgPositions.length });
       setFvgBoxPositions(fvgPositions);
     } else {
       setFvgBoxPositions([]);
@@ -976,8 +1063,118 @@ export function MainChart({
     });
     kcLowerRef.current = kcLower;
 
-    // Handle resize
-    const handleResize = () => {
+    // Create AI Prediction line series (FUTURE predictions - bold)
+    // Technical ML - Purple
+    const aiPredTechnical = chart.addSeries(LineSeries, {
+      color: '#9333ea',
+      lineWidth: 3,
+      title: 'Technical ML',
+      visible: false,
+      lineStyle: 0, // Solid
+      lastValueVisible: true,
+      priceLineVisible: false,
+      priceScaleId: 'right',  // Ensure same scale as candlestick
+    });
+    aiPredTechnicalRef.current = aiPredTechnical;
+
+    // LSTM - Orange
+    const aiPredLSTM = chart.addSeries(LineSeries, {
+      color: '#f97316',
+      lineWidth: 3,
+      title: 'LSTM',
+      visible: false,
+      lineStyle: 0,
+      lastValueVisible: true,
+      priceLineVisible: false,
+      priceScaleId: 'right',
+    });
+    aiPredLSTMRef.current = aiPredLSTM;
+
+    // LH AI - Crimson
+    const aiPredLH = chart.addSeries(LineSeries, {
+      color: '#dc2626',
+      lineWidth: 3,
+      title: 'LH AI',
+      visible: false,
+      lineStyle: 0,
+      lastValueVisible: true,
+      priceLineVisible: false,
+      priceScaleId: 'right',
+    });
+    aiPredLHRef.current = aiPredLH;
+
+    // Consensus - Gold
+    const aiPredConsensus = chart.addSeries(LineSeries, {
+      color: '#eab308',
+      lineWidth: 4,
+      title: 'Consensus',
+      visible: false,
+      lineStyle: 0,
+      lastValueVisible: true,
+      priceLineVisible: false,
+      priceScaleId: 'right',
+    });
+    aiPredConsensusRef.current = aiPredConsensus;
+
+    // BACKTEST prediction series (faded versions for historical validation)
+    // Attach to right price scale same as candlestick for proper alignment
+    // Technical ML Backtest - Purple (faded)
+    const aiBacktestTechnical = chart.addSeries(LineSeries, {
+      color: '#9333ea99',  // Pre-set with alpha
+      lineWidth: 2,
+      title: 'Tech BT',
+      visible: false,
+      lineStyle: 0,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceScaleId: 'right',  // Ensure same scale as candlestick
+    });
+    aiBacktestTechnicalRef.current = aiBacktestTechnical;
+
+    // LSTM Backtest - Orange (faded)
+    const aiBacktestLSTM = chart.addSeries(LineSeries, {
+      color: '#f9731699',
+      lineWidth: 2,
+      title: 'LSTM BT',
+      visible: false,
+      lineStyle: 0,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceScaleId: 'right',
+    });
+    aiBacktestLSTMRef.current = aiBacktestLSTM;
+
+    // LH AI Backtest - Crimson (faded)
+    const aiBacktestLH = chart.addSeries(LineSeries, {
+      color: '#dc262699',
+      lineWidth: 2,
+      title: 'LH BT',
+      visible: false,
+      lineStyle: 0,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceScaleId: 'right',
+    });
+    aiBacktestLHRef.current = aiBacktestLH;
+
+    // Consensus Backtest - Gold (faded)
+    const aiBacktestConsensus = chart.addSeries(LineSeries, {
+      color: '#eab30899',
+      lineWidth: 2,
+      title: 'Cons BT',
+      visible: false,
+      lineStyle: 0,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceScaleId: 'right',
+    });
+    aiBacktestConsensusRef.current = aiBacktestConsensus;
+
+    // Performance: Cleanup manager for this effect
+    const cleanup = new CleanupManager();
+
+    // Performance: Debounced resize handler (wait 200ms after resize stops)
+    const handleResizeCore = () => {
       if (chartContainerRef.current) {
         chart.applyOptions({
           width: chartContainerRef.current.clientWidth,
@@ -986,14 +1183,23 @@ export function MainChart({
       }
       updateBoxPositions();
     };
+    const handleResize = debounce(handleResizeCore, 200);
+    cleanup.add(() => handleResize.cancel());
 
-    // Subscribe to visible range changes to update box positions and sync subcharts
-    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    // Performance: Throttled visible range change handler (max 60fps)
+    const handleVisibleRangeChangeCore = (range: { from: number; to: number } | null) => {
       updateBoxPositions();
       // Notify parent to sync all subcharts with main chart's visible range
       if (onVisibleRangeChangeRef.current && range) {
         onVisibleRangeChangeRef.current({ from: range.from, to: range.to });
       }
+    };
+    const handleVisibleRangeChange = throttle(handleVisibleRangeChangeCore, 16); // ~60fps
+    cleanup.add(() => handleVisibleRangeChange.cancel());
+
+    // Subscribe to visible range changes to update box positions and sync subcharts
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      handleVisibleRangeChange(range);
     });
 
     // Wheel zoom handlers:
@@ -1076,176 +1282,56 @@ export function MainChart({
     const container = chartContainerRef.current;
     if (container) {
       container.addEventListener('wheel', handleWheel, { passive: false });
+      cleanup.add(() => container.removeEventListener('wheel', handleWheel));
     }
 
     // Add keyup listener to reset anchor lock when Ctrl is released
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('resize', handleResize);
-    handleResize();
+    cleanup.addEventListener(window, 'keyup', handleKeyUp as EventListener);
+    cleanup.addEventListener(window, 'resize', handleResize as EventListener);
+
+    // Initial resize (immediate, not debounced)
+    handleResizeCore();
 
     return () => {
-      window.removeEventListener('keyup', handleKeyUp);
-      window.removeEventListener('resize', handleResize);
+      // Performance: Clean up all registered resources
+      cleanup.cleanup();
+
       if (zoomResetTimerRef.current) {
         clearTimeout(zoomResetTimerRef.current);
-      }
-      if (container) {
-        container.removeEventListener('wheel', handleWheel);
       }
       chart.remove();
     };
   }, [updateBoxPositions]);
 
-  // Update chart data
+  // Update chart data - now uses memoized data conversions
   useEffect(() => {
     if (!data || !candlestickSeriesRef.current || !ema20SeriesRef.current || !ema200SeriesRef.current) {
       return;
     }
 
-    // Convert bars to candlestick data with explicit colors
-    // close > open = UP (green), close < open = DOWN (red)
-    // NOTE: Invalid bars already filtered during data loading (no need to filter again)
-    const candlestickData: CandlestickData<Time>[] = data.bars.map((bar) => {
-      const isUp = bar.close > bar.open;
-      return {
-        time: bar.time as Time,
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-        color: isUp ? '#26a69a' : '#ef5350',
-        borderColor: isUp ? '#26a69a' : '#ef5350',
-        wickColor: isUp ? '#26a69a' : '#ef5350',
-      };
-    });
-
-    // Convert EMA data to line data (skip null/zero values at the beginning)
-    const ema20Data: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.ema20[i],
-      }))
-      .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
-
-    const ema200Data: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.ema200[i],
-      }))
-      .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
-
-
+    // Performance: Use pre-computed memoized data instead of recalculating
     candlestickSeriesRef.current.setData(candlestickData);
-    ema20SeriesRef.current.setData(ema20Data);
-    ema200SeriesRef.current.setData(ema200Data);
+    ema20SeriesRef.current.setData(maData.ema20);
+    ema200SeriesRef.current.setData(maData.ema200);
 
-    // Convert SMA data to line data (skip null/zero values at the beginning)
-    const sma20Data: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.sma20?.[i],
-      }))
-      .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
+    // SMA data
+    sma20SeriesRef.current?.setData(maData.sma20);
+    sma200SeriesRef.current?.setData(maData.sma200);
 
-    const sma200Data: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.sma200?.[i],
-      }))
-      .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
+    // Bollinger Bands data
+    bb1UpperRef.current?.setData(bbData.bb1Upper);
+    bb1MiddleRef.current?.setData(bbData.bb1Middle);
+    bb1LowerRef.current?.setData(bbData.bb1Lower);
+    bb2UpperRef.current?.setData(bbData.bb2Upper);
+    bb2LowerRef.current?.setData(bbData.bb2Lower);
 
-    sma20SeriesRef.current?.setData(sma20Data);
-    sma200SeriesRef.current?.setData(sma200Data);
+    // VWAP data
+    vwapRef.current?.setData(otherIndicatorData.vwap);
 
-    // Set BB1 data (skip zero values at beginning)
-    const bb1UpperData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.bb1_upper?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-
-    const bb1MiddleData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.bb1_middle?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-
-    const bb1LowerData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.bb1_lower?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-
-    bb1UpperRef.current?.setData(bb1UpperData);
-    bb1MiddleRef.current?.setData(bb1MiddleData);
-    bb1LowerRef.current?.setData(bb1LowerData);
-
-    // Set BB2 data (skip zero values at beginning)
-    const bb2UpperData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.bb2_upper?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-
-    // BB2 has no middle line
-
-    const bb2LowerData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.bb2_lower?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-
-    bb2UpperRef.current?.setData(bb2UpperData);
-    bb2LowerRef.current?.setData(bb2LowerData);
-
-    // Set VWAP data (skip zero/NaN values - now works on all timeframes)
-    const vwapData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.vwap?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-    vwapRef.current?.setData(vwapData);
-
-    // Debug VWAP data
-    if (vwapData.length > 0) {
-      console.log('[VWAP Data]', {
-        timeframe,
-        dataPoints: vwapData.length,
-        lastValue: vwapData[vwapData.length - 1]?.value,
-      });
-    }
-
-    // Set Keltner Channel data (skip zero values at beginning)
-    const kcUpperData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.kc_upper?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-
-    const kcMiddleData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.kc_middle?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-
-    const kcLowerData: LineData<Time>[] = data.bars
-      .map((bar, i) => ({
-        time: bar.time as Time,
-        value: data.kc_lower?.[i] || 0,
-      }))
-      .filter((d): d is LineData<Time> => d.value > 0);
-
-    kcUpperRef.current?.setData(kcUpperData);
-    kcMiddleRef.current?.setData(kcMiddleData);
-    kcLowerRef.current?.setData(kcLowerData);
+    // Keltner Channel data
+    kcUpperRef.current?.setData(otherIndicatorData.kcUpper);
+    kcMiddleRef.current?.setData(otherIndicatorData.kcMiddle);
+    kcLowerRef.current?.setData(otherIndicatorData.kcLower);
 
     // Set default visible range based on timeframe and preset
     const totalBars = data.bars.length;
@@ -1276,7 +1362,7 @@ export function MainChart({
         }
       }
     }, 150);
-  }, [data, updateBoxPositions, timeframe, rangePreset, getDefaultVisibleBars]);
+  }, [data, candlestickData, maData, bbData, otherIndicatorData, updateBoxPositions, timeframe, rangePreset, getDefaultVisibleBars]);
 
   // Update box positions when analyze data changes
   useEffect(() => {
@@ -1422,6 +1508,127 @@ export function MainChart({
       });
     }
   }, [tradingLevels, showTradingLevels, compact]);
+
+  // AI Prediction line series update (both backtest and future)
+  useEffect(() => {
+    if (!data || !candlestickSeriesRef.current) return;
+
+    const lastBar = data.bars[data.bars.length - 1];
+    if (!lastBar) return;
+
+    // Helper to convert FUTURE prediction data to line data
+    // Access aiPredLines directly instead of through getter function
+    const futurePredictionsToLineData = (aiType: AIType): LineData<Time>[] => {
+      const predictions = aiPredLines[aiType].futurePredictions;
+      if (!predictions || predictions.length === 0) return [];
+
+      // Start from current price at last bar time
+      const lineData: LineData<Time>[] = [
+        { time: lastBar.time as Time, value: currentPrice ?? lastBar.close },
+      ];
+
+      // Add future prediction points
+      predictions.forEach((pred) => {
+        const predDate = new Date(pred.timestamp);
+        const timeStr = predDate.toISOString().split('T')[0]; // YYYY-MM-DD
+        lineData.push({
+          time: timeStr as Time,
+          value: pred.predictedPrice,
+        });
+      });
+
+      return lineData;
+    };
+
+    // Helper to convert BACKTEST prediction data to line data
+    // Access aiPredLines directly instead of through getter function
+    const backtestPredictionsToLineData = (aiType: AIType): LineData<Time>[] => {
+      const predictions = aiPredLines[aiType].backtestPredictions;
+      if (!predictions || predictions.length === 0) return [];
+
+      const lineData: LineData<Time>[] = [];
+
+      // Add backtest prediction points (these have known actual prices)
+      predictions.forEach((pred) => {
+        // Ensure timestamp is in YYYY-MM-DD format (same as chart data)
+        let timeStr = pred.timestamp;
+        // If timestamp contains 'T' (ISO format), extract date part
+        if (timeStr.includes('T')) {
+          timeStr = timeStr.split('T')[0];
+        }
+
+        lineData.push({
+          time: timeStr as Time,
+          value: pred.predictedPrice,
+        });
+      });
+
+      return lineData;
+    };
+
+    // Update FUTURE prediction series (bold)
+    const updateFutureSeries = (
+      ref: React.RefObject<ISeriesApi<'Line'> | null>,
+      aiType: AIType,
+      enabled: boolean
+    ) => {
+      if (!ref.current) return;
+
+      if (enabled) {
+        const lineData = futurePredictionsToLineData(aiType);
+        if (lineData.length > 1) {
+          ref.current.setData(lineData);
+        } else {
+          ref.current.setData([]);
+        }
+      }
+      ref.current.applyOptions({ visible: enabled });
+    };
+
+    // Update BACKTEST prediction series (faded, with 50% opacity via lighter colors)
+    const updateBacktestSeries = (
+      ref: React.RefObject<ISeriesApi<'Line'> | null>,
+      aiType: AIType,
+      enabled: boolean,
+      color: string
+    ) => {
+      if (!ref.current) return;
+
+      if (enabled) {
+        const lineData = backtestPredictionsToLineData(aiType);
+        if (lineData.length > 0) {
+          try {
+            ref.current.setData(lineData);
+            // Faded appearance with transparency
+            ref.current.applyOptions({
+              visible: true,
+              color: color + '99', // ~60% opacity via hex alpha
+              lineWidth: 2,
+            });
+          } catch {
+            // Ignore setData errors
+          }
+        } else {
+          ref.current.setData([]);
+          ref.current.applyOptions({ visible: false });
+        }
+      } else {
+        ref.current.applyOptions({ visible: false });
+      }
+    };
+
+    // Update FUTURE prediction lines (bold, full opacity)
+    updateFutureSeries(aiPredTechnicalRef, 'technical', aiPredLines.technical.enabled);
+    updateFutureSeries(aiPredLSTMRef, 'lstm', aiPredLines.lstm.enabled);
+    updateFutureSeries(aiPredLHRef, 'lh', aiPredLines.lh.enabled);
+    updateFutureSeries(aiPredConsensusRef, 'consensus', aiPredLines.consensus.enabled);
+
+    // Update BACKTEST prediction lines (faded, 60% opacity)
+    updateBacktestSeries(aiBacktestTechnicalRef, 'technical', aiPredLines.technical.enabled, '#9333ea');
+    updateBacktestSeries(aiBacktestLSTMRef, 'lstm', aiPredLines.lstm.enabled, '#f97316');
+    updateBacktestSeries(aiBacktestLHRef, 'lh', aiPredLines.lh.enabled, '#dc2626');
+    updateBacktestSeries(aiBacktestConsensusRef, 'consensus', aiPredLines.consensus.enabled, '#eab308');
+  }, [data, aiPredLines, currentPrice]);
 
   // REAL-TIME UPDATES DISABLED FOR STABILITY
   // TODO: Re-enable after proper subscription management is implemented
@@ -1817,15 +2024,7 @@ export function MainChart({
 
           {/* VWAP Toggle - Orange (works on all timeframes now) */}
           <button
-            onClick={() => {
-              setShowVWAP(!showVWAP);
-              // Debug logging for VWAP
-              console.log('[VWAP Toggle]', {
-                timeframe,
-                newShowVWAP: !showVWAP,
-                isDaily: ['1D', '1W', '1M'].includes(timeframe),
-              });
-            }}
+            onClick={() => setShowVWAP(!showVWAP)}
             className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
               showVWAP
                 ? 'bg-[#eab308] text-white'
@@ -1878,6 +2077,89 @@ export function MainChart({
               📍 Levels
             </button>
           )}
+
+          {/* AI Prediction Line Toggles - Separator */}
+          <span className="text-[var(--text-secondary)] opacity-40">|</span>
+
+          {/* Technical ML Prediction Toggle */}
+          <button
+            onClick={() => {
+              if (!aiPredLines.technical.futurePredictions.length) {
+                generatePredictions('technical');
+              } else {
+                toggleAIPredLine('technical');
+              }
+            }}
+            disabled={aiPredLoading.technical}
+            className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+              aiPredLines.technical.enabled
+                ? 'bg-[#9333ea] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            } ${aiPredLoading.technical ? 'opacity-50 cursor-wait' : ''}`}
+            title={`Technical ML 예측${aiPredLines.technical.backtestAccuracy ? ` (백테스트 ${aiPredLines.technical.backtestAccuracy.accuracy}% 정확도, ${aiPredLines.technical.backtestAccuracy.samples}일)` : ' - 클릭하여 생성'}`}
+          >
+            {aiPredLoading.technical ? '...' : 'Tech'}
+          </button>
+
+          {/* LSTM Prediction Toggle */}
+          <button
+            onClick={() => {
+              if (!aiPredLines.lstm.futurePredictions.length) {
+                generatePredictions('lstm');
+              } else {
+                toggleAIPredLine('lstm');
+              }
+            }}
+            disabled={aiPredLoading.lstm}
+            className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+              aiPredLines.lstm.enabled
+                ? 'bg-[#f97316] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            } ${aiPredLoading.lstm ? 'opacity-50 cursor-wait' : ''}`}
+            title={`LSTM 예측${aiPredLines.lstm.backtestAccuracy ? ` (백테스트 ${aiPredLines.lstm.backtestAccuracy.accuracy}% 정확도, ${aiPredLines.lstm.backtestAccuracy.samples}일)` : ' - 클릭하여 생성'}`}
+          >
+            {aiPredLoading.lstm ? '...' : 'LSTM'}
+          </button>
+
+          {/* LH AI Prediction Toggle */}
+          <button
+            onClick={() => {
+              if (!aiPredLines.lh.futurePredictions.length) {
+                generatePredictions('lh');
+              } else {
+                toggleAIPredLine('lh');
+              }
+            }}
+            disabled={aiPredLoading.lh}
+            className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+              aiPredLines.lh.enabled
+                ? 'bg-[#dc2626] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            } ${aiPredLoading.lh ? 'opacity-50 cursor-wait' : ''}`}
+            title={`LH AI 예측${aiPredLines.lh.backtestAccuracy ? ` (백테스트 ${aiPredLines.lh.backtestAccuracy.accuracy}% 정확도, ${aiPredLines.lh.backtestAccuracy.samples}일)` : ' - 클릭하여 생성'}`}
+          >
+            {aiPredLoading.lh ? '...' : 'LH'}
+          </button>
+
+          {/* Consensus Prediction Toggle */}
+          <button
+            onClick={() => {
+              if (!aiPredLines.consensus.futurePredictions.length) {
+                generatePredictions('consensus');
+              } else {
+                toggleAIPredLine('consensus');
+              }
+            }}
+            disabled={aiPredLoading.consensus}
+            className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+              aiPredLines.consensus.enabled
+                ? 'bg-[#eab308] text-black'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            } ${aiPredLoading.consensus ? 'opacity-50 cursor-wait' : ''}`}
+            title={`합의 예측 (3개 AI 평균)${aiPredLines.consensus.backtestAccuracy ? ` (백테스트 ${aiPredLines.consensus.backtestAccuracy.accuracy}% 정확도)` : ' - Tech, LSTM, LH 먼저 생성'}`}
+          >
+            {aiPredLoading.consensus ? '...' : '★'}
+          </button>
 
           {/* Drawing Tools Toggle */}
           <button
@@ -1977,6 +2259,88 @@ export function MainChart({
                   {data.squeeze[data.squeeze.length - 1] ? 'Squeeze' : 'Fired'}
                 </span>
               </span>
+            )}
+            {/* AI Prediction legends with backtest accuracy */}
+            {hasEnabledPredictions && (
+              <>
+                <span className="text-[var(--text-secondary)] opacity-40 ml-2">|</span>
+                {aiPredLines.technical.enabled && (
+                  <span className="flex items-center gap-1 text-[#9333ea]" title={
+                    aiPredLines.technical.backtestAccuracy
+                      ? `백테스트: ${aiPredLines.technical.backtestAccuracy.samples}일 데이터, 방향예측 ${aiPredLines.technical.backtestAccuracy.direction.percentage}%`
+                      : '백테스트 데이터 없음'
+                  }>
+                    <span className="w-3 h-0.5 bg-[#9333ea]"></span>
+                    Tech
+                    {aiPredLines.technical.backtestAccuracy && (
+                      <span className={`text-[10px] px-1 rounded ${
+                        aiPredLines.technical.backtestAccuracy.accuracy > 95 ? 'bg-green-500/30 text-green-400' :
+                        aiPredLines.technical.backtestAccuracy.accuracy > 90 ? 'bg-yellow-500/30 text-yellow-400' :
+                        'bg-red-500/30 text-red-400'
+                      }`}>
+                        {aiPredLines.technical.backtestAccuracy.accuracy}%
+                      </span>
+                    )}
+                  </span>
+                )}
+                {aiPredLines.lstm.enabled && (
+                  <span className="flex items-center gap-1 text-[#f97316]" title={
+                    aiPredLines.lstm.backtestAccuracy
+                      ? `백테스트: ${aiPredLines.lstm.backtestAccuracy.samples}일 데이터, 방향예측 ${aiPredLines.lstm.backtestAccuracy.direction.percentage}%`
+                      : '백테스트 데이터 없음'
+                  }>
+                    <span className="w-3 h-0.5 bg-[#f97316]"></span>
+                    LSTM
+                    {aiPredLines.lstm.backtestAccuracy && (
+                      <span className={`text-[10px] px-1 rounded ${
+                        aiPredLines.lstm.backtestAccuracy.accuracy > 95 ? 'bg-green-500/30 text-green-400' :
+                        aiPredLines.lstm.backtestAccuracy.accuracy > 90 ? 'bg-yellow-500/30 text-yellow-400' :
+                        'bg-red-500/30 text-red-400'
+                      }`}>
+                        {aiPredLines.lstm.backtestAccuracy.accuracy}%
+                      </span>
+                    )}
+                  </span>
+                )}
+                {aiPredLines.lh.enabled && (
+                  <span className="flex items-center gap-1 text-[#dc2626]" title={
+                    aiPredLines.lh.backtestAccuracy
+                      ? `백테스트: ${aiPredLines.lh.backtestAccuracy.samples}일 데이터, 방향예측 ${aiPredLines.lh.backtestAccuracy.direction.percentage}%`
+                      : '백테스트 데이터 없음'
+                  }>
+                    <span className="w-3 h-0.5 bg-[#dc2626]"></span>
+                    LH
+                    {aiPredLines.lh.backtestAccuracy && (
+                      <span className={`text-[10px] px-1 rounded ${
+                        aiPredLines.lh.backtestAccuracy.accuracy > 95 ? 'bg-green-500/30 text-green-400' :
+                        aiPredLines.lh.backtestAccuracy.accuracy > 90 ? 'bg-yellow-500/30 text-yellow-400' :
+                        'bg-red-500/30 text-red-400'
+                      }`}>
+                        {aiPredLines.lh.backtestAccuracy.accuracy}%
+                      </span>
+                    )}
+                  </span>
+                )}
+                {aiPredLines.consensus.enabled && (
+                  <span className="flex items-center gap-1 text-[#eab308]" title={
+                    aiPredLines.consensus.backtestAccuracy
+                      ? `백테스트: ${aiPredLines.consensus.backtestAccuracy.samples}일 데이터, 방향예측 ${aiPredLines.consensus.backtestAccuracy.direction.percentage}%`
+                      : '백테스트 데이터 없음'
+                  }>
+                    <span className="w-3 h-0.5 bg-[#eab308]"></span>
+                    Cons
+                    {aiPredLines.consensus.backtestAccuracy && (
+                      <span className={`text-[10px] px-1 rounded ${
+                        aiPredLines.consensus.backtestAccuracy.accuracy > 95 ? 'bg-green-500/30 text-green-400' :
+                        aiPredLines.consensus.backtestAccuracy.accuracy > 90 ? 'bg-yellow-500/30 text-yellow-400' :
+                        'bg-red-500/30 text-red-400'
+                      }`}>
+                        {aiPredLines.consensus.backtestAccuracy.accuracy}%
+                      </span>
+                    )}
+                  </span>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -2428,7 +2792,24 @@ export function MainChart({
       </div>
     </div>
   );
-}
+}, (prevProps, nextProps) => {
+  // Performance: Custom comparison to prevent re-renders when non-critical props change
+  // Only re-render when these critical props change
+  return (
+    prevProps.symbol === nextProps.symbol &&
+    prevProps.market === nextProps.market &&
+    prevProps.timeframe === nextProps.timeframe &&
+    prevProps.compact === nextProps.compact &&
+    prevProps.isSelected === nextProps.isSelected &&
+    prevProps.showHeader === nextProps.showHeader &&
+    prevProps.showTimeScale === nextProps.showTimeScale &&
+    prevProps.isActiveForDrawing === nextProps.isActiveForDrawing &&
+    // Compare realtime price by value (not reference) - only significant changes
+    (prevProps.realtimePrice?.price === nextProps.realtimePrice?.price) &&
+    // Compare trading levels by reference (null check)
+    (prevProps.tradingLevels === nextProps.tradingLevels)
+  );
+});
 
 /**
  * Current price label component for chart overlay - aligned with Y-axis
@@ -2459,13 +2840,6 @@ function CurrentPriceLabel({
       const y = series.priceToCoordinate(price);
       if (y !== null && y > 0) {
         setYPosition(y);
-        // Debug logging
-        console.log('[Price Label Position]', {
-          price,
-          yCoordinate: y,
-          prevClose,
-          changePct: prevClose > 0 ? ((price - prevClose) / prevClose * 100).toFixed(2) : 0,
-        });
       }
     };
 
@@ -2485,15 +2859,6 @@ function CurrentPriceLabel({
   const change = price - prevClose;
   const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
   const isUp = change >= 0;
-
-  // Debug logging - MUST match header price color logic
-  console.log('[Right Label Price Color]', {
-    currentPrice: price,
-    prevClose,
-    change,
-    isUp,
-    color: isUp ? 'GREEN' : 'RED',
-  });
 
   // Format price
   const formatPrice = (value: number) => {

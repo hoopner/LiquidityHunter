@@ -12,6 +12,35 @@
   --accent-green: #26a69a;
   --accent-red: #ef5350;
   --accent-purple: #8b5cf6;
+
+  /* Responsive sizing variables */
+  --header-height: 40px;
+  --sidebar-width: 384px;
+  --footer-height: 56px;
+  --touch-target-min: 44px;
+  --spacing-base: 16px;
+}
+
+/* Tablet adjustments */
+@media (min-width: 768px) and (max-width: 1279px) {
+  :root {
+    --header-height: 48px;
+    --sidebar-width: 320px;
+    --footer-height: 48px;
+    --touch-target-min: 44px;
+    --spacing-base: 12px;
+  }
+}
+
+/* Mobile adjustments */
+@media (max-width: 767px) {
+  :root {
+    --header-height: 56px;
+    --sidebar-width: 100%;
+    --footer-height: 60px;
+    --touch-target-min: 48px;
+    --spacing-base: 8px;
+  }
 }
 
 * {
@@ -32,6 +61,15 @@ body {
   color: var(--text-primary);
   font-size: 13px;
   line-height: 1.5;
+  /* Prevent text selection on touch devices */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Responsive font sizes */
+@media (max-width: 767px) {
+  body {
+    font-size: 14px;
+  }
 }
 
 /* Custom scrollbar for dark theme */
@@ -51,4 +89,272 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #4a4e59;
+}
+
+/* Thin scrollbar for mobile */
+@media (max-width: 767px) {
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TOUCH-FRIENDLY BUTTONS AND INPUTS
+   ═══════════════════════════════════════════════════════════ */
+
+/* Ensure touch targets are large enough on touch devices */
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  input[type="button"],
+  input[type="submit"],
+  select {
+    min-height: var(--touch-target-min);
+    min-width: var(--touch-target-min);
+  }
+
+  /* Larger padding for touch */
+  input[type="text"],
+  input[type="search"],
+  input[type="number"],
+  select {
+    padding: 12px;
+    font-size: 16px; /* Prevents iOS zoom on focus */
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   RESPONSIVE UTILITY CLASSES
+   ═══════════════════════════════════════════════════════════ */
+
+/* Hide on specific breakpoints */
+.hide-mobile {
+  display: block;
+}
+
+.hide-tablet {
+  display: block;
+}
+
+.hide-desktop {
+  display: none;
+}
+
+.show-mobile-only {
+  display: none;
+}
+
+.show-tablet-only {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .hide-mobile {
+    display: none !important;
+  }
+  .show-mobile-only {
+    display: block !important;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1279px) {
+  .hide-tablet {
+    display: none !important;
+  }
+  .show-tablet-only {
+    display: block !important;
+  }
+}
+
+@media (min-width: 1280px) {
+  .hide-desktop {
+    display: none !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SIDEBAR RESPONSIVE STYLES
+   ═══════════════════════════════════════════════════════════ */
+
+/* Mobile sidebar overlay */
+.sidebar-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.sidebar-overlay.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Mobile sidebar slide-in */
+.sidebar-mobile {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 85%;
+  max-width: 400px;
+  z-index: 50;
+  transform: translateX(100%);
+  transition: transform 0.3s ease;
+}
+
+.sidebar-mobile.open {
+  transform: translateX(0);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CHART TOOLBAR RESPONSIVE STYLES
+   ═══════════════════════════════════════════════════════════ */
+
+/* Horizontal scroll for toolbar on mobile */
+.toolbar-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; /* Firefox */
+}
+
+.toolbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* Compact toolbar buttons */
+@media (max-width: 767px) {
+  .toolbar-btn {
+    padding: 8px 12px !important;
+    font-size: 12px !important;
+    min-height: 40px;
+  }
+
+  .toolbar-btn-icon {
+    padding: 8px !important;
+    min-width: 40px;
+    min-height: 40px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   HEADER RESPONSIVE STYLES
+   ═══════════════════════════════════════════════════════════ */
+
+@media (max-width: 767px) {
+  .header-price-info {
+    display: none;
+  }
+
+  .header-compact {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PANEL RESPONSIVE STYLES
+   ═══════════════════════════════════════════════════════════ */
+
+/* Bottom sheet for mobile panels */
+.bottom-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  background-color: var(--bg-secondary);
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  transform: translateY(100%);
+  transition: transform 0.3s ease;
+  max-height: 80vh;
+  overflow: hidden;
+}
+
+.bottom-sheet.open {
+  transform: translateY(0);
+}
+
+.bottom-sheet-handle {
+  width: 40px;
+  height: 4px;
+  background-color: var(--border-color);
+  border-radius: 2px;
+  margin: 8px auto;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SAFE AREA INSETS (for notched devices)
+   ═══════════════════════════════════════════════════════════ */
+
+@supports (padding: env(safe-area-inset-top)) {
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .safe-left {
+    padding-left: env(safe-area-inset-left);
+  }
+
+  .safe-right {
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ANIMATIONS
+   ═══════════════════════════════════════════════════════════ */
+
+/* Reduce animations for users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   HAMBURGER MENU ICON
+   ═══════════════════════════════════════════════════════════ */
+
+.hamburger {
+  width: 24px;
+  height: 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.hamburger span {
+  display: block;
+  height: 2px;
+  width: 100%;
+  background-color: var(--text-primary);
+  border-radius: 1px;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+.hamburger.open span:nth-child(1) {
+  transform: translateY(9px) rotate(45deg);
+}
+
+.hamburger.open span:nth-child(2) {
+  opacity: 0;
+}
+
+.hamburger.open span:nth-child(3) {
+  transform: translateY(-9px) rotate(-45deg);
 }
