@@ -141,6 +141,8 @@ class OHLCVResponse(BaseModel):
     bars: List[OHLCVBar]
     ema20: List[Optional[float]]  # None for initial bars before EMA converges
     ema200: List[Optional[float]]  # None for initial bars before EMA converges
+    sma20: List[Optional[float]] = []  # Simple Moving Average 20
+    sma200: List[Optional[float]] = []  # Simple Moving Average 200
     rsi: List[float]
     rsi_signal: List[float] = []  # RSI Signal(9) - SMA of RSI
     macd_line: List[float]
@@ -172,6 +174,8 @@ class OHLCVResponse(BaseModel):
     kc_lower: List[float] = []   # EMA(20) - ATR(10) * 1.5
     # TTM Squeeze
     squeeze: List[bool] = []  # True = squeeze ON (BB inside KC), False = squeeze OFF
+    # Data source info
+    source: str = "yfinance"  # "kis" (real-time) or "yfinance" (delayed)
 
 
 # --- Williams %R schemas ---
@@ -646,3 +650,145 @@ class DataSourceInfo(BaseModel):
     kis_configured: bool
     kis_connected: bool
     available_sources: List[str]
+
+
+# --- AI Signal Alert schemas ---
+
+class AIDirectionSchema(BaseModel):
+    """AI direction prediction."""
+    direction: str  # "bullish", "bearish", "neutral"
+    confidence: float
+    reasoning: str
+
+
+class AIConsensusSchema(BaseModel):
+    """AI consensus across multiple models."""
+    direction: str  # "bullish", "bearish", "neutral", "divergence"
+    agreement: int  # 0, 1, 2, or 3
+    confidence: float
+    directions: dict  # {"technical_ml": "bullish", "lstm": "bearish", "lh_ai": "bullish"}
+
+
+class PatternAlignmentSchema(BaseModel):
+    """Pattern alignment analysis."""
+    ob_aligned: bool
+    fvg_aligned: bool
+    technical_confluence: int  # 0, 1, or 2
+    description: str
+
+
+class TradingLevelsSchema(BaseModel):
+    """Trading levels from AI analysis."""
+    entry: Optional[float] = None
+    stop: Optional[float] = None
+    targets: List[float] = []
+    risk_reward: float = 0.0
+
+
+class AISignalSchema(BaseModel):
+    """Full AI signal analysis result."""
+    symbol: str
+    market: str
+    timestamp: str
+    signal_type: str  # "strong_buy", "strong_sell", "moderate_buy", "moderate_sell", "divergence", "neutral"
+    confidence: float
+    consensus: AIConsensusSchema
+    pattern_alignment: PatternAlignmentSchema
+    trading_levels: TradingLevelsSchema
+    reasoning: List[str]
+    individual_predictions: dict
+
+
+class DetectSignalRequest(BaseModel):
+    """Request to detect AI signal."""
+    symbol: str
+    market: str = "KR"
+    technical_ml_prediction: dict
+    lstm_prediction: dict
+    lh_ai_prediction: dict
+    current_price: float
+    order_blocks: Optional[List[dict]] = None
+    fvgs: Optional[List[dict]] = None
+
+
+class DetectSignalResponse(BaseModel):
+    """Response from signal detection."""
+    signal: AISignalSchema
+    should_alert: bool
+    triggered_conditions: List[str] = []
+
+
+class AlertConditionSchema(BaseModel):
+    """User-defined alert condition."""
+    id: str = ""
+    user_id: str = "default"
+    symbol: str = "*"  # "*" for all symbols
+    min_confidence: float = 70.0
+    min_consensus: int = 2  # 2/3 or 3/3
+    require_pattern: bool = False
+    signal_types: List[str] = ["strong_buy", "strong_sell"]
+    enabled: bool = True
+    telegram: bool = True
+    web_push: bool = False
+    email: bool = False
+    in_app: bool = True
+    cooldown_minutes: int = 30
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class AlertConditionListResponse(BaseModel):
+    """Response for listing alert conditions."""
+    conditions: List[AlertConditionSchema]
+    total: int
+
+
+class InAppNotificationSchema(BaseModel):
+    """In-app notification."""
+    id: str
+    user_id: str
+    symbol: str
+    market: str
+    title: str
+    body: str
+    emoji: str
+    signal_type: str
+    confidence: float
+    timestamp: str
+    read: bool = False
+    dismissed: bool = False
+
+
+class NotificationListResponse(BaseModel):
+    """Response for listing notifications."""
+    notifications: List[InAppNotificationSchema]
+    unread_count: int
+    total: int
+
+
+class MarkReadRequest(BaseModel):
+    """Request to mark notifications as read."""
+    notification_ids: Optional[List[str]] = None  # None means mark all as read
+
+
+class MarkReadResponse(BaseModel):
+    """Response for mark read operation."""
+    success: bool
+    marked_count: int
+
+
+class AlertHistoryEntrySchema(BaseModel):
+    """Historical alert entry."""
+    notification_id: str
+    condition_id: str
+    symbol: str
+    market: str
+    signal_type: str
+    timestamp: str
+    channels_sent: List[str]
+
+
+class AlertHistoryResponse(BaseModel):
+    """Response for alert history."""
+    history: List[AlertHistoryEntrySchema]
+    total: int

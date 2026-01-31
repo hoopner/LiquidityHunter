@@ -18,6 +18,8 @@ export interface OHLCVResponse {
   bars: OHLCVBar[];
   ema20: (number | null)[];  // null for bars before EMA converges
   ema200: (number | null)[];  // null for bars before EMA converges
+  sma20: (number | null)[];  // null for bars before SMA converges
+  sma200: (number | null)[];  // null for bars before SMA converges
   rsi: number[];
   rsi_signal: number[];  // RSI Signal(9) - SMA of RSI
   macd_line: number[];
@@ -49,6 +51,8 @@ export interface OHLCVResponse {
   kc_lower: number[];   // EMA(20) - ATR(10) * 1.5
   // TTM Squeeze
   squeeze: boolean[];  // true = squeeze ON (BB inside KC)
+  // Data source info
+  source: 'kis' | 'yfinance';  // 'kis' = real-time, 'yfinance' = delayed
 }
 
 // Order Block types
@@ -504,3 +508,136 @@ export interface DataSourceInfo {
 }
 
 export type DataSource = 'yfinance' | 'kis';
+
+// AI Signal Alert types
+
+export interface AIDirection {
+  direction: 'bullish' | 'bearish' | 'neutral';
+  confidence: number;
+  reasoning: string;
+}
+
+export interface AIConsensus {
+  direction: 'bullish' | 'bearish' | 'neutral' | 'divergence';
+  agreement: number; // 0, 1, 2, or 3
+  confidence: number;
+  directions: {
+    technical_ml: string;
+    lstm: string;
+    lh_ai: string;
+  };
+}
+
+export interface PatternAlignment {
+  ob_aligned: boolean;
+  fvg_aligned: boolean;
+  technical_confluence: number; // 0, 1, or 2
+  description: string;
+}
+
+export interface TradingLevels {
+  entry: number | null;
+  stop: number | null;
+  targets: number[];
+  risk_reward: number;
+}
+
+export type SignalType = 'strong_buy' | 'strong_sell' | 'moderate_buy' | 'moderate_sell' | 'divergence' | 'neutral';
+
+export interface AISignal {
+  symbol: string;
+  market: string;
+  timestamp: string;
+  signal_type: SignalType;
+  confidence: number;
+  consensus: AIConsensus;
+  pattern_alignment: PatternAlignment;
+  trading_levels: TradingLevels;
+  reasoning: string[];
+  individual_predictions: Record<string, unknown>;
+}
+
+export interface DetectSignalRequest {
+  symbol: string;
+  market: string;
+  technical_ml_prediction: Record<string, unknown>;
+  lstm_prediction: Record<string, unknown>;
+  lh_ai_prediction: Record<string, unknown>;
+  current_price: number;
+  order_blocks?: Record<string, unknown>[];
+  fvgs?: Record<string, unknown>[];
+}
+
+export interface DetectSignalResponse {
+  signal: AISignal;
+  should_alert: boolean;
+  triggered_conditions: string[];
+}
+
+export interface AlertCondition {
+  id: string;
+  user_id: string;
+  symbol: string;
+  min_confidence: number;
+  min_consensus: number;
+  require_pattern: boolean;
+  signal_types: SignalType[];
+  enabled: boolean;
+  telegram: boolean;
+  web_push: boolean;
+  email: boolean;
+  in_app: boolean;
+  cooldown_minutes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertConditionListResponse {
+  conditions: AlertCondition[];
+  total: number;
+}
+
+export interface InAppNotification {
+  id: string;
+  user_id: string;
+  symbol: string;
+  market: string;
+  title: string;
+  body: string;
+  emoji: string;
+  signal_type: string;
+  confidence: number;
+  timestamp: string;
+  read: boolean;
+  dismissed: boolean;
+}
+
+export interface NotificationListResponse {
+  notifications: InAppNotification[];
+  unread_count: number;
+  total: number;
+}
+
+export interface MarkReadRequest {
+  notification_ids?: string[]; // null means mark all as read
+}
+
+export interface MarkReadResponse {
+  success: boolean;
+  marked_count: number;
+}
+
+export interface AlertHistoryEntry {
+  notification_id: string;
+  condition_id: string;
+  symbol: string;
+  market: string;
+  signal_type: string;
+  timestamp: string;
+  channels_sent: string[];
+}
+
+export interface AlertHistoryResponse {
+  history: AlertHistoryEntry[];
+  total: number;
+}

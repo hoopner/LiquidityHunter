@@ -2822,3 +2822,351 @@ async def ai_lh_analysis(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- AI Signal Alert endpoints ---
+
+from engine.alerts import (
+    detect_ai_signal,
+    AISignal,
+    SignalType,
+    get_evaluator,
+    AlertCondition,
+    get_notification_service,
+)
+from engine.api.schemas import (
+    AISignalSchema,
+    AIConsensusSchema,
+    PatternAlignmentSchema,
+    TradingLevelsSchema,
+    DetectSignalRequest,
+    DetectSignalResponse,
+    AlertConditionSchema,
+    AlertConditionListResponse,
+    InAppNotificationSchema,
+    NotificationListResponse,
+    MarkReadRequest,
+    MarkReadResponse,
+    AlertHistoryEntrySchema,
+    AlertHistoryResponse,
+)
+import uuid
+
+
+def ai_signal_to_schema(signal: AISignal) -> AISignalSchema:
+    """Convert AISignal dataclass to Pydantic schema."""
+    return AISignalSchema(
+        symbol=signal.symbol,
+        market=signal.market,
+        timestamp=signal.timestamp.isoformat(),
+        signal_type=signal.signal_type.value,
+        confidence=signal.confidence,
+        consensus=AIConsensusSchema(
+            direction=signal.consensus.direction.value,
+            agreement=signal.consensus.agreement,
+            confidence=signal.consensus.confidence,
+            directions=signal.consensus.directions,
+        ),
+        pattern_alignment=PatternAlignmentSchema(
+            ob_aligned=signal.pattern_alignment.ob_aligned,
+            fvg_aligned=signal.pattern_alignment.fvg_aligned,
+            technical_confluence=signal.pattern_alignment.technical_confluence,
+            description=signal.pattern_alignment.description,
+        ),
+        trading_levels=TradingLevelsSchema(
+            entry=signal.trading_levels.entry,
+            stop=signal.trading_levels.stop,
+            targets=signal.trading_levels.targets,
+            risk_reward=signal.trading_levels.risk_reward,
+        ),
+        reasoning=signal.reasoning,
+        individual_predictions=signal.individual_predictions,
+    )
+
+
+@app.post("/api/ai/detect-signal", response_model=DetectSignalResponse)
+async def detect_ai_signal_endpoint(request: DetectSignalRequest) -> DetectSignalResponse:
+    """
+    Detect AI signal from multiple AI predictions.
+
+    Analyzes consensus across Technical ML, LSTM, and LH AI models.
+    Checks pattern alignment with Order Blocks and FVGs.
+    Returns signal type, confidence, and trading levels.
+    """
+    try:
+        signal = detect_ai_signal(
+            symbol=request.symbol,
+            market=request.market,
+            technical_ml_prediction=request.technical_ml_prediction,
+            lstm_prediction=request.lstm_prediction,
+            lh_ai_prediction=request.lh_ai_prediction,
+            current_price=request.current_price,
+            order_blocks=request.order_blocks,
+            fvgs=request.fvgs,
+        )
+
+        # Evaluate against conditions
+        evaluator = get_evaluator()
+        notifications = await evaluator.evaluate_signal(signal)
+
+        # Send notifications via notification service
+        notification_service = get_notification_service()
+        triggered_conditions = []
+
+        for notification in notifications:
+            # Find matching condition
+            conditions = evaluator.condition_store.get_by_symbol(signal.symbol)
+            for condition in conditions:
+                if condition.id in notification.id:
+                    await notification_service.send_notification(notification, condition)
+                    triggered_conditions.append(condition.id)
+                    break
+
+        return DetectSignalResponse(
+            signal=ai_signal_to_schema(signal),
+            should_alert=len(notifications) > 0,
+            triggered_conditions=triggered_conditions,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/alerts/conditions", response_model=AlertConditionListResponse)
+def get_alert_conditions(
+    user_id: str = Query("default", description="User ID"),
+) -> AlertConditionListResponse:
+    """Get all alert conditions for a user."""
+    evaluator = get_evaluator()
+    conditions = evaluator.get_conditions(user_id)
+
+    return AlertConditionListResponse(
+        conditions=[
+            AlertConditionSchema(
+                id=c.id,
+                user_id=c.user_id,
+                symbol=c.symbol,
+                min_confidence=c.min_confidence,
+                min_consensus=c.min_consensus,
+                require_pattern=c.require_pattern,
+                signal_types=c.signal_types,
+                enabled=c.enabled,
+                telegram=c.telegram,
+                web_push=c.web_push,
+                email=c.email,
+                in_app=c.in_app,
+                cooldown_minutes=c.cooldown_minutes,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+            )
+            for c in conditions
+        ],
+        total=len(conditions),
+    )
+
+
+@app.post("/api/alerts/conditions", response_model=AlertConditionSchema)
+def create_alert_condition(
+    condition: AlertConditionSchema,
+) -> AlertConditionSchema:
+    """Create a new alert condition."""
+    evaluator = get_evaluator()
+
+    # Generate ID if not provided
+    condition_id = condition.id if condition.id else str(uuid.uuid4())
+
+    new_condition = AlertCondition(
+        id=condition_id,
+        user_id=condition.user_id,
+        symbol=condition.symbol,
+        min_confidence=condition.min_confidence,
+        min_consensus=condition.min_consensus,
+        require_pattern=condition.require_pattern,
+        signal_types=condition.signal_types,
+        enabled=condition.enabled,
+        telegram=condition.telegram,
+        web_push=condition.web_push,
+        email=condition.email,
+        in_app=condition.in_app,
+        cooldown_minutes=condition.cooldown_minutes,
+    )
+
+    created = evaluator.add_condition(new_condition)
+
+    return AlertConditionSchema(
+        id=created.id,
+        user_id=created.user_id,
+        symbol=created.symbol,
+        min_confidence=created.min_confidence,
+        min_consensus=created.min_consensus,
+        require_pattern=created.require_pattern,
+        signal_types=created.signal_types,
+        enabled=created.enabled,
+        telegram=created.telegram,
+        web_push=created.web_push,
+        email=created.email,
+        in_app=created.in_app,
+        cooldown_minutes=created.cooldown_minutes,
+        created_at=created.created_at,
+        updated_at=created.updated_at,
+    )
+
+
+@app.put("/api/alerts/conditions/{condition_id}", response_model=AlertConditionSchema)
+def update_alert_condition(
+    condition_id: str,
+    condition: AlertConditionSchema,
+) -> AlertConditionSchema:
+    """Update an existing alert condition."""
+    evaluator = get_evaluator()
+
+    existing = evaluator.condition_store.get(condition_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Condition not found")
+
+    updated_condition = AlertCondition(
+        id=condition_id,
+        user_id=condition.user_id or existing.user_id,
+        symbol=condition.symbol,
+        min_confidence=condition.min_confidence,
+        min_consensus=condition.min_consensus,
+        require_pattern=condition.require_pattern,
+        signal_types=condition.signal_types,
+        enabled=condition.enabled,
+        telegram=condition.telegram,
+        web_push=condition.web_push,
+        email=condition.email,
+        in_app=condition.in_app,
+        cooldown_minutes=condition.cooldown_minutes,
+        created_at=existing.created_at,
+    )
+
+    updated = evaluator.update_condition(updated_condition)
+
+    return AlertConditionSchema(
+        id=updated.id,
+        user_id=updated.user_id,
+        symbol=updated.symbol,
+        min_confidence=updated.min_confidence,
+        min_consensus=updated.min_consensus,
+        require_pattern=updated.require_pattern,
+        signal_types=updated.signal_types,
+        enabled=updated.enabled,
+        telegram=updated.telegram,
+        web_push=updated.web_push,
+        email=updated.email,
+        in_app=updated.in_app,
+        cooldown_minutes=updated.cooldown_minutes,
+        created_at=updated.created_at,
+        updated_at=updated.updated_at,
+    )
+
+
+@app.delete("/api/alerts/conditions/{condition_id}")
+def delete_alert_condition(condition_id: str) -> dict:
+    """Delete an alert condition."""
+    evaluator = get_evaluator()
+
+    success = evaluator.delete_condition(condition_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Condition not found")
+
+    return {"success": True, "deleted_id": condition_id}
+
+
+@app.get("/api/alerts/notifications", response_model=NotificationListResponse)
+def get_notifications(
+    user_id: str = Query("default", description="User ID"),
+    limit: int = Query(50, description="Maximum notifications to return"),
+    unread_only: bool = Query(False, description="Only return unread notifications"),
+) -> NotificationListResponse:
+    """Get in-app notifications for a user."""
+    service = get_notification_service()
+
+    if unread_only:
+        notifications = service.get_unread_notifications(user_id)
+    else:
+        notifications = service.get_all_notifications(user_id, limit)
+
+    unread_count = len(service.get_unread_notifications(user_id))
+
+    return NotificationListResponse(
+        notifications=[
+            InAppNotificationSchema(
+                id=n.id,
+                user_id=n.user_id,
+                symbol=n.symbol,
+                market=n.market,
+                title=n.title,
+                body=n.body,
+                emoji=n.emoji,
+                signal_type=n.signal_type,
+                confidence=n.confidence,
+                timestamp=n.timestamp,
+                read=n.read,
+                dismissed=n.dismissed,
+            )
+            for n in notifications
+        ],
+        unread_count=unread_count,
+        total=len(notifications),
+    )
+
+
+@app.post("/api/alerts/notifications/read", response_model=MarkReadResponse)
+def mark_notifications_read(
+    request: MarkReadRequest,
+    user_id: str = Query("default", description="User ID"),
+) -> MarkReadResponse:
+    """Mark notifications as read."""
+    service = get_notification_service()
+
+    if request.notification_ids is None:
+        # Mark all as read
+        count = service.mark_all_read(user_id)
+    else:
+        # Mark specific notifications as read
+        count = 0
+        for nid in request.notification_ids:
+            if service.mark_notification_read(nid):
+                count += 1
+
+    return MarkReadResponse(success=True, marked_count=count)
+
+
+@app.post("/api/alerts/notifications/{notification_id}/dismiss")
+def dismiss_notification(notification_id: str) -> dict:
+    """Dismiss a notification."""
+    service = get_notification_service()
+
+    success = service.dismiss_notification(notification_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    return {"success": True, "dismissed_id": notification_id}
+
+
+@app.get("/api/alerts/history", response_model=AlertHistoryResponse)
+def get_alert_history(
+    symbol: Optional[str] = Query(None, description="Filter by symbol"),
+    limit: int = Query(50, description="Maximum entries to return"),
+) -> AlertHistoryResponse:
+    """Get alert history."""
+    evaluator = get_evaluator()
+
+    history = evaluator.get_history(symbol, limit)
+
+    return AlertHistoryResponse(
+        history=[
+            AlertHistoryEntrySchema(
+                notification_id=h.notification_id,
+                condition_id=h.condition_id,
+                symbol=h.symbol,
+                market=h.market,
+                signal_type=h.signal_type,
+                timestamp=h.timestamp,
+                channels_sent=h.channels_sent,
+            )
+            for h in history
+        ],
+        total=len(history),
+    )

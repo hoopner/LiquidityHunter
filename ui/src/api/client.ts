@@ -28,26 +28,37 @@ import type {
   KISConnectionStatus,
   KISPriceResponse,
   DataSourceInfo,
-  DataSource,
+  // AI Signal Alert types
+  DetectSignalRequest,
+  DetectSignalResponse,
+  AlertCondition,
+  AlertConditionListResponse,
+  NotificationListResponse,
+  MarkReadRequest,
+  MarkReadResponse,
+  AlertHistoryResponse,
 } from './types';
 
 const BASE_URL = 'http://localhost:8000';
 
 /**
  * Fetch OHLCV data with EMA indicators
- * @param source - Data source: 'yfinance' (default) or 'kis' (Korea Investment API)
+ *
+ * Data source is automatically selected:
+ * - KIS API (real-time) if configured
+ * - yfinance (delayed) as fallback
+ *
+ * Check response.source to see which source was used.
  */
 export async function fetchOHLCV(
   symbol: string,
   market: string = 'KR',
-  timeframe: string = '1D',
-  source: DataSource = 'yfinance'
+  timeframe: string = '1D'
 ): Promise<OHLCVResponse> {
   const params = new URLSearchParams({
     symbol,
     market,
     tf: timeframe,
-    source,
   });
 
   const response = await fetch(`${BASE_URL}/ohlcv?${params}`);
@@ -459,6 +470,188 @@ export async function scanForAlerts(
   const response = await fetch(`${BASE_URL}/alerts/scan?market=${market}`, {
     method: 'POST',
   });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+// --- AI Signal Alert Functions ---
+
+/**
+ * Detect AI signal from multiple predictions
+ */
+export async function detectAISignal(
+  request: DetectSignalRequest
+): Promise<DetectSignalResponse> {
+  const response = await fetch(`${BASE_URL}/api/ai/detect-signal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get alert conditions for a user
+ */
+export async function getAlertConditions(
+  userId: string = 'default'
+): Promise<AlertConditionListResponse> {
+  const params = new URLSearchParams({ user_id: userId });
+  const response = await fetch(`${BASE_URL}/api/alerts/conditions?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Create a new alert condition
+ */
+export async function createAlertCondition(
+  condition: Partial<AlertCondition>
+): Promise<AlertCondition> {
+  const response = await fetch(`${BASE_URL}/api/alerts/conditions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(condition),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Update an existing alert condition
+ */
+export async function updateAlertCondition(
+  conditionId: string,
+  condition: Partial<AlertCondition>
+): Promise<AlertCondition> {
+  const response = await fetch(`${BASE_URL}/api/alerts/conditions/${conditionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(condition),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Delete an alert condition
+ */
+export async function deleteAlertCondition(
+  conditionId: string
+): Promise<{ success: boolean; deleted_id: string }> {
+  const response = await fetch(`${BASE_URL}/api/alerts/conditions/${conditionId}`, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get in-app notifications
+ */
+export async function getNotifications(
+  userId: string = 'default',
+  limit: number = 50,
+  unreadOnly: boolean = false
+): Promise<NotificationListResponse> {
+  const params = new URLSearchParams({
+    user_id: userId,
+    limit: limit.toString(),
+    unread_only: unreadOnly.toString(),
+  });
+  const response = await fetch(`${BASE_URL}/api/alerts/notifications?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Mark notifications as read
+ */
+export async function markNotificationsRead(
+  request: MarkReadRequest,
+  userId: string = 'default'
+): Promise<MarkReadResponse> {
+  const params = new URLSearchParams({ user_id: userId });
+  const response = await fetch(`${BASE_URL}/api/alerts/notifications/read?${params}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Dismiss a notification
+ */
+export async function dismissNotification(
+  notificationId: string
+): Promise<{ success: boolean; dismissed_id: string }> {
+  const response = await fetch(
+    `${BASE_URL}/api/alerts/notifications/${notificationId}/dismiss`,
+    { method: 'POST' }
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get alert history
+ */
+export async function getAlertHistory(
+  symbol?: string,
+  limit: number = 50
+): Promise<AlertHistoryResponse> {
+  const params = new URLSearchParams({ limit: limit.toString() });
+  if (symbol) params.set('symbol', symbol);
+
+  const response = await fetch(`${BASE_URL}/api/alerts/history?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));

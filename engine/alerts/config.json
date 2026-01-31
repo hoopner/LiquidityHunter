@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "min_confluence": 75,
+  "alert_types": [
+    "retest"
+  ],
+  "cooldown_minutes": 10
+}
