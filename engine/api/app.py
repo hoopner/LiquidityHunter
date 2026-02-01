@@ -737,34 +737,61 @@ def get_ohlcv(
     # Minimum bars needed for EMA200 to have valid data (200 for EMA + 50 buffer)
     MIN_BARS_FOR_EMA200 = 250
 
-    # Try KIS as PRIMARY source if configured
-    try:
-        client = get_kis_client()
-        if client.is_configured:
-            kis_data = client.get_ohlcv(symbol, market, tf, count=limit if limit > 0 else 500)
-            kis_bar_count = kis_data.get("count", 0) if kis_data else 0
-            print(f"[OHLCV] KIS returned {kis_bar_count} bars for {symbol} {tf}")
-
-            if kis_data and kis_bar_count > 0:
-                # Check if we have enough data for EMA200
-                if kis_bar_count >= MIN_BARS_FOR_EMA200:
-                    # Convert KIS response to OHLCVData format
+    # Try PostgreSQL FIRST for daily/weekly/monthly timeframes (fastest, local data)
+    is_daily_tf = tf.upper() in ("1D", "1W", "1M", "1MO")
+    if is_daily_tf and not refresh:
+        try:
+            from engine.data.database import get_ohlcv as db_get_ohlcv, check_connection
+            if check_connection():
+                print(f"[OHLCV] Trying PostgreSQL for {symbol} {market} {tf}")
+                df = db_get_ohlcv(symbol.upper(), market)
+                if not df.empty and len(df) >= MIN_BARS_FOR_EMA200:
+                    # Convert DataFrame to OHLCVData format
+                    timestamps = [ts.strftime("%Y-%m-%d") for ts in df.index]
                     data = OHLCVData(
-                        timestamps=kis_data["timestamps"],
-                        open=np.array(kis_data["open"]),
-                        high=np.array(kis_data["high"]),
-                        low=np.array(kis_data["low"]),
-                        close=np.array(kis_data["close"]),
-                        volume=np.array(kis_data["volume"]),
+                        timestamps=timestamps,
+                        open=df["open"].values,
+                        high=df["high"].values,
+                        low=df["low"].values,
+                        close=df["close"].values,
+                        volume=df["volume"].values,
                     )
-                    source_used = "kis"
+                    source_used = "postgresql"
+                    print(f"[OHLCV] PostgreSQL returned {len(df)} bars for {symbol}")
                 else:
-                    print(f"[OHLCV] KIS data insufficient ({kis_bar_count} < {MIN_BARS_FOR_EMA200}), falling back to yfinance")
-    except KISAPIError as e:
-        # Fall back to yfinance on KIS error
-        print(f"KIS API error, falling back to yfinance: {e}")
-    except Exception as e:
-        print(f"KIS error, falling back to yfinance: {e}")
+                    print(f"[OHLCV] PostgreSQL data insufficient, trying other sources")
+        except Exception as e:
+            print(f"[OHLCV] PostgreSQL error: {e}, trying other sources")
+
+    # Try KIS as SECONDARY source if configured (for real-time or intraday)
+    if data is None:
+        try:
+            client = get_kis_client()
+            if client.is_configured:
+                kis_data = client.get_ohlcv(symbol, market, tf, count=limit if limit > 0 else 500)
+                kis_bar_count = kis_data.get("count", 0) if kis_data else 0
+                print(f"[OHLCV] KIS returned {kis_bar_count} bars for {symbol} {tf}")
+
+                if kis_data and kis_bar_count > 0:
+                    # Check if we have enough data for EMA200
+                    if kis_bar_count >= MIN_BARS_FOR_EMA200:
+                        # Convert KIS response to OHLCVData format
+                        data = OHLCVData(
+                            timestamps=kis_data["timestamps"],
+                            open=np.array(kis_data["open"]),
+                            high=np.array(kis_data["high"]),
+                            low=np.array(kis_data["low"]),
+                            close=np.array(kis_data["close"]),
+                            volume=np.array(kis_data["volume"]),
+                        )
+                        source_used = "kis"
+                    else:
+                        print(f"[OHLCV] KIS data insufficient ({kis_bar_count} < {MIN_BARS_FOR_EMA200}), falling back to yfinance")
+        except KISAPIError as e:
+            # Fall back to yfinance on KIS error
+            print(f"KIS API error, falling back to yfinance: {e}")
+        except Exception as e:
+            print(f"KIS error, falling back to yfinance: {e}")
 
     # Fall back to yfinance if KIS not configured, failed, or returned insufficient data
     if data is None:
