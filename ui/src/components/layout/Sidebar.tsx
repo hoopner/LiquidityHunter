@@ -19,16 +19,35 @@ interface SidebarProps {
 }
 
 /**
- * Right sidebar with collapsible panels
+ * Right sidebar with independently collapsible panels
+ * Multiple panels can be open simultaneously
  * Responsive: Touch-friendly on mobile/tablet
  */
 export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }: SidebarProps) {
   const { isMobile, isTouchDevice } = useResponsive();
-  const [expandedPanel, setExpandedPanel] = useState<PanelType>('screener');
+
+  // Multiple panels can be open at once (default: screener open)
+  const [openPanels, setOpenPanels] = useState<Set<PanelType>>(new Set(['screener']));
 
   // Quick search state
   const [searchSymbol, setSearchSymbol] = useState('');
   const [searchMarket, setSearchMarket] = useState('US');
+
+  // Toggle panel open/closed independently
+  const togglePanel = useCallback((panelId: PanelType) => {
+    setOpenPanels(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(panelId)) {
+        newSet.delete(panelId);  // Close this panel
+      } else {
+        newSet.add(panelId);  // Open this panel
+      }
+      return newSet;
+    });
+  }, []);
+
+  // Check if panel is open
+  const isPanelOpen = useCallback((panelId: PanelType) => openPanels.has(panelId), [openPanels]);
 
   // Handle quick search
   const handleQuickSearch = useCallback(() => {
@@ -81,9 +100,11 @@ export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }:
   const inputPadding = isTouchDevice || isMobile ? 'py-3 px-3' : 'py-1.5 px-2';
 
   return (
-    <div className="flex flex-col h-full bg-[var(--bg-secondary)] border-l border-[var(--border-color)]">
-      {/* Quick Search Bar */}
-      <div className={`border-b border-[var(--border-color)] bg-[var(--bg-tertiary)] ${touchPadding}`}>
+    <div
+      className="flex flex-col h-full bg-[var(--bg-secondary)] border-l border-[var(--border-color)] overflow-hidden"
+    >
+      {/* Quick Search Bar - Fixed at top */}
+      <div className={`flex-shrink-0 border-b border-[var(--border-color)] bg-[var(--bg-tertiary)] ${touchPadding}`}>
         <div className="text-xs text-[var(--text-secondary)] mb-2 font-medium">Quick Search</div>
         <div className="flex gap-2">
           <input
@@ -116,24 +137,31 @@ export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }:
         </div>
       </div>
 
-      {/* Panel list */}
-      <div className="flex-1 overflow-y-auto">
+      {/* Scrollable Panel List */}
+      <div
+        className="flex-1 overflow-y-auto overflow-x-hidden"
+        style={{
+          scrollBehavior: 'smooth',
+        }}
+      >
         {panels.map((panel) => {
-          const isExpanded = expandedPanel === panel.id;
+          const isOpen = isPanelOpen(panel.id);
           return (
             <div
               key={panel.id}
-              className={`flex flex-col ${isExpanded ? 'flex-1 min-h-0' : ''} border-b border-[var(--border-color)]`}
+              className="border-b border-[var(--border-color)]"
             >
-              {/* Panel header - always visible */}
+              {/* Panel header - always visible, click to toggle */}
               <button
-                onClick={() => setExpandedPanel(panel.id)}
-                className={`flex items-center justify-between hover:bg-[var(--bg-tertiary)] transition-colors touch-manipulation ${
-                  isExpanded ? 'bg-[var(--bg-tertiary)]' : ''
+                onClick={() => togglePanel(panel.id)}
+                className={`w-full flex items-center justify-between hover:bg-[var(--bg-tertiary)] transition-colors touch-manipulation ${
+                  isOpen ? 'bg-[var(--bg-tertiary)]' : ''
                 } ${touchPadding}`}
               >
                 <div className="flex items-center gap-2">
-                  <span className={`text-sm ${isExpanded ? 'rotate-90' : ''} transition-transform`}>
+                  <span
+                    className={`text-sm transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
+                  >
                     ▶
                   </span>
                   {/* Icon for touch devices */}
@@ -145,15 +173,21 @@ export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }:
                     <span className="text-xs text-[var(--text-secondary)]">{panel.title}</span>
                   )}
                 </div>
-                {/* Expand indicator */}
+                {/* Expand/collapse indicator */}
                 <span className="text-xs text-[var(--text-secondary)]">
-                  {isExpanded ? '−' : '+'}
+                  {isOpen ? '−' : '+'}
                 </span>
               </button>
 
-              {/* Panel content - only when expanded */}
-              {isExpanded && (
-                <div className="flex-1 overflow-hidden min-h-0">
+              {/* Panel content - shown when open */}
+              {isOpen && (
+                <div
+                  className="max-w-full overflow-x-hidden"
+                  style={{
+                    maxHeight: '400px',  // Limit panel height for better UX
+                    overflowY: 'auto',
+                  }}
+                >
                   {renderPanel(panel.id)}
                 </div>
               )}
@@ -164,7 +198,7 @@ export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }:
 
       {/* Current stock info at bottom - Mobile only */}
       {isMobile && (
-        <div className="p-4 border-t border-[var(--border-color)] bg-[var(--bg-tertiary)]">
+        <div className="flex-shrink-0 p-4 border-t border-[var(--border-color)] bg-[var(--bg-tertiary)]">
           <div className="text-xs text-[var(--text-secondary)] mb-1">현재 종목</div>
           <div className="flex items-center gap-2">
             <span className="font-bold text-lg">{selectedStock.symbol}</span>
