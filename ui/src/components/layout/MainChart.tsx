@@ -297,9 +297,12 @@ export const MainChart = memo(function MainChart({
   }, [data?.bars]);
 
   // Performance: Memoize candlestick data conversion to prevent recalculation on every render
+  // CRITICAL: Sort ascending by time and remove duplicates to prevent lightweight-charts crash
   const candlestickData = useMemo((): CandlestickData<Time>[] => {
     if (!data?.bars) return [];
-    return data.bars.map((bar) => {
+
+    // Convert to candlestick format
+    const mapped = data.bars.map((bar) => {
       const isUp = bar.close > bar.open;
       return {
         time: bar.time as Time,
@@ -312,9 +315,25 @@ export const MainChart = memo(function MainChart({
         wickColor: isUp ? '#26a69a' : '#ef5350',
       };
     });
+
+    // Sort by time ascending (required by lightweight-charts)
+    const sorted = mapped.sort((a, b) => {
+      const timeA = typeof a.time === 'string' ? new Date(a.time).getTime() : Number(a.time);
+      const timeB = typeof b.time === 'string' ? new Date(b.time).getTime() : Number(b.time);
+      return timeA - timeB;
+    });
+
+    // Remove duplicates (keep first occurrence)
+    const unique = sorted.filter((item, index, array) => {
+      if (index === 0) return true;
+      return item.time !== array[index - 1].time;
+    });
+
+    return unique;
   }, [data?.bars]);
 
   // Performance: Memoize moving average data conversions
+  // Sort and dedupe to match candlestick data order
   const maData = useMemo(() => {
     if (!data?.bars) {
       return {
@@ -327,12 +346,25 @@ export const MainChart = memo(function MainChart({
 
     const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
       if (!arr) return [];
-      return data.bars
+      const mapped = data.bars
         .map((bar, i) => ({
           time: bar.time as Time,
           value: arr[i],
         }))
         .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
+
+      // Sort by time ascending
+      const sorted = mapped.sort((a, b) => {
+        const timeA = typeof a.time === 'string' ? new Date(a.time).getTime() : Number(a.time);
+        const timeB = typeof b.time === 'string' ? new Date(b.time).getTime() : Number(b.time);
+        return timeA - timeB;
+      });
+
+      // Remove duplicates
+      return sorted.filter((item, index, array) => {
+        if (index === 0) return true;
+        return item.time !== array[index - 1].time;
+      });
     };
 
     return {
@@ -344,6 +376,7 @@ export const MainChart = memo(function MainChart({
   }, [data?.bars, data?.ema20, data?.ema200, data?.sma20, data?.sma200]);
 
   // Performance: Memoize Bollinger Band data
+  // Sort and dedupe to match candlestick data order
   const bbData = useMemo(() => {
     if (!data?.bars) {
       return {
@@ -357,12 +390,25 @@ export const MainChart = memo(function MainChart({
 
     const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
       if (!arr) return [];
-      return data.bars
+      const mapped = data.bars
         .map((bar, i) => ({
           time: bar.time as Time,
           value: arr[i] || 0,
         }))
         .filter((d): d is LineData<Time> => d.value > 0);
+
+      // Sort by time ascending
+      const sorted = mapped.sort((a, b) => {
+        const timeA = typeof a.time === 'string' ? new Date(a.time).getTime() : Number(a.time);
+        const timeB = typeof b.time === 'string' ? new Date(b.time).getTime() : Number(b.time);
+        return timeA - timeB;
+      });
+
+      // Remove duplicates
+      return sorted.filter((item, index, array) => {
+        if (index === 0) return true;
+        return item.time !== array[index - 1].time;
+      });
     };
 
     return {
@@ -375,6 +421,7 @@ export const MainChart = memo(function MainChart({
   }, [data?.bars, data?.bb1_upper, data?.bb1_middle, data?.bb1_lower, data?.bb2_upper, data?.bb2_lower]);
 
   // Performance: Memoize VWAP and Keltner Channel data
+  // Sort and dedupe to match candlestick data order
   const otherIndicatorData = useMemo(() => {
     if (!data?.bars) {
       return {
@@ -387,12 +434,25 @@ export const MainChart = memo(function MainChart({
 
     const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
       if (!arr) return [];
-      return data.bars
+      const mapped = data.bars
         .map((bar, i) => ({
           time: bar.time as Time,
           value: arr[i] || 0,
         }))
         .filter((d): d is LineData<Time> => d.value > 0);
+
+      // Sort by time ascending
+      const sorted = mapped.sort((a, b) => {
+        const timeA = typeof a.time === 'string' ? new Date(a.time).getTime() : Number(a.time);
+        const timeB = typeof b.time === 'string' ? new Date(b.time).getTime() : Number(b.time);
+        return timeA - timeB;
+      });
+
+      // Remove duplicates
+      return sorted.filter((item, index, array) => {
+        if (index === 0) return true;
+        return item.time !== array[index - 1].time;
+      });
     };
 
     return {
