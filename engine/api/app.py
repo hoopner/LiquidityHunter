@@ -3516,3 +3516,274 @@ def get_market_symbols(market: str) -> dict:
         "count": len(symbols),
         "symbols": symbols,
     }
+
+
+# ============================================================
+# HISTORICAL DATA ENDPOINTS (PostgreSQL/TimescaleDB)
+# ============================================================
+
+from engine.data.database import (
+    check_connection as db_check_connection,
+    get_db_info,
+    get_ohlcv,
+    get_symbols as db_get_symbols,
+    get_data_summary,
+    get_time_bucket_ohlcv,
+)
+from datetime import datetime, timedelta
+import pandas as pd
+
+
+@app.get("/api/data/status")
+def get_database_status() -> dict:
+    """Get database connection status and statistics."""
+    info = get_db_info()
+    return {
+        "connected": info.get("connected", False),
+        "postgresql_version": info.get("postgresql_version", "unknown"),
+        "timescaledb_version": info.get("timescaledb_version", "unknown"),
+        "total_records": info.get("ohlcv_rows", 0),
+        "hypertable_chunks": info.get("hypertable_chunks", 0),
+        "hypertable_size": info.get("hypertable_size", "unknown"),
+    }
+
+
+@app.get("/api/data/symbols")
+def get_available_symbols(market: Optional[str] = None) -> dict:
+    """
+    Get list of symbols available in the database.
+
+    Args:
+        market: Filter by market (US, KR). If None, returns all.
+    """
+    try:
+        if market:
+            symbols = db_get_symbols(market.upper())
+            return {
+                "market": market.upper(),
+                "count": len(symbols),
+                "symbols": symbols,
+            }
+        else:
+            kr_symbols = db_get_symbols("KR")
+            us_symbols = db_get_symbols("US")
+            return {
+                "total": len(kr_symbols) + len(us_symbols),
+                "markets": {
+                    "KR": {"count": len(kr_symbols), "symbols": kr_symbols},
+                    "US": {"count": len(us_symbols), "symbols": us_symbols},
+                }
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/data/summary")
+def get_data_statistics() -> dict:
+    """Get summary statistics for all data in database."""
+    try:
+        summary_df = get_data_summary()
+
+        if summary_df.empty:
+            return {
+                "total_symbols": 0,
+                "total_records": 0,
+                "markets": {},
+            }
+
+        # Convert to dict format
+        summary_list = []
+        for _, row in summary_df.iterrows():
+            summary_list.append({
+                "symbol": row["symbol"],
+                "market": row["market"],
+                "records": int(row["rows"]),
+                "first_date": row["first_date"].isoformat() if pd.notna(row["first_date"]) else None,
+                "last_date": row["last_date"].isoformat() if pd.notna(row["last_date"]) else None,
+                "days_span": int(row["days_span"]) if pd.notna(row["days_span"]) else 0,
+            })
+
+        # Group by market
+        kr_data = [s for s in summary_list if s["market"] == "KR"]
+        us_data = [s for s in summary_list if s["market"] == "US"]
+
+        return {
+            "total_symbols": len(summary_list),
+            "total_records": sum(s["records"] for s in summary_list),
+            "markets": {
+                "KR": {
+                    "symbols": len(kr_data),
+                    "records": sum(s["records"] for s in kr_data),
+                },
+                "US": {
+                    "symbols": len(us_data),
+                    "records": sum(s["records"] for s in us_data),
+                },
+            },
+            "symbols": summary_list,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/data/history/{symbol}")
+def get_historical_data(
+    symbol: str,
+    market: str = Query("US", description="Market: US or KR"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    interval: str = Query("1d", description="Interval: 1d, 1w, 1M"),
+    limit: Optional[int] = Query(None, description="Max records to return"),
+) -> dict:
+    """
+    Get historical OHLCV data for a symbol from PostgreSQL.
+
+    Args:
+        symbol: Stock symbol (e.g., AAPL, 005930)
+        market: Market code (US or KR)
+        start_date: Start date filter (YYYY-MM-DD)
+        end_date: End date filter (YYYY-MM-DD)
+        interval: Data interval (1d=daily, 1w=weekly, 1M=monthly)
+        limit: Maximum number of records
+
+    Returns:
+        OHLCV data array with metadata
+    """
+    try:
+        # Parse dates
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
+
+        # Map interval to TimescaleDB bucket
+        bucket_map = {
+            "1d": "1 day",
+            "1w": "1 week",
+            "1M": "1 month",
+            "1h": "1 hour",
+        }
+        bucket = bucket_map.get(interval, "1 day")
+
+        # Query data
+        if interval == "1d":
+            df = get_ohlcv(symbol.upper(), market.upper(), start_dt, end_dt, limit)
+        else:
+            df = get_time_bucket_ohlcv(symbol.upper(), market.upper(), bucket, start_dt, end_dt)
+            if limit and len(df) > limit:
+                df = df.tail(limit)
+
+        if df.empty:
+            return {
+                "symbol": symbol.upper(),
+                "market": market.upper(),
+                "interval": interval,
+                "count": 0,
+                "data": [],
+            }
+
+        # Convert to response format
+        data = []
+        for timestamp, row in df.iterrows():
+            data.append({
+                "timestamp": timestamp.isoformat(),
+                "open": round(float(row["open"]), 2),
+                "high": round(float(row["high"]), 2),
+                "low": round(float(row["low"]), 2),
+                "close": round(float(row["close"]), 2),
+                "volume": int(row["volume"]),
+            })
+
+        return {
+            "symbol": symbol.upper(),
+            "market": market.upper(),
+            "interval": interval,
+            "count": len(data),
+            "start_date": data[0]["timestamp"] if data else None,
+            "end_date": data[-1]["timestamp"] if data else None,
+            "data": data,
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/data/sma/{symbol}")
+def get_sma_data(
+    symbol: str,
+    market: str = Query("US", description="Market: US or KR"),
+    periods: str = Query("20,50,200", description="SMA periods (comma-separated)"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    limit: int = Query(500, description="Max records to return"),
+) -> dict:
+    """
+    Get historical data with SMA calculations.
+
+    Args:
+        symbol: Stock symbol
+        market: Market code (US or KR)
+        periods: Comma-separated SMA periods (e.g., "20,50,200")
+        start_date: Start date filter
+        end_date: End date filter
+        limit: Maximum records
+
+    Returns:
+        OHLCV data with SMA values
+    """
+    try:
+        # Parse periods
+        sma_periods = [int(p.strip()) for p in periods.split(",")]
+
+        # Parse dates
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
+
+        # Need extra data for SMA calculation
+        max_period = max(sma_periods)
+
+        # Get data
+        df = get_ohlcv(symbol.upper(), market.upper(), start_dt, end_dt)
+
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"No data found for {symbol}")
+
+        # Calculate SMAs
+        for period in sma_periods:
+            df[f"sma{period}"] = df["close"].rolling(window=period).mean()
+
+        # Trim to requested limit (from end)
+        if limit and len(df) > limit:
+            df = df.tail(limit)
+
+        # Convert to response format
+        data = []
+        for timestamp, row in df.iterrows():
+            item = {
+                "timestamp": timestamp.isoformat(),
+                "open": round(float(row["open"]), 2),
+                "high": round(float(row["high"]), 2),
+                "low": round(float(row["low"]), 2),
+                "close": round(float(row["close"]), 2),
+                "volume": int(row["volume"]),
+            }
+            # Add SMA values
+            for period in sma_periods:
+                sma_val = row[f"sma{period}"]
+                item[f"sma{period}"] = round(float(sma_val), 2) if pd.notna(sma_val) else None
+            data.append(item)
+
+        return {
+            "symbol": symbol.upper(),
+            "market": market.upper(),
+            "sma_periods": sma_periods,
+            "count": len(data),
+            "data": data,
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
