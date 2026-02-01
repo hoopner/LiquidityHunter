@@ -792,3 +792,57 @@ class AlertHistoryResponse(BaseModel):
     """Response for alert history."""
     history: List[AlertHistoryEntrySchema]
     total: int
+
+
+# --- Price Alert schemas ---
+
+class PriceAlertSchema(BaseModel):
+    """Price alert configuration."""
+    id: str = ""
+    user_id: str = "default"
+    symbol: str
+    market: str = "KR"
+    alert_type: str  # "above", "below", "change_up", "change_down"
+    threshold: float
+    reference_price: Optional[float] = None
+    enabled: bool = True
+    repeating: bool = False
+    cooldown_minutes: int = 60
+    notification_channels: List[str] = ["telegram", "in_app"]
+    created_at: str = ""
+    last_triggered: Optional[str] = None
+    trigger_count: int = 0
+
+
+class CreatePriceAlertRequest(BaseModel):
+    """Request to create a price alert."""
+    symbol: str
+    market: str = "KR"
+    alert_type: str
+    threshold: float
+    reference_price: Optional[float] = None
+    repeating: bool = False
+    cooldown_minutes: int = 60
+    notification_channels: List[str] = ["telegram", "in_app"]
+
+
+class UpdatePriceAlertRequest(BaseModel):
+    """Request to update a price alert."""
+    enabled: Optional[bool] = None
+    threshold: Optional[float] = None
+    repeating: Optional[bool] = None
+    cooldown_minutes: Optional[int] = None
+    notification_channels: Optional[List[str]] = None
+
+
+class PriceAlertListResponse(BaseModel):
+    """Response for listing price alerts."""
+    alerts: List[PriceAlertSchema]
+    total: int
+
+
+class CheckPriceRequest(BaseModel):
+    """Request to check price against alerts."""
+    symbol: str
+    price: float
+    volume: Optional[float] = None

@@ -22,6 +22,12 @@ from .notification_service import (
     InAppNotification,
     get_notification_service,
 )
+from .price_alert_monitor import (
+    PriceAlert,
+    PriceAlertType,
+    PriceAlertMonitor,
+    get_price_monitor,
+)
 
 __all__ = [
     # Telegram bot
@@ -48,4 +54,9 @@ __all__ = [
     "NotificationService",
     "InAppNotification",
     "get_notification_service",
+    # Price Alerts
+    "PriceAlert",
+    "PriceAlertType",
+    "PriceAlertMonitor",
+    "get_price_monitor",
 ]

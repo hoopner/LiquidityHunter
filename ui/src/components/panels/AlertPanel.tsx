@@ -8,34 +8,54 @@ import {
   createAlertCondition,
   updateAlertCondition,
   deleteAlertCondition,
+  getPriceAlerts,
+  createPriceAlert,
+  updatePriceAlert,
+  deletePriceAlert,
 } from '../../api/client';
-import type { AlertSettings, AlertCondition, SignalType } from '../../api/types';
+import type { AlertSettings, AlertCondition, SignalType, PriceAlert, PriceAlertType } from '../../api/types';
 
-type TabType = 'telegram' | 'ai-conditions';
+type TabType = 'price' | 'ai-conditions' | 'telegram';
+
+interface AlertPanelProps {
+  symbol?: string;
+  market?: string;
+  currentPrice?: number;
+}
 
 /**
- * Alert settings panel for Telegram notifications and AI Signal conditions
+ * Alert settings panel for Price, AI Signal, and Telegram notifications
  */
-export function AlertPanel() {
-  const [activeTab, setActiveTab] = useState<TabType>('ai-conditions');
+export function AlertPanel({ symbol = '', market = 'KR', currentPrice = 0 }: AlertPanelProps) {
+  const [activeTab, setActiveTab] = useState<TabType>('price');
 
   return (
     <div className="flex flex-col h-full">
       {/* Tabs */}
       <div className="flex border-b border-[var(--border-color)]">
         <button
+          onClick={() => setActiveTab('price')}
+          className={`flex-1 px-2 py-2 text-xs font-medium transition-colors ${
+            activeTab === 'price'
+              ? 'text-[var(--accent-blue)] border-b-2 border-[var(--accent-blue)] bg-[var(--bg-tertiary)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          가격 알림
+        </button>
+        <button
           onClick={() => setActiveTab('ai-conditions')}
-          className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${
+          className={`flex-1 px-2 py-2 text-xs font-medium transition-colors ${
             activeTab === 'ai-conditions'
               ? 'text-[var(--accent-blue)] border-b-2 border-[var(--accent-blue)] bg-[var(--bg-tertiary)]'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
           }`}
         >
-          AI 알림 조건
+          AI 알림
         </button>
         <button
           onClick={() => setActiveTab('telegram')}
-          className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${
+          className={`flex-1 px-2 py-2 text-xs font-medium transition-colors ${
             activeTab === 'telegram'
               ? 'text-[var(--accent-blue)] border-b-2 border-[var(--accent-blue)] bg-[var(--bg-tertiary)]'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -46,7 +66,370 @@ export function AlertPanel() {
       </div>
 
       {/* Tab Content */}
-      {activeTab === 'ai-conditions' ? <AIConditionsTab /> : <TelegramTab />}
+      {activeTab === 'price' && <PriceAlertsTab symbol={symbol} market={market} currentPrice={currentPrice} />}
+      {activeTab === 'ai-conditions' && <AIConditionsTab />}
+      {activeTab === 'telegram' && <TelegramTab />}
+    </div>
+  );
+}
+
+/**
+ * Price Alerts Tab
+ */
+function PriceAlertsTab({ symbol, market, currentPrice }: { symbol: string; market: string; currentPrice: number }) {
+  const [alerts, setAlerts] = useState<PriceAlert[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    loadAlerts();
+  }, [symbol]);
+
+  const loadAlerts = async () => {
+    setLoading(true);
+    try {
+      const response = await getPriceAlerts(symbol || undefined);
+      setAlerts(response.alerts);
+    } catch (err) {
+      console.error('Failed to load price alerts:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleQuickAlert = async (alertType: PriceAlertType, value: number) => {
+    if (!symbol || !currentPrice) {
+      setMessage({ type: 'error', text: '종목을 선택해주세요' });
+      return;
+    }
+
+    try {
+      await createPriceAlert({
+        symbol,
+        market,
+        alert_type: alertType,
+        threshold: value,
+        reference_price: currentPrice,
+        repeating: false,
+        cooldown_minutes: 60,
+        notification_channels: ['telegram', 'in_app'],
+      });
+      setMessage({ type: 'success', text: `${alertType === 'change_up' ? '+' : '-'}${value}% 알림 설정됨` });
+      loadAlerts();
+    } catch (err) {
+      setMessage({ type: 'error', text: '알림 생성 실패' });
+    }
+  };
+
+  const handleCreateAboveBelow = async (alertType: 'above' | 'below', price: number) => {
+    if (!symbol) {
+      setMessage({ type: 'error', text: '종목을 선택해주세요' });
+      return;
+    }
+
+    try {
+      await createPriceAlert({
+        symbol,
+        market,
+        alert_type: alertType,
+        threshold: price,
+        repeating: false,
+        cooldown_minutes: 60,
+        notification_channels: ['telegram', 'in_app'],
+      });
+      setMessage({ type: 'success', text: `${alertType === 'above' ? '목표가' : '손절가'} 알림 설정됨` });
+      loadAlerts();
+      setShowForm(false);
+    } catch (err) {
+      setMessage({ type: 'error', text: '알림 생성 실패' });
+    }
+  };
+
+  const handleToggle = async (alert: PriceAlert) => {
+    try {
+      await updatePriceAlert(alert.id, { enabled: !alert.enabled });
+      loadAlerts();
+    } catch (err) {
+      setMessage({ type: 'error', text: '업데이트 실패' });
+    }
+  };
+
+  const handleDelete = async (alertId: string) => {
+    if (!confirm('이 알림을 삭제하시겠습니까?')) return;
+
+    try {
+      await deletePriceAlert(alertId);
+      setAlerts(prev => prev.filter(a => a.id !== alertId));
+      setMessage({ type: 'success', text: '삭제됨' });
+    } catch (err) {
+      setMessage({ type: 'error', text: '삭제 실패' });
+    }
+  };
+
+  const formatAlertType = (type: PriceAlertType): string => {
+    const types: Record<PriceAlertType, string> = {
+      above: '이상',
+      below: '이하',
+      change_up: '상승',
+      change_down: '하락',
+    };
+    return types[type] || type;
+  };
+
+  const formatCondition = (alert: PriceAlert): string => {
+    if (alert.alert_type === 'above' || alert.alert_type === 'below') {
+      const priceStr = market === 'KR' ? `${alert.threshold.toLocaleString()}원` : `$${alert.threshold.toFixed(2)}`;
+      return `${priceStr} ${formatAlertType(alert.alert_type as PriceAlertType)}`;
+    } else {
+      return `${alert.threshold}% ${formatAlertType(alert.alert_type as PriceAlertType)}`;
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full text-[var(--text-secondary)] text-sm">
+        로딩중...
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-tertiary)]">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-lg font-bold">가격 알림</div>
+            <div className="text-xs text-[var(--text-secondary)]">
+              {symbol ? `${symbol} - ${currentPrice ? (market === 'KR' ? `${currentPrice.toLocaleString()}원` : `$${currentPrice.toFixed(2)}`) : '가격 로딩중'}` : '종목을 선택하세요'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Alert Buttons */}
+      <div className="px-4 py-3 border-b border-[var(--border-color)]">
+        <div className="text-xs text-[var(--text-secondary)] mb-2">빠른 알림 설정:</div>
+        <div className="flex gap-1 flex-wrap">
+          <button
+            onClick={() => handleQuickAlert('change_up', 1)}
+            className="px-2 py-1 text-xs bg-[var(--accent-green)] bg-opacity-20 text-[var(--accent-green)] rounded hover:bg-opacity-30"
+          >
+            +1%
+          </button>
+          <button
+            onClick={() => handleQuickAlert('change_up', 3)}
+            className="px-2 py-1 text-xs bg-[var(--accent-green)] bg-opacity-20 text-[var(--accent-green)] rounded hover:bg-opacity-30"
+          >
+            +3%
+          </button>
+          <button
+            onClick={() => handleQuickAlert('change_up', 5)}
+            className="px-2 py-1 text-xs bg-[var(--accent-green)] bg-opacity-20 text-[var(--accent-green)] rounded hover:bg-opacity-30"
+          >
+            +5%
+          </button>
+          <button
+            onClick={() => handleQuickAlert('change_up', 10)}
+            className="px-2 py-1 text-xs bg-[var(--accent-green)] bg-opacity-20 text-[var(--accent-green)] rounded hover:bg-opacity-30"
+          >
+            +10%
+          </button>
+        </div>
+        <div className="flex gap-1 flex-wrap mt-1">
+          <button
+            onClick={() => handleQuickAlert('change_down', 1)}
+            className="px-2 py-1 text-xs bg-[var(--accent-red)] bg-opacity-20 text-[var(--accent-red)] rounded hover:bg-opacity-30"
+          >
+            -1%
+          </button>
+          <button
+            onClick={() => handleQuickAlert('change_down', 3)}
+            className="px-2 py-1 text-xs bg-[var(--accent-red)] bg-opacity-20 text-[var(--accent-red)] rounded hover:bg-opacity-30"
+          >
+            -3%
+          </button>
+          <button
+            onClick={() => handleQuickAlert('change_down', 5)}
+            className="px-2 py-1 text-xs bg-[var(--accent-red)] bg-opacity-20 text-[var(--accent-red)] rounded hover:bg-opacity-30"
+          >
+            -5%
+          </button>
+          <button
+            onClick={() => handleQuickAlert('change_down', 10)}
+            className="px-2 py-1 text-xs bg-[var(--accent-red)] bg-opacity-20 text-[var(--accent-red)] rounded hover:bg-opacity-30"
+          >
+            -10%
+          </button>
+        </div>
+      </div>
+
+      {/* Add Custom Alert */}
+      {!showForm ? (
+        <div className="px-4 py-2">
+          <button
+            onClick={() => setShowForm(true)}
+            className="w-full py-2 text-sm font-medium bg-[var(--accent-blue)] text-white rounded hover:opacity-90"
+          >
+            + 지정가 알림 추가
+          </button>
+        </div>
+      ) : (
+        <PriceAlertForm
+          market={market}
+          currentPrice={currentPrice}
+          onSubmit={handleCreateAboveBelow}
+          onCancel={() => setShowForm(false)}
+        />
+      )}
+
+      {/* Message */}
+      {message && (
+        <div className={`mx-4 mt-2 p-2 rounded text-sm ${
+          message.type === 'success'
+            ? 'bg-[var(--accent-green)] bg-opacity-20 text-[var(--accent-green)]'
+            : 'bg-[var(--accent-red)] bg-opacity-20 text-[var(--accent-red)]'
+        }`}>
+          {message.text}
+        </div>
+      )}
+
+      {/* Alert List */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+        {alerts.length === 0 ? (
+          <div className="text-center text-[var(--text-secondary)] py-8">
+            <div className="text-4xl mb-2">🔔</div>
+            <div>가격 알림이 없습니다</div>
+            <div className="text-xs mt-1">위 버튼으로 빠르게 설정하세요</div>
+          </div>
+        ) : (
+          alerts.map(alert => (
+            <div
+              key={alert.id}
+              className={`p-3 rounded-lg border ${
+                alert.enabled
+                  ? 'border-[var(--accent-blue)] border-opacity-50 bg-[var(--bg-secondary)]'
+                  : 'border-[var(--border-color)] bg-[var(--bg-tertiary)] opacity-60'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className={`text-lg ${
+                    alert.alert_type.includes('up') || alert.alert_type === 'above' ? 'text-[var(--accent-green)]' : 'text-[var(--accent-red)]'
+                  }`}>
+                    {alert.alert_type.includes('up') || alert.alert_type === 'above' ? '📈' : '📉'}
+                  </span>
+                  <div>
+                    <div className="font-semibold text-sm">{alert.symbol}</div>
+                    <div className="text-xs text-[var(--text-secondary)]">
+                      {formatCondition(alert)}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleToggle(alert)}
+                    className={`relative w-10 h-5 rounded-full transition-colors ${
+                      alert.enabled ? 'bg-[var(--accent-green)]' : 'bg-[var(--bg-tertiary)]'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                        alert.enabled ? 'left-5' : 'left-0.5'
+                      }`}
+                    />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(alert.id)}
+                    className="text-[var(--accent-red)] hover:opacity-80 text-sm"
+                  >
+                    🗑️
+                  </button>
+                </div>
+              </div>
+              {alert.last_triggered && (
+                <div className="text-xs text-[var(--text-secondary)] mt-1">
+                  발동: {new Date(alert.last_triggered).toLocaleString()} ({alert.trigger_count}회)
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Price Alert Form
+ */
+function PriceAlertForm({
+  market,
+  currentPrice,
+  onSubmit,
+  onCancel,
+}: {
+  market: string;
+  currentPrice: number;
+  onSubmit: (type: 'above' | 'below', price: number) => void;
+  onCancel: () => void;
+}) {
+  const [alertType, setAlertType] = useState<'above' | 'below'>('above');
+  const [price, setPrice] = useState(currentPrice ? Math.round(currentPrice * 1.05) : 0);
+
+  return (
+    <div className="px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-tertiary)]">
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          <button
+            onClick={() => setAlertType('above')}
+            className={`flex-1 py-2 text-sm rounded ${
+              alertType === 'above'
+                ? 'bg-[var(--accent-green)] text-white'
+                : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)]'
+            }`}
+          >
+            🎯 목표가 도달
+          </button>
+          <button
+            onClick={() => setAlertType('below')}
+            className={`flex-1 py-2 text-sm rounded ${
+              alertType === 'below'
+                ? 'bg-[var(--accent-red)] text-white'
+                : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)]'
+            }`}
+          >
+            ⚠️ 손절가 이탈
+          </button>
+        </div>
+        <div>
+          <label className="block text-xs text-[var(--text-secondary)] mb-1">
+            알림 가격 ({market === 'KR' ? '원' : 'USD'})
+          </label>
+          <input
+            type="number"
+            value={price}
+            onChange={(e) => setPrice(Number(e.target.value))}
+            className="w-full px-3 py-2 text-sm bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded focus:outline-none focus:border-[var(--accent-blue)]"
+          />
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-2 text-sm font-medium border border-[var(--border-color)] rounded hover:bg-[var(--bg-secondary)]"
+          >
+            취소
+          </button>
+          <button
+            onClick={() => onSubmit(alertType, price)}
+            disabled={!price || price <= 0}
+            className="flex-1 py-2 text-sm font-semibold bg-[var(--accent-blue)] text-white rounded hover:opacity-90 disabled:opacity-50"
+          >
+            설정
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

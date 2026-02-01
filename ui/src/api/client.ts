@@ -37,6 +37,12 @@ import type {
   MarkReadRequest,
   MarkReadResponse,
   AlertHistoryResponse,
+  // Price Alert types
+  PriceAlert,
+  CreatePriceAlertRequest,
+  UpdatePriceAlertRequest,
+  PriceAlertListResponse,
+  CheckPriceResponse,
 } from './types';
 
 const BASE_URL = 'http://localhost:8000';
@@ -652,6 +658,111 @@ export async function getAlertHistory(
   if (symbol) params.set('symbol', symbol);
 
   const response = await fetch(`${BASE_URL}/api/alerts/history?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+// --- Price Alert Functions ---
+
+/**
+ * Create a new price alert
+ */
+export async function createPriceAlert(
+  request: CreatePriceAlertRequest,
+  userId: string = 'default'
+): Promise<PriceAlert> {
+  const params = new URLSearchParams({ user_id: userId });
+  const response = await fetch(`${BASE_URL}/api/alerts/price?${params}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get price alerts for a user/symbol
+ */
+export async function getPriceAlerts(
+  symbol?: string,
+  userId: string = 'default'
+): Promise<PriceAlertListResponse> {
+  const params = new URLSearchParams({ user_id: userId });
+  if (symbol) params.set('symbol', symbol);
+
+  const response = await fetch(`${BASE_URL}/api/alerts/price?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Update a price alert
+ */
+export async function updatePriceAlert(
+  alertId: string,
+  request: UpdatePriceAlertRequest
+): Promise<PriceAlert> {
+  const response = await fetch(`${BASE_URL}/api/alerts/price/${alertId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Delete a price alert
+ */
+export async function deletePriceAlert(
+  alertId: string
+): Promise<{ success: boolean; deleted_id: string }> {
+  const response = await fetch(`${BASE_URL}/api/alerts/price/${alertId}`, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Check price against alerts (manual trigger)
+ */
+export async function checkPriceAlerts(
+  symbol: string,
+  price: number,
+  volume?: number
+): Promise<CheckPriceResponse> {
+  const response = await fetch(`${BASE_URL}/api/alerts/price/check`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, price, volume }),
+  });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));

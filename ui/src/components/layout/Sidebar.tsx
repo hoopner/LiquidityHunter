@@ -72,7 +72,7 @@ export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }:
       case 'backtest':
         return <BacktestPanel symbol={selectedStock.symbol} market={selectedStock.market} />;
       case 'alerts':
-        return <AlertPanel />;
+        return <AlertPanel symbol={selectedStock.symbol} market={selectedStock.market} />;
     }
   };
 

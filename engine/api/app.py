@@ -3170,3 +3170,190 @@ def get_alert_history(
         ],
         total=len(history),
     )
+
+
+# --- Price Alert endpoints ---
+
+from engine.alerts import PriceAlert, PriceAlertType, get_price_monitor
+from engine.api.schemas import (
+    PriceAlertSchema,
+    CreatePriceAlertRequest,
+    UpdatePriceAlertRequest,
+    PriceAlertListResponse,
+    CheckPriceRequest,
+)
+
+
+@app.post("/api/alerts/price", response_model=PriceAlertSchema)
+def create_price_alert(
+    request: CreatePriceAlertRequest,
+    user_id: str = Query("default", description="User ID"),
+) -> PriceAlertSchema:
+    """Create a new price alert."""
+    monitor = get_price_monitor()
+
+    # Validate alert type
+    try:
+        PriceAlertType(request.alert_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid alert_type. Must be one of: above, below, change_up, change_down"
+        )
+
+    alert = PriceAlert(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        symbol=request.symbol,
+        market=request.market,
+        alert_type=request.alert_type,
+        threshold=request.threshold,
+        reference_price=request.reference_price,
+        repeating=request.repeating,
+        cooldown_minutes=request.cooldown_minutes,
+        notification_channels=request.notification_channels,
+    )
+
+    created = monitor.add_alert(alert)
+
+    return PriceAlertSchema(
+        id=created.id,
+        user_id=created.user_id,
+        symbol=created.symbol,
+        market=created.market,
+        alert_type=created.alert_type,
+        threshold=created.threshold,
+        reference_price=created.reference_price,
+        enabled=created.enabled,
+        repeating=created.repeating,
+        cooldown_minutes=created.cooldown_minutes,
+        notification_channels=created.notification_channels,
+        created_at=created.created_at,
+        last_triggered=created.last_triggered,
+        trigger_count=created.trigger_count,
+    )
+
+
+@app.get("/api/alerts/price", response_model=PriceAlertListResponse)
+def get_price_alerts(
+    symbol: Optional[str] = Query(None, description="Filter by symbol"),
+    user_id: str = Query("default", description="User ID"),
+) -> PriceAlertListResponse:
+    """Get price alerts for a user/symbol."""
+    monitor = get_price_monitor()
+
+    if symbol:
+        alerts = monitor.get_alerts_for_symbol(symbol)
+        # Filter by user
+        alerts = [a for a in alerts if a.user_id == user_id]
+    else:
+        alerts = monitor.get_alerts_for_user(user_id)
+
+    return PriceAlertListResponse(
+        alerts=[
+            PriceAlertSchema(
+                id=a.id,
+                user_id=a.user_id,
+                symbol=a.symbol,
+                market=a.market,
+                alert_type=a.alert_type,
+                threshold=a.threshold,
+                reference_price=a.reference_price,
+                enabled=a.enabled,
+                repeating=a.repeating,
+                cooldown_minutes=a.cooldown_minutes,
+                notification_channels=a.notification_channels,
+                created_at=a.created_at,
+                last_triggered=a.last_triggered,
+                trigger_count=a.trigger_count,
+            )
+            for a in alerts
+        ],
+        total=len(alerts),
+    )
+
+
+@app.put("/api/alerts/price/{alert_id}", response_model=PriceAlertSchema)
+def update_price_alert(
+    alert_id: str,
+    request: UpdatePriceAlertRequest,
+) -> PriceAlertSchema:
+    """Update a price alert."""
+    monitor = get_price_monitor()
+
+    alert = monitor.get_alert(alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    # Update fields
+    if request.enabled is not None:
+        alert.enabled = request.enabled
+    if request.threshold is not None:
+        alert.threshold = request.threshold
+    if request.repeating is not None:
+        alert.repeating = request.repeating
+    if request.cooldown_minutes is not None:
+        alert.cooldown_minutes = request.cooldown_minutes
+    if request.notification_channels is not None:
+        alert.notification_channels = request.notification_channels
+
+    updated = monitor.update_alert(alert)
+
+    return PriceAlertSchema(
+        id=updated.id,
+        user_id=updated.user_id,
+        symbol=updated.symbol,
+        market=updated.market,
+        alert_type=updated.alert_type,
+        threshold=updated.threshold,
+        reference_price=updated.reference_price,
+        enabled=updated.enabled,
+        repeating=updated.repeating,
+        cooldown_minutes=updated.cooldown_minutes,
+        notification_channels=updated.notification_channels,
+        created_at=updated.created_at,
+        last_triggered=updated.last_triggered,
+        trigger_count=updated.trigger_count,
+    )
+
+
+@app.delete("/api/alerts/price/{alert_id}")
+def delete_price_alert(alert_id: str) -> dict:
+    """Delete a price alert."""
+    monitor = get_price_monitor()
+
+    success = monitor.delete_alert(alert_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    return {"success": True, "deleted_id": alert_id}
+
+
+@app.post("/api/alerts/price/check")
+async def check_price_alerts(request: CheckPriceRequest) -> dict:
+    """
+    Check price against all alerts for a symbol.
+    Returns list of triggered alerts.
+    """
+    monitor = get_price_monitor()
+
+    triggered = await monitor.check_price(
+        symbol=request.symbol,
+        price=request.price,
+        volume=request.volume,
+    )
+
+    return {
+        "symbol": request.symbol,
+        "price": request.price,
+        "triggered_count": len(triggered),
+        "triggered_alerts": [
+            {
+                "id": a.id,
+                "alert_type": a.alert_type,
+                "threshold": a.threshold,
+                "trigger_count": a.trigger_count,
+            }
+            for a in triggered
+        ],
+    }

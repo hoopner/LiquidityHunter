@@ -641,3 +641,60 @@ export interface AlertHistoryResponse {
   history: AlertHistoryEntry[];
   total: number;
 }
+
+// Price Alert types
+
+export type PriceAlertType = 'above' | 'below' | 'change_up' | 'change_down';
+
+export interface PriceAlert {
+  id: string;
+  user_id: string;
+  symbol: string;
+  market: string;
+  alert_type: PriceAlertType;
+  threshold: number;
+  reference_price: number | null;
+  enabled: boolean;
+  repeating: boolean;
+  cooldown_minutes: number;
+  notification_channels: string[];
+  created_at: string;
+  last_triggered: string | null;
+  trigger_count: number;
+}
+
+export interface CreatePriceAlertRequest {
+  symbol: string;
+  market: string;
+  alert_type: PriceAlertType;
+  threshold: number;
+  reference_price?: number;
+  repeating?: boolean;
+  cooldown_minutes?: number;
+  notification_channels?: string[];
+}
+
+export interface UpdatePriceAlertRequest {
+  enabled?: boolean;
+  threshold?: number;
+  repeating?: boolean;
+  cooldown_minutes?: number;
+  notification_channels?: string[];
+}
+
+export interface PriceAlertListResponse {
+  alerts: PriceAlert[];
+  total: number;
+}
+
+export interface CheckPriceResponse {
+  symbol: string;
+  price: number;
+  triggered_count: number;
+  triggered_alerts: {
+    id: string;
+    alert_type: string;
+    threshold: number;
+    trigger_count: number;
+  }[];
+}
