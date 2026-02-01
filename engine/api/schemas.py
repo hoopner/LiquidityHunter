@@ -872,6 +872,12 @@ class ScanMarketRequest(BaseModel):
     force_refresh: bool = False
 
 
+class ScanAllMarketsRequest(BaseModel):
+    """Request to scan all markets."""
+    signal_types: Optional[List[str]] = None  # Default: ["golden_cross"]
+    force_refresh: bool = False
+
+
 class ScanMarketResponse(BaseModel):
     """Response from market scan."""
     market: str
