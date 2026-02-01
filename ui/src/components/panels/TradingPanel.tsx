@@ -10,6 +10,7 @@ interface TradingConfig {
   minConfluence: number;
   entryMode: 'MARKET' | 'LIMIT';
   limitPrice: number;
+  useRealAccount: boolean;
 }
 
 interface Position {
@@ -60,6 +61,14 @@ interface TradingStatus {
   };
 }
 
+interface AccountInfo {
+  connected: boolean;
+  account_number_masked: string | null;
+  account_type: string | null;
+  account_type_name: string | null;
+  mode: 'mock' | 'real';
+}
+
 interface TradingPanelProps {
   market?: string;
 }
@@ -76,7 +85,8 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
     positionSize: 10,
     minConfluence: 80,
     entryMode: 'MARKET',
-    limitPrice: 50000
+    limitPrice: 50000,
+    useRealAccount: false
   });
 
   const [status, setStatus] = useState<TradingStatus | null>(null);
@@ -85,6 +95,30 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
   const [newSymbol, setNewSymbol] = useState('');
   const [customInterval, setCustomInterval] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [accountInfo, setAccountInfo] = useState<AccountInfo>({
+    connected: false,
+    account_number_masked: null,
+    account_type: null,
+    account_type_name: null,
+    mode: 'mock'
+  });
+
+  // Fetch account info on mount
+  useEffect(() => {
+    const fetchAccountInfo = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/trading/account-info');
+        if (response.ok) {
+          const data = await response.json();
+          setAccountInfo(data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch account info:', err);
+      }
+    };
+
+    fetchAccountInfo();
+  }, []);
 
   // Fetch status
   const fetchStatus = useCallback(async () => {
@@ -145,6 +179,29 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
   }, [fetchPositions]);
 
   const handleStart = async () => {
+    // Safety check for real account
+    if (config.useRealAccount) {
+      const confirmed = window.confirm(
+        '⚠️ 실계좌 모드로 시작합니다!\n\n' +
+        '실제 돈이 사용됩니다.\n' +
+        '정말 진행하시겠습니까?'
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      // Additional confirmation
+      const doubleConfirm = window.prompt(
+        '실계좌 확인을 위해 "실계좌"를 입력하세요:'
+      );
+
+      if (doubleConfirm !== '실계좌') {
+        alert('취소되었습니다.');
+        return;
+      }
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -162,7 +219,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
           min_confluence: config.minConfluence,
           entry_mode: config.entryMode,
           limit_price: config.limitPrice,
-          use_real: false  // Always paper trading for safety
+          use_real: config.useRealAccount
         })
       });
 
@@ -251,6 +308,109 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
           {isRunning ? '● 실행 중' : '○ 중지'}
         </div>
       </div>
+
+      {/* Account Info */}
+      <div className="bg-[#2a2a2a] rounded-md p-3 mb-4 border border-gray-700">
+        {accountInfo.connected ? (
+          <>
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">연결된 계좌</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                accountInfo.mode === 'mock'
+                  ? 'bg-green-600 text-white'
+                  : 'bg-red-600 text-white'
+              }`}>
+                {accountInfo.mode === 'mock' ? '모의투자' : '실계좌'}
+              </span>
+            </div>
+            <div className="text-lg font-bold text-blue-400 font-mono tracking-wider mb-1">
+              {accountInfo.account_number_masked}
+            </div>
+            <div className="text-xs text-gray-400 mb-2">
+              📊 {accountInfo.account_type_name} (KR)
+            </div>
+            <div className="flex items-center gap-1.5 text-[11px] text-green-400 pt-2 border-t border-gray-700">
+              <span>✅</span>
+              <span>KIS API 연결됨</span>
+            </div>
+          </>
+        ) : (
+          <div className="flex flex-col items-center gap-2 py-2 text-center">
+            <span className="text-2xl">⚠️</span>
+            <span className="text-sm text-gray-400">계좌 정보 없음</span>
+            <span className="text-[10px] text-gray-600">.env에 KIS_ACCOUNT_NUMBER 설정 필요</span>
+          </div>
+        )}
+      </div>
+
+      {/* Account Mode Selector */}
+      {!isRunning && (
+        <div className="bg-[#2a2000] border-2 border-yellow-600 rounded-lg p-4 mb-4">
+          <label className="block text-sm text-yellow-500 font-semibold mb-3">거래 모드</label>
+
+          <div className="space-y-2">
+            {/* Mock (Paper) Trading */}
+            <label
+              className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer border-2 transition-all relative ${
+                !config.useRealAccount
+                  ? 'bg-blue-900/30 border-blue-500'
+                  : 'bg-[#3a3a3a] border-gray-600 hover:border-blue-400'
+              }`}
+            >
+              <input
+                type="radio"
+                name="accountMode"
+                checked={!config.useRealAccount}
+                onChange={() => setConfig(prev => ({ ...prev, useRealAccount: false }))}
+                className="w-5 h-5 mt-0.5 accent-blue-500"
+              />
+              <div className="flex-1">
+                <div className="text-sm font-semibold text-white">✓ 모의투자 (Paper)</div>
+                <div className="text-[11px] text-gray-400 mt-1">가짜 돈으로 안전하게 테스트</div>
+              </div>
+              <span className="px-2 py-1 rounded-full text-[10px] font-bold bg-green-600 text-white">
+                안전
+              </span>
+            </label>
+
+            {/* Real Account Trading */}
+            <label
+              className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer border-2 transition-all relative ${
+                config.useRealAccount
+                  ? 'bg-red-900/30 border-red-500'
+                  : 'bg-[#3a3a3a] border-red-900 hover:border-red-600'
+              } ${!accountInfo.connected ? 'opacity-60 cursor-not-allowed' : ''}`}
+            >
+              <input
+                type="radio"
+                name="accountMode"
+                checked={config.useRealAccount}
+                onChange={() => setConfig(prev => ({ ...prev, useRealAccount: true }))}
+                disabled={!accountInfo.connected}
+                className="w-5 h-5 mt-0.5 accent-red-500"
+              />
+              <div className="flex-1">
+                <div className="text-sm font-semibold text-white">⚠️ 실계좌 (Real)</div>
+                <div className="text-[11px] text-gray-400 mt-1">
+                  {accountInfo.connected ? '실제 돈 사용 - 신중하게!' : '계좌 연결 필요'}
+                </div>
+              </div>
+              <span className="px-2 py-1 rounded-full text-[10px] font-bold bg-red-600 text-white">
+                위험
+              </span>
+            </label>
+          </div>
+
+          {/* Real Account Warning */}
+          {config.useRealAccount && accountInfo.connected && (
+            <div className="mt-3 p-3 bg-red-900/50 border-2 border-red-500 rounded-lg">
+              <strong className="block text-red-400 text-sm mb-2">⚠️ 실계좌 확인</strong>
+              <p className="text-[11px] text-red-300">계좌: {accountInfo.account_number_masked}</p>
+              <p className="text-[11px] text-red-300 mt-1">실제 돈이 사용됩니다. 신중하게!</p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Error */}
       {error && (
@@ -576,10 +736,16 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
         </div>
       )}
 
-      {/* Warning */}
-      <div className="bg-yellow-900/30 border border-yellow-600 rounded p-2 text-center text-xs text-yellow-500">
-        ⚠️ 모의투자 모드 (실제 거래 아님)
-      </div>
+      {/* Mode Indicator */}
+      {config.useRealAccount ? (
+        <div className="bg-red-900/50 border-2 border-red-500 rounded p-2 text-center text-xs text-red-400 font-semibold">
+          ⚠️ 실계좌 모드 - 실제 돈이 사용됩니다!
+        </div>
+      ) : (
+        <div className="bg-green-900/30 border border-green-600 rounded p-2 text-center text-xs text-green-500">
+          ✓ 모의투자 모드 (실제 거래 아님)
+        </div>
+      )}
     </div>
   );
 };

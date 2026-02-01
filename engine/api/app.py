@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import List, Optional, Dict, Set
 
@@ -4135,4 +4136,40 @@ async def remove_trading_symbol(symbol: str = Query(...)):
         "status": "removed",
         "symbol": symbol,
         "monitored_symbols": _trading_bot.strategy.get_symbols()
+    }
+
+
+@app.get("/api/trading/account-info")
+async def get_account_info():
+    """
+    Get account information from environment
+    Returns masked account number for security
+    """
+    # Check both possible env var names
+    account_number = os.getenv('KIS_ACCOUNT_NO', '') or os.getenv('KIS_ACCOUNT_NUMBER', '')
+    account_type = os.getenv('KIS_ACCOUNT_TYPE', '01')
+    use_mock = os.getenv('KIS_USE_MOCK', 'true').lower() == 'true'
+
+    if not account_number:
+        return {
+            'connected': False,
+            'account_number_masked': None,
+            'account_type': None,
+            'account_type_name': None,
+            'mode': 'mock'
+        }
+
+    # Mask account number for security
+    # Example: 43912468-01 -> ****8-01
+    if len(account_number) >= 8:
+        masked = '*' * (len(account_number) - 4) + account_number[-4:]
+    else:
+        masked = account_number
+
+    return {
+        'connected': True,
+        'account_number_masked': masked,
+        'account_type': account_type,
+        'account_type_name': '종합계좌' if account_type == '01' else '위탁계좌',
+        'mode': 'mock' if use_mock else 'real'
     }
