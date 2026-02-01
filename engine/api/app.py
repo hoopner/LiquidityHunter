@@ -142,6 +142,180 @@ def calculate_stochastic(high: np.ndarray, low: np.ndarray, close: np.ndarray,
     return k, d
 
 
+def adjust_prices_to_actual(data: OHLCVData, current_actual_price: float, symbol: str) -> OHLCVData:
+    """
+    Convert adjusted historical prices to actual prices.
+
+    yfinance and database store ADJUSTED prices (accounting for splits/dividends),
+    but KIS API provides ACTUAL trading prices. This function aligns historical
+    data with current actual prices.
+
+    Args:
+        data: OHLCVData with adjusted prices
+        current_actual_price: Current actual trading price from KIS API
+        symbol: Symbol name for logging
+
+    Returns:
+        OHLCVData with prices adjusted to match actual trading prices
+    """
+    if data is None or len(data.close) == 0:
+        return data
+
+    # Get the most recent adjusted close price
+    latest_adjusted = float(data.close[-1])
+
+    if latest_adjusted <= 0:
+        return data
+
+    # Calculate adjustment ratio
+    ratio = current_actual_price / latest_adjusted
+
+    # Only apply adjustment if significant difference (> 5%)
+    if 0.95 <= ratio <= 1.05:
+        print(f"[PriceAdjust] {symbol}: No adjustment needed (ratio={ratio:.4f})")
+        return data
+
+    print(f"[PriceAdjust] {symbol}: Adjusting prices by {ratio:.4f}x")
+    print(f"[PriceAdjust] Before: open[0]={data.open[0]:.2f}, close[-1]={data.close[-1]:.2f}")
+
+    # Apply ratio using in-place multiplication to ensure arrays are modified
+    # Convert to float64 first to ensure proper multiplication
+    data.open = np.array(data.open, dtype=np.float64) * ratio
+    data.high = np.array(data.high, dtype=np.float64) * ratio
+    data.low = np.array(data.low, dtype=np.float64) * ratio
+    data.close = np.array(data.close, dtype=np.float64) * ratio
+
+    print(f"[PriceAdjust] After: open[0]={data.open[0]:.2f}, close[-1]={data.close[-1]:.2f}")
+
+    return data
+
+
+def get_current_actual_price(symbol: str, market: str) -> Optional[float]:
+    """
+    Get current actual trading price from KIS API.
+
+    Returns None if KIS is not configured or fails.
+    """
+    try:
+        client = get_kis_client()
+        if not client.is_configured:
+            return None
+
+        # Get real-time price from KIS using get_current_price method
+        price_data = client.get_current_price(symbol, market)
+        if price_data:
+            # Try different field names depending on response format
+            for field in ["current_price", "stck_prpr", "close", "price"]:
+                if field in price_data:
+                    return float(price_data[field])
+    except Exception as e:
+        print(f"[PriceAdjust] Failed to get current price for {symbol}: {e}")
+
+    return None
+
+
+def load_ohlcv_unified(
+    symbol: str,
+    market: str,
+    tf: str,
+    refresh: bool = False,
+    limit: int = 0
+) -> tuple[OHLCVData, str]:
+    """
+    Unified data loading function used by both /ohlcv and /analyze endpoints.
+
+    Priority: PostgreSQL → KIS API → yfinance
+
+    IMPORTANT: PostgreSQL and yfinance use ADJUSTED prices, while KIS uses ACTUAL prices.
+    When using PostgreSQL/yfinance data, we adjust prices to match current actual prices.
+
+    Returns:
+        tuple: (OHLCVData, source_used)
+    """
+    market = market.upper()
+    data = None
+    source_used = "yfinance"
+    needs_price_adjustment = False
+
+    # Minimum bars needed for EMA200 to have valid data
+    MIN_BARS_FOR_EMA200 = 250
+
+    # Try PostgreSQL FIRST for daily/weekly/monthly timeframes (fastest, local data)
+    is_daily_tf = tf.upper() in ("1D", "1W", "1M", "1MO")
+    if is_daily_tf and not refresh:
+        try:
+            from engine.data.database import get_ohlcv as db_get_ohlcv, check_connection
+            if check_connection():
+                print(f"[OHLCV] Trying PostgreSQL for {symbol} {market} {tf}")
+                df = db_get_ohlcv(symbol.upper(), market)
+                if not df.empty and len(df) >= MIN_BARS_FOR_EMA200:
+                    # Convert DataFrame to OHLCVData format
+                    timestamps = [ts.strftime("%Y-%m-%d") for ts in df.index]
+                    data = OHLCVData(
+                        timestamps=timestamps,
+                        open=df["open"].values,
+                        high=df["high"].values,
+                        low=df["low"].values,
+                        close=df["close"].values,
+                        volume=df["volume"].values,
+                    )
+                    source_used = "postgresql"
+                    needs_price_adjustment = True  # PostgreSQL has adjusted prices
+                    print(f"[OHLCV] PostgreSQL returned {len(df)} bars for {symbol}")
+                else:
+                    print(f"[OHLCV] PostgreSQL data insufficient, trying other sources")
+        except Exception as e:
+            print(f"[OHLCV] PostgreSQL error: {e}, trying other sources")
+
+    # Try KIS as SECONDARY source if configured (for real-time or intraday)
+    if data is None:
+        try:
+            client = get_kis_client()
+            if client.is_configured:
+                kis_data = client.get_ohlcv(symbol, market, tf, count=limit if limit > 0 else 500)
+                kis_bar_count = kis_data.get("count", 0) if kis_data else 0
+                print(f"[OHLCV] KIS returned {kis_bar_count} bars for {symbol} {tf}")
+
+                if kis_data and kis_bar_count > 0:
+                    # Check if we have enough data for EMA200
+                    if kis_bar_count >= MIN_BARS_FOR_EMA200:
+                        # Convert KIS response to OHLCVData format
+                        data = OHLCVData(
+                            timestamps=kis_data["timestamps"],
+                            open=np.array(kis_data["open"]),
+                            high=np.array(kis_data["high"]),
+                            low=np.array(kis_data["low"]),
+                            close=np.array(kis_data["close"]),
+                            volume=np.array(kis_data["volume"]),
+                        )
+                        source_used = "kis"
+                        needs_price_adjustment = False  # KIS uses actual prices
+                    else:
+                        print(f"[OHLCV] KIS data insufficient ({kis_bar_count} < {MIN_BARS_FOR_EMA200}), falling back to yfinance")
+        except KISAPIError as e:
+            print(f"KIS API error, falling back to yfinance: {e}")
+        except Exception as e:
+            print(f"KIS error, falling back to yfinance: {e}")
+
+    # Fall back to yfinance if other sources failed or returned insufficient data
+    if data is None:
+        print(f"[OHLCV] Loading from yfinance for {symbol} {market} {tf}")
+        data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=refresh)
+        source_used = "yfinance"
+        needs_price_adjustment = True  # yfinance uses adjusted prices
+        print(f"[OHLCV] yfinance returned {len(data.close)} bars")
+
+    # CRITICAL: Adjust historical prices to match actual trading prices
+    if needs_price_adjustment and data is not None:
+        current_price = get_current_actual_price(symbol, market)
+        if current_price is not None:
+            data = adjust_prices_to_actual(data, current_price, symbol)
+        else:
+            print(f"[PriceAdjust] {symbol}: Could not get current price, using adjusted prices")
+
+    return data, source_used
+
+
 app = FastAPI(
     title="LiquidityHunter",
     description="Phase 2: Order Block Detection API",
@@ -419,10 +593,11 @@ def analyze(
     Returns the current valid order block (if any) and validation details.
     Set filter_weak=true to exclude OBs with weak volume (< 0.8x avg volume).
     """
-    # Use same data loading and limiting as OHLCV endpoint
+    # Use SAME unified data loading as OHLCV endpoint (PostgreSQL → KIS → yfinance)
     market = market.upper() if market else "US"
     try:
-        data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=False)
+        data, source = load_ohlcv_unified(symbol, market, tf, refresh=False)
+        print(f"[Analyze] Using {source} data for {symbol} {market} {tf}")
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -721,8 +896,9 @@ def get_ohlcv(
     Supports all timeframes: 1m, 5m, 15m, 1h, 1D, 1W, 1M
 
     Data source selection (automatic):
-    - KIS API: Used as PRIMARY if configured (real-time data for KR and US)
-    - yfinance: FALLBACK if KIS not configured or fails (delayed data)
+    - PostgreSQL: Used FIRST for daily data (fastest, local data)
+    - KIS API: Used as SECONDARY if configured (real-time data for KR and US)
+    - yfinance: FALLBACK if others not available or fail (delayed data)
 
     Returns bars array with dates and indicator values.
     The 'source' field in response indicates which data source was used.
@@ -731,77 +907,11 @@ def get_ohlcv(
     if market not in ("KR", "US"):
         raise HTTPException(status_code=400, detail="Market must be KR or US")
 
-    data = None
-    source_used = "yfinance"  # Track which source was actually used
-
-    # Minimum bars needed for EMA200 to have valid data (200 for EMA + 50 buffer)
-    MIN_BARS_FOR_EMA200 = 250
-
-    # Try PostgreSQL FIRST for daily/weekly/monthly timeframes (fastest, local data)
-    is_daily_tf = tf.upper() in ("1D", "1W", "1M", "1MO")
-    if is_daily_tf and not refresh:
-        try:
-            from engine.data.database import get_ohlcv as db_get_ohlcv, check_connection
-            if check_connection():
-                print(f"[OHLCV] Trying PostgreSQL for {symbol} {market} {tf}")
-                df = db_get_ohlcv(symbol.upper(), market)
-                if not df.empty and len(df) >= MIN_BARS_FOR_EMA200:
-                    # Convert DataFrame to OHLCVData format
-                    timestamps = [ts.strftime("%Y-%m-%d") for ts in df.index]
-                    data = OHLCVData(
-                        timestamps=timestamps,
-                        open=df["open"].values,
-                        high=df["high"].values,
-                        low=df["low"].values,
-                        close=df["close"].values,
-                        volume=df["volume"].values,
-                    )
-                    source_used = "postgresql"
-                    print(f"[OHLCV] PostgreSQL returned {len(df)} bars for {symbol}")
-                else:
-                    print(f"[OHLCV] PostgreSQL data insufficient, trying other sources")
-        except Exception as e:
-            print(f"[OHLCV] PostgreSQL error: {e}, trying other sources")
-
-    # Try KIS as SECONDARY source if configured (for real-time or intraday)
-    if data is None:
-        try:
-            client = get_kis_client()
-            if client.is_configured:
-                kis_data = client.get_ohlcv(symbol, market, tf, count=limit if limit > 0 else 500)
-                kis_bar_count = kis_data.get("count", 0) if kis_data else 0
-                print(f"[OHLCV] KIS returned {kis_bar_count} bars for {symbol} {tf}")
-
-                if kis_data and kis_bar_count > 0:
-                    # Check if we have enough data for EMA200
-                    if kis_bar_count >= MIN_BARS_FOR_EMA200:
-                        # Convert KIS response to OHLCVData format
-                        data = OHLCVData(
-                            timestamps=kis_data["timestamps"],
-                            open=np.array(kis_data["open"]),
-                            high=np.array(kis_data["high"]),
-                            low=np.array(kis_data["low"]),
-                            close=np.array(kis_data["close"]),
-                            volume=np.array(kis_data["volume"]),
-                        )
-                        source_used = "kis"
-                    else:
-                        print(f"[OHLCV] KIS data insufficient ({kis_bar_count} < {MIN_BARS_FOR_EMA200}), falling back to yfinance")
-        except KISAPIError as e:
-            # Fall back to yfinance on KIS error
-            print(f"KIS API error, falling back to yfinance: {e}")
-        except Exception as e:
-            print(f"KIS error, falling back to yfinance: {e}")
-
-    # Fall back to yfinance if KIS not configured, failed, or returned insufficient data
-    if data is None:
-        try:
-            print(f"[OHLCV] Loading from yfinance for {symbol} {market} {tf}")
-            data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=refresh)
-            source_used = "yfinance"
-            print(f"[OHLCV] yfinance returned {len(data.close)} bars")
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+    # Use unified data loading function (same as /analyze endpoint)
+    try:
+        data, source_used = load_ohlcv_unified(symbol, market, tf, refresh=refresh, limit=limit)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
     # Apply default limits based on timeframe to prevent browser crashes
     default_limits = {
