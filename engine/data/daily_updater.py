@@ -104,8 +104,13 @@ class DailyUpdater:
             latest = hist.iloc[-1]
             latest_date = hist.index[-1]
 
+            # Normalize timestamp to midnight to prevent duplicates
+            normalized_date = latest_date.to_pydatetime().replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+            )
+
             return {
-                'timestamp': latest_date.to_pydatetime().replace(tzinfo=None),
+                'timestamp': normalized_date,
                 'symbol': symbol,
                 'market': market,
                 'open': float(latest['Open']),
