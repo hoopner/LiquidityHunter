@@ -236,8 +236,8 @@ class FullMarketScanner:
             signal_type = None
             days_since_cross = 0
 
-            # Check for recent golden cross (within last 5 days)
-            for i in range(1, min(6, len(df))):
+            # Check for recent golden cross (within last 20 days)
+            for i in range(1, min(21, len(df))):
                 if i >= len(df):
                     break
 

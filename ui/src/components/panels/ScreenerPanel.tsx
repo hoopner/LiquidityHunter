@@ -195,7 +195,7 @@ function SMAScreenerTab({
   selectedSymbol: string;
 }) {
   const [market, setMarket] = useState('US');
-  const [signalType, setSignalType] = useState<ScanSignalType>('golden_cross');
+  const [signalType, setSignalType] = useState<string>('bullish_all');
   const [isScanning, setIsScanning] = useState(false);
   const [results, setResults] = useState<ScanResult[] | null>(null);
   const [scanInfo, setScanInfo] = useState<{
@@ -207,12 +207,24 @@ function SMAScreenerTab({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Map signal type selection to actual API signal types
+  const getSignalTypes = (type: string): ScanSignalType[] => {
+    switch (type) {
+      case 'bullish_all':
+        return ['golden_cross', 'bullish_alignment'];
+      case 'bearish_all':
+        return ['death_cross', 'bearish_alignment'];
+      default:
+        return [type as ScanSignalType];
+    }
+  };
+
   const handleScan = async (forceRefresh: boolean = false) => {
     setIsScanning(true);
     setError(null);
 
     try {
-      const response = await scanMarket(market, [signalType], forceRefresh);
+      const response = await scanMarket(market, getSignalTypes(signalType), forceRefresh);
       setResults(response.results);
       setScanInfo({
         symbolsScanned: response.symbols_scanned,
@@ -234,7 +246,9 @@ function SMAScreenerTab({
     onStockSelect(item.symbol, item.market);
   };
 
-  const signalTypeLabels: Record<ScanSignalType, { label: string; labelKo: string; color: string }> = {
+  const signalTypeLabels: Record<string, { label: string; labelKo: string; color: string }> = {
+    bullish_all: { label: 'Bullish (All)', labelKo: '상승 전체', color: 'var(--accent-green)' },
+    bearish_all: { label: 'Bearish (All)', labelKo: '하락 전체', color: 'var(--accent-red)' },
     golden_cross: { label: 'Golden Cross', labelKo: '골든 크로스', color: 'var(--accent-green)' },
     death_cross: { label: 'Death Cross', labelKo: '데스 크로스', color: 'var(--accent-red)' },
     bullish_alignment: { label: 'Bullish', labelKo: '상승 정렬', color: 'var(--accent-green)' },
@@ -262,13 +276,15 @@ function SMAScreenerTab({
           </select>
           <select
             value={signalType}
-            onChange={(e) => setSignalType(e.target.value as ScanSignalType)}
+            onChange={(e) => setSignalType(e.target.value)}
             className="flex-1 bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded px-2 py-1 text-sm"
           >
-            <option value="golden_cross">Golden Cross</option>
-            <option value="death_cross">Death Cross</option>
-            <option value="bullish_alignment">Bullish Trend</option>
-            <option value="bearish_alignment">Bearish Trend</option>
+            <option value="bullish_all">Bullish (All)</option>
+            <option value="bearish_all">Bearish (All)</option>
+            <option value="golden_cross">Golden Cross Only</option>
+            <option value="death_cross">Death Cross Only</option>
+            <option value="bullish_alignment">Bullish Trend Only</option>
+            <option value="bearish_alignment">Bearish Trend Only</option>
           </select>
         </div>
         <div className="flex gap-2">
