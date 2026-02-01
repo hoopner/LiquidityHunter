@@ -3924,3 +3924,215 @@ def get_sma_data(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# TRADING BOT ENDPOINTS (Phase 6)
+# ============================================================
+
+from pydantic import BaseModel
+from typing import List as PyList
+
+# Global trading bot instance
+_trading_bot = None
+_trading_task = None
+
+
+class TradingStartRequest(BaseModel):
+    """Request to start trading bot"""
+    interval_minutes: int = 5
+    symbols: PyList[str] = ["005930", "000660"]
+    market: str = "KR"
+    stop_loss: float = 2.0
+    take_profit: float = 5.0
+    position_size: int = 10
+    min_confluence: int = 80
+    entry_mode: str = "MARKET"  # MARKET or LIMIT
+    limit_price: float = 0  # Target price for LIMIT mode
+    use_real: bool = False  # SAFETY: Default to paper trading
+
+
+@app.post("/api/trading/start")
+async def start_trading(request: TradingStartRequest):
+    """
+    Start automated trading bot
+
+    SAFETY: Defaults to paper trading mode
+    """
+    global _trading_bot, _trading_task
+
+    if _trading_bot and _trading_bot.running:
+        raise HTTPException(400, "Trading bot already running")
+
+    try:
+        from engine.trading.bot import TradingBot
+
+        # Create bot (default: paper trading)
+        _trading_bot = TradingBot(use_real_account=request.use_real)
+        _trading_bot.set_check_interval(request.interval_minutes)
+        _trading_bot.set_strategy_params(
+            stop_loss=request.stop_loss,
+            take_profit=request.take_profit,
+            position_size=request.position_size,
+            min_confluence=request.min_confluence
+        )
+        _trading_bot.set_entry_mode(request.entry_mode, request.limit_price)
+
+        # Add symbols
+        for symbol in request.symbols:
+            _trading_bot.strategy.add_symbol(symbol, request.market)
+
+        # Start bot in background task
+        _trading_task = asyncio.create_task(_trading_bot.start())
+
+        return {
+            "status": "started",
+            "message": f"Trading bot started ({'REAL' if request.use_real else 'PAPER'})",
+            "config": _trading_bot.get_status()
+        }
+
+    except Exception as e:
+        raise HTTPException(500, f"Failed to start trading bot: {e}")
+
+
+@app.post("/api/trading/stop")
+async def stop_trading():
+    """Stop automated trading bot"""
+    global _trading_bot, _trading_task
+
+    if not _trading_bot or not _trading_bot.running:
+        raise HTTPException(400, "Trading bot not running")
+
+    _trading_bot.stop()
+
+    # Cancel the background task
+    if _trading_task:
+        _trading_task.cancel()
+        try:
+            await _trading_task
+        except asyncio.CancelledError:
+            pass
+        _trading_task = None
+
+    final_status = _trading_bot.get_status()
+    _trading_bot = None
+
+    return {
+        "status": "stopped",
+        "message": "Trading bot stopped",
+        "final_status": final_status
+    }
+
+
+@app.get("/api/trading/status")
+async def get_trading_status():
+    """Get trading bot status"""
+    global _trading_bot
+
+    if not _trading_bot:
+        return {
+            "running": False,
+            "is_real": False,
+            "positions": {},
+            "total_pnl": 0,
+            "order_count": 0,
+            "monitored_symbols": [],
+            "strategy_params": {
+                "stop_loss": 2.0,
+                "take_profit": 5.0,
+                "position_size": 10,
+                "min_confluence": 80
+            }
+        }
+
+    return _trading_bot.get_status()
+
+
+@app.get("/api/trading/positions")
+async def get_trading_positions():
+    """Get current trading positions with P&L"""
+    global _trading_bot
+
+    if not _trading_bot:
+        return []
+
+    positions = _trading_bot.om.get_all_positions()
+
+    result = []
+    for symbol, pos in positions.items():
+        market = pos.get('market', 'KR')
+        current_price = _trading_bot.om._get_current_price(symbol, market)
+        avg_price = pos['avg_price']
+        quantity = pos['quantity']
+
+        pnl = (current_price - avg_price) * quantity
+        pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+
+        result.append({
+            "symbol": symbol,
+            "market": market,
+            "quantity": quantity,
+            "avg_price": avg_price,
+            "current_price": current_price,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct
+        })
+
+    return result
+
+
+@app.get("/api/trading/orders")
+async def get_trading_orders(limit: int = 50):
+    """Get order history"""
+    global _trading_bot
+
+    if not _trading_bot:
+        return []
+
+    return _trading_bot.om.get_order_history(limit)
+
+
+@app.get("/api/trading/trades")
+async def get_trade_history(limit: int = 50):
+    """Get trade history with P&L"""
+    global _trading_bot
+
+    if not _trading_bot:
+        return []
+
+    return _trading_bot.strategy.get_trade_history(limit)
+
+
+@app.post("/api/trading/add-symbol")
+async def add_trading_symbol(symbol: str = Query(...), market: str = Query("KR")):
+    """Add symbol to monitoring list"""
+    global _trading_bot
+
+    if not _trading_bot:
+        raise HTTPException(400, "Trading bot not running")
+
+    _trading_bot.strategy.add_symbol(symbol, market)
+
+    return {
+        "status": "added",
+        "symbol": symbol,
+        "market": market,
+        "monitored_symbols": _trading_bot.strategy.get_symbols()
+    }
+
+
+@app.post("/api/trading/remove-symbol")
+async def remove_trading_symbol(symbol: str = Query(...)):
+    """Remove symbol from monitoring list"""
+    global _trading_bot
+
+    if not _trading_bot:
+        raise HTTPException(400, "Trading bot not running")
+
+    _trading_bot.strategy.remove_symbol(symbol)
+
+    return {
+        "status": "removed",
+        "symbol": symbol,
+        "monitored_symbols": _trading_bot.strategy.get_symbols()
+    }

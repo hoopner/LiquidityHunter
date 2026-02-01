@@ -4,13 +4,14 @@ import { WatchlistPanel } from '../panels/WatchlistPanel';
 import { ScreenerPanel } from '../panels/ScreenerPanel';
 import { BacktestPanel } from '../panels/BacktestPanel';
 import { AlertPanel } from '../panels/AlertPanel';
+import { TradingPanel } from '../panels/TradingPanel';
 import { AIPredictionsPanel } from '../ai/AIPredictionsPanel';
 import { AIStatisticsPanel } from '../ai/AIStatisticsPanel';
 import { useResponsive } from '../../hooks/useResponsive';
 import type { TradingLevels } from '../ai/AIPredictionsPanel';
 import type { SelectedStock } from '../../App';
 
-type PanelType = 'portfolio' | 'watchlist' | 'screener' | 'ai' | 'ai-stats' | 'backtest' | 'alerts';
+type PanelType = 'portfolio' | 'watchlist' | 'screener' | 'ai' | 'ai-stats' | 'backtest' | 'alerts' | 'trading';
 
 interface SidebarProps {
   onStockSelect: (symbol: string, market: string) => void;
@@ -67,10 +68,11 @@ export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }:
   }, [handleQuickSearch]);
 
   const panels: { id: PanelType; title: string; titleKo: string; icon: string }[] = [
+    { id: 'trading', title: 'Auto Trading', titleKo: '자동매매', icon: '🤖' },
     { id: 'portfolio', title: 'Portfolio', titleKo: '포트폴리오', icon: '💼' },
     { id: 'watchlist', title: 'Watchlist', titleKo: '관심리스트', icon: '⭐' },
     { id: 'screener', title: 'Screener', titleKo: 'EMA 스크리너', icon: '🔍' },
-    { id: 'ai', title: 'AI Analysis', titleKo: 'AI 분석', icon: '🤖' },
+    { id: 'ai', title: 'AI Analysis', titleKo: 'AI 분석', icon: '🧠' },
     { id: 'ai-stats', title: 'AI Statistics', titleKo: 'AI 성과 통계', icon: '📊' },
     { id: 'backtest', title: 'Backtest', titleKo: '전략 백테스트', icon: '📈' },
     { id: 'alerts', title: 'Alerts', titleKo: '알림 설정', icon: '🔔' },
@@ -78,6 +80,8 @@ export function Sidebar({ onStockSelect, selectedStock, onTradingLevelsChange }:
 
   const renderPanel = (panelId: PanelType) => {
     switch (panelId) {
+      case 'trading':
+        return <TradingPanel market={selectedStock.market} />;
       case 'portfolio':
         return <PortfolioPanel onStockSelect={onStockSelect} selectedSymbol={selectedStock.symbol} />;
       case 'watchlist':
