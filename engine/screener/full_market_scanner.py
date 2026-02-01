@@ -78,12 +78,13 @@ class ScanCacheEntry:
 class FullMarketScanner:
     """
     High-performance market scanner optimized for M4 Max.
-    Uses parallel processing to scan 200+ symbols simultaneously.
+    Uses parallel processing to scan symbols with controlled concurrency.
     """
 
-    # Parallel processing settings optimized for M4 Max
-    MAX_WORKERS = 200  # Concurrent downloads
-    BATCH_SIZE = 50    # Symbols per batch
+    # Parallel processing settings - conservative to prevent system freeze
+    MAX_WORKERS = 10   # Concurrent downloads (reduced from 200)
+    BATCH_SIZE = 5     # Symbols per batch (reduced from 50)
+    SYMBOL_TIMEOUT = 10  # Timeout per symbol in seconds
 
     # Cache settings
     CACHE_DURATION_HOURS = 1
@@ -133,8 +134,41 @@ class FullMarketScanner:
         logger.info(f"Loaded {len(self._symbols['US'])} US symbols, {len(self._symbols['KR'])} KR symbols")
 
     def get_market_symbols(self, market: str) -> List[str]:
-        """Get symbols for a market."""
-        return self._symbols.get(market.upper(), [])
+        """Get symbols for a market (limited to top 10 for testing)."""
+        market = market.upper()
+
+        # Top 10 symbols per market for testing (prevents system overload)
+        TOP_SYMBOLS = {
+            "KR": [
+                "005930",  # 삼성전자
+                "000660",  # SK하이닉스
+                "035720",  # 카카오
+                "035420",  # NAVER
+                "051910",  # LG화학
+                "006400",  # 삼성SDI
+                "003670",  # 포스코홀딩스
+                "105560",  # KB금융
+                "055550",  # 신한지주
+                "000270",  # 기아
+            ],
+            "US": [
+                "AAPL",   # Apple
+                "MSFT",   # Microsoft
+                "NVDA",   # NVIDIA
+                "GOOGL",  # Alphabet
+                "AMZN",   # Amazon
+                "META",   # Meta
+                "TSLA",   # Tesla
+                "BRK-B",  # Berkshire Hathaway
+                "JPM",    # JPMorgan
+                "V",      # Visa
+            ],
+        }
+
+        # Use top symbols if available, otherwise fall back to loaded symbols
+        if market in TOP_SYMBOLS:
+            return TOP_SYMBOLS[market]
+        return self._symbols.get(market, [])
 
     def set_market_symbols(self, market: str, symbols: List[str]):
         """Set symbols for a market."""
@@ -253,28 +287,42 @@ class FullMarketScanner:
             return None
 
     async def _scan_symbol(self, symbol: str, market: str) -> Optional[ScanResult]:
-        """Scan a single symbol asynchronously."""
+        """Scan a single symbol asynchronously with timeout protection."""
         loop = asyncio.get_event_loop()
 
-        # Download data in thread pool
-        df = await loop.run_in_executor(
-            self._executor,
-            self._download_symbol_data,
-            symbol,
-            market
-        )
+        try:
+            # Download data in thread pool with timeout
+            df = await asyncio.wait_for(
+                loop.run_in_executor(
+                    self._executor,
+                    self._download_symbol_data,
+                    symbol,
+                    market
+                ),
+                timeout=self.SYMBOL_TIMEOUT
+            )
 
-        if df is None:
+            if df is None:
+                return None
+
+            # Analyze in thread pool with timeout
+            return await asyncio.wait_for(
+                loop.run_in_executor(
+                    self._executor,
+                    self._analyze_symbol,
+                    symbol,
+                    market,
+                    df
+                ),
+                timeout=self.SYMBOL_TIMEOUT
+            )
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout scanning {symbol} (>{self.SYMBOL_TIMEOUT}s)")
             return None
-
-        # Analyze in thread pool
-        return await loop.run_in_executor(
-            self._executor,
-            self._analyze_symbol,
-            symbol,
-            market,
-            df
-        )
+        except Exception as e:
+            logger.debug(f"Error scanning {symbol}: {e}")
+            return None
 
     async def scan_market_parallel(
         self,
