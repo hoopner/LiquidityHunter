@@ -35,15 +35,27 @@ def calculate_vwap(
     n = len(close)
     vwap = np.full(n, np.nan)
 
-    # VWAP is most useful for intraday timeframes
-    # For daily+ charts, return NaN (caller can decide to hide or show message)
-    if timeframe in ['1D', '1W', '1M']:
-        return vwap
-
     # Calculate typical price
     typical_price = (high + low + close) / 3
 
-    # For intraday, we need to reset VWAP at each new trading day
+    # For daily/weekly/monthly timeframes, calculate cumulative VWAP
+    # This shows the volume-weighted average price over the visible period
+    if timeframe in ['1D', '1W', '1M']:
+        cumulative_tp_vol = 0.0
+        cumulative_vol = 0.0
+
+        for i in range(n):
+            # Accumulate typical price * volume
+            cumulative_tp_vol += typical_price[i] * volume[i]
+            cumulative_vol += volume[i]
+
+            # Calculate VWAP
+            if cumulative_vol > 0:
+                vwap[i] = cumulative_tp_vol / cumulative_vol
+
+        return vwap
+
+    # For intraday timeframes, reset VWAP at each new trading day
     cumulative_tp_vol = 0.0
     cumulative_vol = 0.0
     current_date = None

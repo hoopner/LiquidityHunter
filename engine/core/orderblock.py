@@ -337,18 +337,54 @@ def _is_ob_fresh(
     ob: OrderBlock,
     from_idx: int,
     to_idx: int,
+    strict: bool = False,
 ) -> bool:
     """
-    Check if OB is still fresh (untouched).
-    OB is invalidated if price intersects the OB BODY zone after formation.
-    """
-    for i in range(from_idx + 1, to_idx):
-        bar_high = high[i]
-        bar_low = low[i]
+    Check if OB is still fresh (valid for trading).
 
-        # Check if price intersects the OB body zone
-        if bar_low <= ob.zone_top and bar_high >= ob.zone_bottom:
-            return False
+    Strict mode: OB is invalidated if price touches the OB body zone at all.
+    Relaxed mode (default): OB is invalidated only if price closes THROUGH the zone
+                           (i.e., for Buy OB: close below zone_bottom,
+                                  for Sell OB: close above zone_top)
+
+    Args:
+        high: High prices array
+        low: Low prices array
+        ob: OrderBlock to check
+        from_idx: Start index (after OB formation)
+        to_idx: End index (current bar)
+        strict: If True, any touch invalidates. If False, only mitigation invalidates.
+
+    Returns:
+        True if OB is still fresh/valid
+    """
+    if strict:
+        # Original strict mode - any touch invalidates
+        for i in range(from_idx + 1, to_idx):
+            bar_high = high[i]
+            bar_low = low[i]
+
+            # Check if price intersects the OB body zone
+            if bar_low <= ob.zone_top and bar_high >= ob.zone_bottom:
+                return False
+        return True
+
+    # Relaxed mode - only full mitigation invalidates
+    # OB is mitigated when price closes through the opposite side of the zone
+    for i in range(from_idx + 1, to_idx):
+        bar_low = low[i]
+        bar_high = high[i]
+
+        if ob.direction == OBDirection.BUY:
+            # Buy OB is mitigated if price closes below zone_bottom
+            # (sellers overwhelm the buy zone)
+            if bar_low < ob.zone_bottom:
+                return False
+        else:
+            # Sell OB is mitigated if price closes above zone_top
+            # (buyers overwhelm the sell zone)
+            if bar_high > ob.zone_top:
+                return False
 
     return True
 
@@ -438,12 +474,18 @@ def detect_orderblock(
     candidates: List[Tuple[OrderBlock, float]] = []
     filtered_weak_count = 0
 
+    # Debug counters
+    patterns_found = 0
+    patterns_stale = 0
+    patterns_weak = 0
+
     # Scan for OB patterns
     for i in range(1, n):
         ob_result = _check_ob(open_, close, i)
         if ob_result is None:
             continue
 
+        patterns_found += 1
         ob_idx, direction = ob_result
 
         # Create OB zone from engulfed candle's BODY
@@ -484,11 +526,13 @@ def detect_orderblock(
 
         # Check freshness: OB must not be touched after formation
         if not _is_ob_fresh(high, low, ob, i, n):
+            patterns_stale += 1
             continue
 
         # Filter weak OBs if requested
         if filter_weak and vol_strength == VolumeStrength.WEAK:
             filtered_weak_count += 1
+            patterns_weak += 1
             continue
 
         # Calculate distance to current price
@@ -497,13 +541,19 @@ def detect_orderblock(
 
         candidates.append((ob, distance))
 
+    # Debug logging
+    print(f"[OB Detection] bars={n}, patterns_found={patterns_found}, stale={patterns_stale}, weak={patterns_weak}, valid={len(candidates)}")
+
     if not candidates:
         return None, filtered_weak_count
 
     # Sort by recency (higher index = more recent), then by distance (closer = better)
     candidates.sort(key=lambda x: (-x[0].displacement_index, x[1]))
 
-    return candidates[0][0], filtered_weak_count
+    selected_ob = candidates[0][0]
+    print(f"[OB Selected] dir={selected_ob.direction.value}, zone={selected_ob.zone_bottom:.2f}-{selected_ob.zone_top:.2f}, vol={selected_ob.volume_strength.value}")
+
+    return selected_ob, filtered_weak_count
 
 
 def find_all_orderblocks(

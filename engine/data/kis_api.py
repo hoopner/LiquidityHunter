@@ -336,31 +336,73 @@ class KISClient:
         path = "/uapi/overseas-price/v1/quotations/price"
         tr_id = "HHDFS00000300"
 
-        # Determine exchange (default to NYSE, auto-detect common NASDAQ stocks)
-        nasdaq_prefixes = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA"]
-        excd = "NAS" if any(symbol.startswith(p) for p in nasdaq_prefixes) else "NYS"
+        # Try multiple exchanges - NASDAQ first, then NYSE, then AMEX
+        exchanges = ["NAS", "NYS", "AMS"]
 
-        params = {
-            "AUTH": "",
-            "EXCD": excd,
-            "SYMB": symbol,
-        }
+        for excd in exchanges:
+            try:
+                params = {
+                    "AUTH": "",
+                    "EXCD": excd,
+                    "SYMB": symbol,
+                }
 
-        data = self._request("GET", path, tr_id, params=params)
-        output = data.get("output", {})
+                data = self._request("GET", path, tr_id, params=params)
+                output = data.get("output", {})
 
+                # Check if we got valid price data
+                price_str = output.get("last", "")
+                if not price_str or price_str == "":
+                    continue  # Try next exchange
+
+                price = float(price_str)
+                if price <= 0:
+                    continue  # Try next exchange
+
+                # Safe float conversion with fallback to 0
+                def safe_float(val, default=0.0):
+                    try:
+                        return float(val) if val and val != "" else default
+                    except (ValueError, TypeError):
+                        return default
+
+                def safe_int(val, default=0):
+                    try:
+                        return int(float(val)) if val and val != "" else default
+                    except (ValueError, TypeError):
+                        return default
+
+                return {
+                    "symbol": symbol,
+                    "market": "US",
+                    "exchange": excd,
+                    "price": price,
+                    "change": safe_float(output.get("diff", 0)),
+                    "change_pct": safe_float(output.get("rate", 0)),
+                    "volume": safe_int(output.get("tvol", 0)),
+                    "high": safe_float(output.get("high", 0)),
+                    "low": safe_float(output.get("low", 0)),
+                    "open": safe_float(output.get("open", 0)),
+                    "prev_close": safe_float(output.get("base", 0)),
+                    "timestamp": datetime.now().isoformat(),
+                }
+            except Exception as e:
+                # Try next exchange
+                continue
+
+        # No exchange worked - return empty result
         return {
             "symbol": symbol,
             "market": "US",
-            "exchange": excd,
-            "price": float(output.get("last", 0)),
-            "change": float(output.get("diff", 0)),
-            "change_pct": float(output.get("rate", 0)),
-            "volume": int(output.get("tvol", 0)),
-            "high": float(output.get("high", 0)),
-            "low": float(output.get("low", 0)),
-            "open": float(output.get("open", 0)),
-            "prev_close": float(output.get("base", 0)),
+            "exchange": "UNKNOWN",
+            "price": 0,
+            "change": 0,
+            "change_pct": 0,
+            "volume": 0,
+            "high": 0,
+            "low": 0,
+            "open": 0,
+            "prev_close": 0,
             "timestamp": datetime.now().isoformat(),
         }
 

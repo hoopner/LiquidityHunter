@@ -66,6 +66,7 @@ export function ExpandedIndicatorChart({
         visible: true,
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 20,  // Match main chart padding
       },
       crosshair: {
         mode: 1,
