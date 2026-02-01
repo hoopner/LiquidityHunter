@@ -846,3 +846,51 @@ class CheckPriceRequest(BaseModel):
     symbol: str
     price: float
     volume: Optional[float] = None
+
+
+# --- Full Market Scanner schemas ---
+
+class ScanResultSchema(BaseModel):
+    """Result from scanning a single symbol."""
+    symbol: str
+    market: str
+    signal_type: str  # "golden_cross", "death_cross", "bullish_alignment", "bearish_alignment"
+    current_price: float
+    sma20: float
+    sma200: float
+    volume: int
+    volume_ratio: float  # Current volume vs 20-day average
+    price_change_pct: float
+    detected_at: str
+    days_since_cross: int = 0
+
+
+class ScanMarketRequest(BaseModel):
+    """Request to scan a market."""
+    market: str = "US"  # "US" or "KR"
+    signal_types: Optional[List[str]] = None  # Default: ["golden_cross"]
+    force_refresh: bool = False
+
+
+class ScanMarketResponse(BaseModel):
+    """Response from market scan."""
+    market: str
+    symbols_scanned: int
+    signals_found: int
+    scan_duration_seconds: float
+    cached: bool
+    cache_age_minutes: int
+    results: List[ScanResultSchema]
+
+
+class ScanAllMarketsResponse(BaseModel):
+    """Response from scanning all markets."""
+    us_results: List[ScanResultSchema]
+    kr_results: List[ScanResultSchema]
+    total_signals: int
+    scan_duration_seconds: float
+
+
+class ScanCacheStatusResponse(BaseModel):
+    """Cache status for scanner."""
+    markets: dict  # market -> cache info

@@ -698,3 +698,55 @@ export interface CheckPriceResponse {
     trigger_count: number;
   }[];
 }
+
+// Full Market Scanner types
+
+export type ScanSignalType = 'golden_cross' | 'death_cross' | 'bullish_alignment' | 'bearish_alignment';
+
+export interface ScanResult {
+  symbol: string;
+  market: string;
+  signal_type: ScanSignalType;
+  current_price: number;
+  sma20: number;
+  sma200: number;
+  volume: number;
+  volume_ratio: number;  // Current volume vs 20-day average
+  price_change_pct: number;
+  detected_at: string;
+  days_since_cross: number;
+}
+
+export interface ScanMarketRequest {
+  market: string;
+  signal_types?: ScanSignalType[];
+  force_refresh?: boolean;
+}
+
+export interface ScanMarketResponse {
+  market: string;
+  symbols_scanned: number;
+  signals_found: number;
+  scan_duration_seconds: number;
+  cached: boolean;
+  cache_age_minutes: number;
+  results: ScanResult[];
+}
+
+export interface ScanAllMarketsResponse {
+  us_results: ScanResult[];
+  kr_results: ScanResult[];
+  total_signals: number;
+  scan_duration_seconds: number;
+}
+
+export interface ScanCacheStatus {
+  markets: Record<string, {
+    symbols_scanned: number;
+    signals_found: number;
+    scanned_at: string;
+    cache_age_minutes: number;
+    is_valid: boolean;
+    scan_duration_seconds: number;
+  }>;
+}

@@ -43,6 +43,11 @@ import type {
   UpdatePriceAlertRequest,
   PriceAlertListResponse,
   CheckPriceResponse,
+  // Full Market Scanner types
+  ScanSignalType,
+  ScanMarketResponse,
+  ScanAllMarketsResponse,
+  ScanCacheStatus,
 } from './types';
 
 const BASE_URL = 'http://localhost:8000';
@@ -856,6 +861,109 @@ export async function getKISPrice(
  */
 export async function getDataSourceInfo(): Promise<DataSourceInfo> {
   const response = await fetch(`${BASE_URL}/data/source`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+// --- Full Market Scanner Functions ---
+
+/**
+ * Scan a market for SMA signals
+ * Uses parallel processing for high performance
+ */
+export async function scanMarket(
+  market: string = 'US',
+  signalTypes?: ScanSignalType[],
+  forceRefresh: boolean = false
+): Promise<ScanMarketResponse> {
+  const response = await fetch(`${BASE_URL}/api/scanner/scan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      market,
+      signal_types: signalTypes,
+      force_refresh: forceRefresh,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Scan all markets (US and KR) in parallel
+ */
+export async function scanAllMarkets(
+  signalTypes?: ScanSignalType[],
+  forceRefresh: boolean = false
+): Promise<ScanAllMarketsResponse> {
+  const params = new URLSearchParams();
+  if (signalTypes) {
+    signalTypes.forEach(t => params.append('signal_types', t));
+  }
+  params.set('force_refresh', forceRefresh.toString());
+
+  const response = await fetch(`${BASE_URL}/api/scanner/scan_all?${params}`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get scanner cache status
+ */
+export async function getScannerCacheStatus(): Promise<ScanCacheStatus> {
+  const response = await fetch(`${BASE_URL}/api/scanner/cache_status`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Clear scanner cache
+ */
+export async function clearScannerCache(
+  market?: string
+): Promise<{ success: boolean; message: string }> {
+  const params = market ? new URLSearchParams({ market }) : new URLSearchParams();
+  const response = await fetch(`${BASE_URL}/api/scanner/clear_cache?${params}`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get list of symbols for a market
+ */
+export async function getMarketSymbols(
+  market: string
+): Promise<{ market: string; count: number; symbols: string[] }> {
+  const response = await fetch(`${BASE_URL}/api/scanner/symbols/${market}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));

@@ -3357,3 +3357,157 @@ async def check_price_alerts(request: CheckPriceRequest) -> dict:
             for a in triggered
         ],
     }
+
+
+# ============================================================
+# FULL MARKET SCANNER ENDPOINTS
+# ============================================================
+
+from engine.screener import get_scanner, ScanResult
+
+
+@app.post("/api/scanner/scan")
+async def scan_market(
+    request: schemas.ScanMarketRequest,
+) -> schemas.ScanMarketResponse:
+    """
+    Scan a market for SMA signals using parallel processing.
+    Uses cached results if available (1 hour cache).
+    """
+    import time
+    start_time = time.time()
+
+    scanner = get_scanner()
+
+    # Check if we have valid cache
+    cache_status = scanner.get_cache_status()
+    cache_key = f"{request.market.upper()}_{','.join(sorted(request.signal_types or ['golden_cross']))}"
+    cached = cache_key in cache_status and cache_status[cache_key].get("is_valid", False)
+    cache_age = cache_status.get(cache_key, {}).get("cache_age_minutes", 0) if cached else 0
+
+    # Run the scan
+    results = await scanner.scan_market_parallel(
+        market=request.market,
+        signal_types=request.signal_types,
+        force_refresh=request.force_refresh,
+    )
+
+    scan_duration = time.time() - start_time
+
+    return schemas.ScanMarketResponse(
+        market=request.market.upper(),
+        symbols_scanned=len(scanner.get_market_symbols(request.market)),
+        signals_found=len(results),
+        scan_duration_seconds=round(scan_duration, 2),
+        cached=cached and not request.force_refresh,
+        cache_age_minutes=cache_age,
+        results=[
+            schemas.ScanResultSchema(
+                symbol=r.symbol,
+                market=r.market,
+                signal_type=r.signal_type,
+                current_price=r.current_price,
+                sma20=r.sma20,
+                sma200=r.sma200,
+                volume=r.volume,
+                volume_ratio=r.volume_ratio,
+                price_change_pct=r.price_change_pct,
+                detected_at=r.detected_at,
+                days_since_cross=r.days_since_cross,
+            )
+            for r in results
+        ],
+    )
+
+
+@app.post("/api/scanner/scan_all")
+async def scan_all_markets(
+    signal_types: Optional[List[str]] = None,
+    force_refresh: bool = False,
+) -> schemas.ScanAllMarketsResponse:
+    """
+    Scan all markets (US and KR) in parallel.
+    Uses cached results if available (1 hour cache).
+    """
+    import time
+    start_time = time.time()
+
+    scanner = get_scanner()
+
+    # Run the scan on both markets
+    all_results = await scanner.scan_all_markets(
+        signal_types=signal_types,
+        force_refresh=force_refresh,
+    )
+
+    scan_duration = time.time() - start_time
+
+    us_results = all_results.get("US", [])
+    kr_results = all_results.get("KR", [])
+
+    return schemas.ScanAllMarketsResponse(
+        us_results=[
+            schemas.ScanResultSchema(
+                symbol=r.symbol,
+                market=r.market,
+                signal_type=r.signal_type,
+                current_price=r.current_price,
+                sma20=r.sma20,
+                sma200=r.sma200,
+                volume=r.volume,
+                volume_ratio=r.volume_ratio,
+                price_change_pct=r.price_change_pct,
+                detected_at=r.detected_at,
+                days_since_cross=r.days_since_cross,
+            )
+            for r in us_results
+        ],
+        kr_results=[
+            schemas.ScanResultSchema(
+                symbol=r.symbol,
+                market=r.market,
+                signal_type=r.signal_type,
+                current_price=r.current_price,
+                sma20=r.sma20,
+                sma200=r.sma200,
+                volume=r.volume,
+                volume_ratio=r.volume_ratio,
+                price_change_pct=r.price_change_pct,
+                detected_at=r.detected_at,
+                days_since_cross=r.days_since_cross,
+            )
+            for r in kr_results
+        ],
+        total_signals=len(us_results) + len(kr_results),
+        scan_duration_seconds=round(scan_duration, 2),
+    )
+
+
+@app.get("/api/scanner/cache_status")
+def get_scanner_cache_status() -> schemas.ScanCacheStatusResponse:
+    """Get cache status for all markets."""
+    scanner = get_scanner()
+    return schemas.ScanCacheStatusResponse(markets=scanner.get_cache_status())
+
+
+@app.post("/api/scanner/clear_cache")
+def clear_scanner_cache(market: Optional[str] = None) -> dict:
+    """Clear scanner cache."""
+    scanner = get_scanner()
+    scanner.clear_cache(market)
+    return {
+        "success": True,
+        "message": f"Cache cleared for {'all markets' if market is None else market}",
+    }
+
+
+@app.get("/api/scanner/symbols/{market}")
+def get_market_symbols(market: str) -> dict:
+    """Get list of symbols for a market."""
+    scanner = get_scanner()
+    symbols = scanner.get_market_symbols(market)
+    return {
+        "market": market.upper(),
+        "count": len(symbols),
+        "symbols": symbols,
+    }
