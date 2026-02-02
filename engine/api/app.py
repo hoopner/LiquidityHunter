@@ -910,12 +910,32 @@ def get_ohlcv(
     - KIS API: Used as SECONDARY if configured (real-time data for KR and US)
     - yfinance: FALLBACK if others not available or fail (delayed data)
 
+    DYNAMIC SYMBOL SUPPORT:
+    - Auto-tracks viewed symbols
+    - Auto-adds new symbols to data collection
+    - Supports unlimited stocks
+
     Returns bars array with dates and indicator values.
     The 'source' field in response indicates which data source was used.
     """
     market = market.upper()
+    symbol = symbol.upper()
     if market not in ("KR", "US"):
         raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    # DYNAMIC SYMBOL TRACKING: Track this view and auto-add if new
+    try:
+        from engine.data.symbol_manager import get_symbol_manager
+        symbol_manager = get_symbol_manager()
+        symbol_manager.track_view(symbol, market)
+        # Auto-add if symbol doesn't exist (runs in background-ish, fast check)
+        if not symbol_manager.symbol_exists(symbol, market):
+            # This will fetch historical data for new symbols
+            symbol_manager.add_symbol(symbol, market)
+    except Exception as e:
+        # Don't fail the request if tracking fails
+        import logging
+        logging.debug(f"Symbol tracking error: {e}")
 
     # Use unified data loading function (same as /analyze endpoint)
     try:

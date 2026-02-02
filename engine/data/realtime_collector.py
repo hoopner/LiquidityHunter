@@ -1,6 +1,11 @@
 """
 24/7 Real-time data collector for ALL stocks
 Runs continuously, collects data every minute
+
+DYNAMIC SYMBOL DISCOVERY:
+- No hardcoded symbol lists
+- Auto-discovers from user activity
+- Supports unlimited stocks
 """
 import time
 import logging
@@ -20,10 +25,12 @@ logger = logging.getLogger(__name__)
 
 class RealtimeCollector:
     """
-    24/7 Real-time price collector
+    24/7 Real-time price collector with DYNAMIC symbol discovery
 
     Features:
-    - Collects ALL symbols from database (not hardcoded)
+    - Auto-discovers symbols from user activity (no hardcoded lists)
+    - Refreshes symbol list every collection cycle
+    - Supports unlimited stocks
     - Detects extended hours (pre-market, after-hours)
     - Stores in UTC (no timezone issues)
     - Auto-retry on errors
@@ -41,8 +48,9 @@ class RealtimeCollector:
         # Lazy-load dependencies
         self._kis_client = None
         self._db_conn = None
+        self._symbol_manager = None
 
-        # Load symbols from database
+        # Dynamic symbol lists - refreshed every cycle
         self.symbols_kr: List[str] = []
         self.symbols_us: List[str] = []
 
@@ -73,6 +81,17 @@ class RealtimeCollector:
             except Exception as e:
                 logger.error(f"Database connection failed: {e}")
         return self._db_conn
+
+    @property
+    def symbol_manager(self):
+        """Lazy-load SymbolManager"""
+        if self._symbol_manager is None:
+            try:
+                from engine.data.symbol_manager import get_symbol_manager
+                self._symbol_manager = get_symbol_manager()
+            except Exception as e:
+                logger.warning(f"SymbolManager not available: {e}")
+        return self._symbol_manager
 
     def _ensure_tables(self):
         """Create necessary tables if they don't exist"""
@@ -118,8 +137,25 @@ class RealtimeCollector:
         except Exception as e:
             logger.error(f"Table creation error: {e}")
 
+    def _refresh_symbols(self):
+        """
+        Refresh symbol list from dynamic sources
+
+        Uses SymbolManager to get all active symbols from:
+        - Historical data (ohlcv_data)
+        - Recent chart views
+        - Recent realtime ticks
+        """
+        if self.symbol_manager:
+            symbols = self.symbol_manager.get_active_symbols(days=7)
+            self.symbols_kr = symbols.get('KR', [])
+            self.symbols_us = symbols.get('US', [])
+        else:
+            # Fallback: load directly from database
+            self._load_symbols_from_db()
+
     def _load_symbols_from_db(self):
-        """Load ALL symbols from database"""
+        """Fallback: Load ALL symbols from database directly"""
         if not self.db_conn:
             return
 
@@ -135,7 +171,6 @@ class RealtimeCollector:
             self.symbols_us = [row[0] for row in cur.fetchall()]
 
             cur.close()
-            logger.info(f"Loaded {len(self.symbols_kr)} KR + {len(self.symbols_us)} US symbols from database")
 
         except Exception as e:
             logger.error(f"Failed to load symbols: {e}")
@@ -185,21 +220,33 @@ class RealtimeCollector:
         self.running = True
         self.stats['start_time'] = datetime.now(timezone.utc)
 
-        # Initialize database and load symbols
+        # Initialize database
         _ = self.db_conn
-        self._load_symbols_from_db()
+
+        # Initial symbol load
+        self._refresh_symbols()
 
         total_symbols = len(self.symbols_kr) + len(self.symbols_us)
 
         logger.info("=" * 60)
         logger.info("🚀 24/7 REAL-TIME COLLECTOR STARTED")
-        logger.info(f"📊 Monitoring: {len(self.symbols_kr)} KR + {len(self.symbols_us)} US = {total_symbols} total")
+        logger.info("📊 DYNAMIC SYMBOL DISCOVERY ENABLED")
+        logger.info(f"📊 Initial: {len(self.symbols_kr)} KR + {len(self.symbols_us)} US = {total_symbols} total")
         logger.info(f"⏱️  Interval: {self.interval} seconds")
         logger.info("=" * 60)
+
+        cycle_count = 0
 
         while self.running:
             try:
                 start_time = time.time()
+
+                # Refresh symbols every 10 cycles (10 minutes) to pick up new ones
+                cycle_count += 1
+                if cycle_count % 10 == 0:
+                    self._refresh_symbols()
+                    logger.info(f"🔄 Symbols refreshed: {len(self.symbols_kr)} KR + {len(self.symbols_us)} US")
+
                 self.collect_all()
                 elapsed = time.time() - start_time
 
@@ -237,7 +284,7 @@ class RealtimeCollector:
             self._db_conn.close()
 
     def collect_all(self):
-        """Collect prices for ALL symbols"""
+        """Collect prices for ALL active symbols"""
         timestamp = datetime.now(timezone.utc)
         collected = {'kr': 0, 'us': 0, 'failed': 0}
 
