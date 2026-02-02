@@ -251,7 +251,10 @@ def load_ohlcv_unified(
                 df = db_get_ohlcv(symbol.upper(), market)
                 if not df.empty and len(df) >= MIN_BARS_FOR_EMA200:
                     # Convert DataFrame to OHLCVData format
-                    timestamps = [ts.strftime("%Y-%m-%d") for ts in df.index]
+                    # CRITICAL: Convert UTC timestamps to market timezone before formatting
+                    # PostgreSQL stores in UTC, but dates should reflect market local time
+                    market_tz = 'Asia/Seoul' if market == 'KR' else 'America/New_York'
+                    timestamps = [ts.tz_convert(market_tz).strftime("%Y-%m-%d") if ts.tzinfo else ts.strftime("%Y-%m-%d") for ts in df.index]
                     data = OHLCVData(
                         timestamps=timestamps,
                         open=df["open"].values,
