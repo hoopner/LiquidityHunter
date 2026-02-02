@@ -40,8 +40,8 @@ type ViewType = 'chart' | 'screener';
 const STORAGE_KEY_SYMBOL = 'lh_lastSymbol';
 const STORAGE_KEY_MARKET = 'lh_lastMarket';
 
-// Default ticker (Samsung)
-const DEFAULT_SYMBOL = '005930';
+// Default ticker (SK하이닉스)
+const DEFAULT_SYMBOL = '000660';
 const DEFAULT_MARKET = 'KR';
 
 function App() {
