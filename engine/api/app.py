@@ -225,10 +225,11 @@ def load_ohlcv_unified(
     """
     Unified data loading function used by both /ohlcv and /analyze endpoints.
 
-    Priority: PostgreSQL → KIS API → yfinance
+    Priority: KIS API (direct) → PostgreSQL → yfinance
 
-    IMPORTANT: PostgreSQL and yfinance use ADJUSTED prices, while KIS uses ACTUAL prices.
-    When using PostgreSQL/yfinance data, we adjust prices to match current actual prices.
+    KIS API is now the PRIMARY source for accurate, real-time data.
+    PostgreSQL is used as backup when KIS doesn't have enough history.
+    yfinance is the final fallback.
 
     Returns:
         tuple: (OHLCVData, source_used)
@@ -241,65 +242,143 @@ def load_ohlcv_unified(
     # Minimum bars needed for EMA200 to have valid data
     MIN_BARS_FOR_EMA200 = 250
 
-    # Try PostgreSQL FIRST for daily/weekly/monthly timeframes (fastest, local data)
     is_daily_tf = tf.upper() in ("1D", "1W", "1M", "1MO")
-    if is_daily_tf and not refresh:
-        try:
-            from engine.data.database import get_ohlcv as db_get_ohlcv, check_connection
-            if check_connection():
-                print(f"[OHLCV] Trying PostgreSQL for {symbol} {market} {tf}")
-                df = db_get_ohlcv(symbol.upper(), market)
-                if not df.empty and len(df) >= MIN_BARS_FOR_EMA200:
-                    # Convert DataFrame to OHLCVData format
-                    # CRITICAL: Convert UTC timestamps to market timezone before formatting
-                    # PostgreSQL stores in UTC, but dates should reflect market local time
-                    market_tz = 'Asia/Seoul' if market == 'KR' else 'America/New_York'
-                    timestamps = [ts.tz_convert(market_tz).strftime("%Y-%m-%d") if ts.tzinfo else ts.strftime("%Y-%m-%d") for ts in df.index]
+
+    # ========================================
+    # PRIORITY 1: KIS API DIRECT (most accurate, real-time)
+    # ========================================
+    try:
+        client = get_kis_client()
+        if client.is_configured:
+            print(f"[OHLCV] Trying KIS API DIRECT for {symbol} {market} {tf}")
+
+            # Use direct chart methods for daily data (bypass old pipeline)
+            if is_daily_tf and tf.upper() == "1D":
+                if market == "KR":
+                    kis_result = client.get_daily_chart(symbol, count=500)
+                else:
+                    kis_result = client.get_daily_chart_us(symbol, count=500)
+
+                bars = kis_result.get("bars", [])
+                if bars and len(bars) > 0:
+                    # Convert bars array to OHLCVData format
+                    timestamps = [bar["time"] for bar in bars]
+                    opens = np.array([bar["open"] for bar in bars])
+                    highs = np.array([bar["high"] for bar in bars])
+                    lows = np.array([bar["low"] for bar in bars])
+                    closes = np.array([bar["close"] for bar in bars])
+                    volumes = np.array([bar["volume"] for bar in bars])
+
                     data = OHLCVData(
                         timestamps=timestamps,
-                        open=df["open"].values,
-                        high=df["high"].values,
-                        low=df["low"].values,
-                        close=df["close"].values,
-                        volume=df["volume"].values,
+                        open=opens,
+                        high=highs,
+                        low=lows,
+                        close=closes,
+                        volume=volumes,
                     )
-                    source_used = "postgresql"
-                    needs_price_adjustment = True  # PostgreSQL has adjusted prices
-                    print(f"[OHLCV] PostgreSQL returned {len(df)} bars for {symbol}")
-                else:
-                    print(f"[OHLCV] PostgreSQL data insufficient, trying other sources")
-        except Exception as e:
-            print(f"[OHLCV] PostgreSQL error: {e}, trying other sources")
-
-    # Try KIS as SECONDARY source if configured (for real-time or intraday)
-    if data is None:
-        try:
-            client = get_kis_client()
-            if client.is_configured:
+                    source_used = "kis_direct"
+                    needs_price_adjustment = False
+                    print(f"[OHLCV] KIS DIRECT returned {len(bars)} bars for {symbol}")
+            else:
+                # For other timeframes, use existing get_ohlcv method
                 kis_data = client.get_ohlcv(symbol, market, tf, count=limit if limit > 0 else 500)
                 kis_bar_count = kis_data.get("count", 0) if kis_data else 0
                 print(f"[OHLCV] KIS returned {kis_bar_count} bars for {symbol} {tf}")
 
                 if kis_data and kis_bar_count > 0:
-                    # Check if we have enough data for EMA200
-                    if kis_bar_count >= MIN_BARS_FOR_EMA200:
-                        # Convert KIS response to OHLCVData format
-                        data = OHLCVData(
-                            timestamps=kis_data["timestamps"],
-                            open=np.array(kis_data["open"]),
-                            high=np.array(kis_data["high"]),
-                            low=np.array(kis_data["low"]),
-                            close=np.array(kis_data["close"]),
-                            volume=np.array(kis_data["volume"]),
-                        )
-                        source_used = "kis"
-                        needs_price_adjustment = False  # KIS uses actual prices
-                    else:
-                        print(f"[OHLCV] KIS data insufficient ({kis_bar_count} < {MIN_BARS_FOR_EMA200}), falling back to yfinance")
-        except KISAPIError as e:
-            print(f"KIS API error, falling back to yfinance: {e}")
-        except Exception as e:
-            print(f"KIS error, falling back to yfinance: {e}")
+                    data = OHLCVData(
+                        timestamps=kis_data["timestamps"],
+                        open=np.array(kis_data["open"]),
+                        high=np.array(kis_data["high"]),
+                        low=np.array(kis_data["low"]),
+                        close=np.array(kis_data["close"]),
+                        volume=np.array(kis_data["volume"]),
+                    )
+                    source_used = "kis"
+                    needs_price_adjustment = False
+    except KISAPIError as e:
+        print(f"[OHLCV] KIS API error: {e}, trying PostgreSQL")
+    except Exception as e:
+        print(f"[OHLCV] KIS error: {e}, trying PostgreSQL")
+
+    # ========================================
+    # PRIORITY 2: Merge KIS (recent) + PostgreSQL (older history)
+    # ========================================
+    # KIS only returns ~30 bars. For EMA200 we need 250+.
+    # Solution: Use PostgreSQL for older history, but REPLACE recent bars with KIS data
+    kis_recent_data = data  # Save KIS data if we got any
+    kis_bar_count = len(data.close) if data is not None else 0
+
+    if kis_bar_count < MIN_BARS_FOR_EMA200:
+        if is_daily_tf and not refresh:
+            try:
+                from engine.data.database import get_ohlcv as db_get_ohlcv, check_connection
+                if check_connection():
+                    print(f"[OHLCV] Getting PostgreSQL history to merge with KIS {symbol} {market}")
+                    df = db_get_ohlcv(symbol.upper(), market)
+                    if not df.empty and len(df) >= MIN_BARS_FOR_EMA200:
+                        market_tz = 'Asia/Seoul' if market == 'KR' else 'America/New_York'
+                        pg_timestamps = [ts.tz_convert(market_tz).strftime("%Y-%m-%d") if ts.tzinfo else ts.strftime("%Y-%m-%d") for ts in df.index]
+
+                        # If we have KIS data, merge it (KIS takes priority for overlapping dates)
+                        if kis_recent_data is not None and kis_bar_count > 0:
+                            kis_dates = set(kis_recent_data.timestamps)
+
+                            # Filter out PostgreSQL data that overlaps with KIS
+                            merged_timestamps = []
+                            merged_open = []
+                            merged_high = []
+                            merged_low = []
+                            merged_close = []
+                            merged_volume = []
+
+                            # Add older PostgreSQL data (not in KIS)
+                            for i, ts in enumerate(pg_timestamps):
+                                if ts not in kis_dates:
+                                    merged_timestamps.append(ts)
+                                    merged_open.append(df["open"].values[i])
+                                    merged_high.append(df["high"].values[i])
+                                    merged_low.append(df["low"].values[i])
+                                    merged_close.append(df["close"].values[i])
+                                    merged_volume.append(df["volume"].values[i])
+
+                            # Add all KIS data (most recent, accurate)
+                            merged_timestamps.extend(kis_recent_data.timestamps)
+                            merged_open.extend(kis_recent_data.open.tolist())
+                            merged_high.extend(kis_recent_data.high.tolist())
+                            merged_low.extend(kis_recent_data.low.tolist())
+                            merged_close.extend(kis_recent_data.close.tolist())
+                            merged_volume.extend(kis_recent_data.volume.tolist())
+
+                            # Sort by date
+                            sorted_indices = sorted(range(len(merged_timestamps)), key=lambda i: merged_timestamps[i])
+                            data = OHLCVData(
+                                timestamps=[merged_timestamps[i] for i in sorted_indices],
+                                open=np.array([merged_open[i] for i in sorted_indices]),
+                                high=np.array([merged_high[i] for i in sorted_indices]),
+                                low=np.array([merged_low[i] for i in sorted_indices]),
+                                close=np.array([merged_close[i] for i in sorted_indices]),
+                                volume=np.array([merged_volume[i] for i in sorted_indices]),
+                            )
+                            source_used = "kis_direct+postgresql"
+                            needs_price_adjustment = False  # KIS data is already actual prices
+                            print(f"[OHLCV] Merged {kis_bar_count} KIS + {len(df) - kis_bar_count} PostgreSQL = {len(data.close)} bars")
+                        else:
+                            # No KIS data, use PostgreSQL only
+                            data = OHLCVData(
+                                timestamps=pg_timestamps,
+                                open=df["open"].values,
+                                high=df["high"].values,
+                                low=df["low"].values,
+                                close=df["close"].values,
+                                volume=df["volume"].values,
+                            )
+                            source_used = "postgresql"
+                            needs_price_adjustment = True
+                            print(f"[OHLCV] PostgreSQL returned {len(df)} bars for {symbol}")
+            except Exception as e:
+                print(f"[OHLCV] PostgreSQL error: {e}")
 
     # Fall back to yfinance if other sources failed or returned insufficient data
     if data is None:
@@ -4432,3 +4511,68 @@ async def get_realtime_status():
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# DIRECT KIS API CHART DATA - Bypasses database for accuracy
+# ============================================================
+
+@app.get("/api/kis/history/{symbol}")
+def get_kis_history_direct(
+    symbol: str,
+    market: str = Query("KR", description="Market: KR or US"),
+    count: int = Query(100, description="Number of bars to fetch"),
+):
+    """
+    Get chart data DIRECTLY from KIS API - bypasses database.
+
+    This endpoint fetches fresh OHLCV data directly from Korea Investment
+    Securities API, ensuring accurate and up-to-date chart data.
+
+    Use this when you need guaranteed fresh data without database caching.
+
+    Args:
+        symbol: Stock symbol (e.g., "005930" for Samsung, "AAPL" for Apple)
+        market: Market code - "KR" for Korean, "US" for US stocks
+        count: Number of daily bars to fetch (default 100)
+
+    Returns:
+        Dict with bars array ready for charting:
+        {
+            "symbol": "005930",
+            "market": "KR",
+            "timeframe": "1D",
+            "count": 100,
+            "bars": [{"time": "2026-02-01", "open": 100, "high": 110, ...}, ...],
+            "source": "kis_api_direct"
+        }
+    """
+    market = market.upper()
+    symbol = symbol.upper()
+
+    if market not in ("KR", "US"):
+        raise HTTPException(status_code=400, detail="Market must be KR or US")
+
+    try:
+        client = get_kis_client()
+
+        if not client.is_configured:
+            raise HTTPException(
+                status_code=503,
+                detail="KIS API not configured. Set KIS_APP_KEY and KIS_APP_SECRET environment variables."
+            )
+
+        if market == "KR":
+            result = client.get_daily_chart(symbol, count)
+        else:
+            result = client.get_daily_chart_us(symbol, count)
+
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+
+        return result
+
+    except KISAPIError as e:
+        raise HTTPException(status_code=502, detail=f"KIS API error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")

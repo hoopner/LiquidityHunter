@@ -829,6 +829,161 @@ class KISClient:
             "volume": volumes,
         }
 
+    # ====== DIRECT CHART DATA METHODS (bypass database) ======
+
+    def get_daily_chart(self, symbol: str, count: int = 100) -> Dict[str, Any]:
+        """
+        Get daily chart data for Korean stocks DIRECTLY from KIS API.
+
+        This bypasses the database and fetches fresh data from KIS.
+        Use this for accurate, real-time chart display.
+
+        Args:
+            symbol: Korean stock symbol (e.g., "005930" for Samsung)
+            count: Number of bars to fetch (default 100)
+
+        Returns:
+            Dict with OHLCV arrays ready for charting
+        """
+        path = "/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+        tr_id = "FHKST01010400"
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": symbol,
+            "FID_PERIOD_DIV_CODE": "D",  # Daily
+            "FID_ORG_ADJ_PRC": "0",  # Adjusted price
+        }
+
+        data = self._request("GET", path, tr_id, params=params)
+        output = data.get("output", [])
+
+        # Parse directly to chart format
+        bars = []
+        for row in output[:count]:
+            try:
+                date_str = row.get("stck_bsop_date", "")
+                if not date_str:
+                    continue
+
+                # Format: YYYYMMDD -> YYYY-MM-DD
+                formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+                bars.append({
+                    "time": formatted_date,
+                    "open": float(row.get("stck_oprc", 0)),
+                    "high": float(row.get("stck_hgpr", 0)),
+                    "low": float(row.get("stck_lwpr", 0)),
+                    "close": float(row.get("stck_clpr", 0)),
+                    "volume": int(row.get("acml_vol", 0)),
+                })
+            except (ValueError, TypeError):
+                continue
+
+        # Reverse to chronological order (API returns newest first)
+        bars.reverse()
+
+        return {
+            "symbol": symbol,
+            "market": "KR",
+            "timeframe": "1D",
+            "count": len(bars),
+            "bars": bars,
+            "source": "kis_api_direct",
+        }
+
+    def get_daily_chart_us(self, symbol: str, count: int = 100) -> Dict[str, Any]:
+        """
+        Get daily chart data for US stocks DIRECTLY from KIS API.
+
+        This bypasses the database and fetches fresh data from KIS.
+        Automatically detects the correct exchange (NYSE/NASDAQ/AMEX).
+
+        Args:
+            symbol: US stock symbol (e.g., "AAPL", "MSFT")
+            count: Number of bars to fetch (default 100)
+
+        Returns:
+            Dict with OHLCV arrays ready for charting
+        """
+        path = "/uapi/overseas-price/v1/quotations/dailyprice"
+        tr_id = "HHDFS76240000"
+
+        # Try multiple exchanges
+        exchanges = ["NAS", "NYS", "AMS"]
+
+        for excd in exchanges:
+            try:
+                params = {
+                    "AUTH": "",
+                    "EXCD": excd,
+                    "SYMB": symbol,
+                    "GUBN": "0",  # Daily
+                    "BYMD": datetime.now().strftime("%Y%m%d"),
+                    "MODP": "1",  # Adjusted price
+                }
+
+                data = self._request("GET", path, tr_id, params=params)
+                output = data.get("output2", [])
+
+                if not output:
+                    continue
+
+                # Parse directly to chart format
+                bars = []
+                for row in output[:count]:
+                    try:
+                        date_str = row.get("xymd", "")
+                        if not date_str:
+                            continue
+
+                        # Format: YYYYMMDD -> YYYY-MM-DD
+                        formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+                        close_price = float(row.get("clos", 0))
+                        if close_price <= 0:
+                            continue
+
+                        bars.append({
+                            "time": formatted_date,
+                            "open": float(row.get("open", 0)),
+                            "high": float(row.get("high", 0)),
+                            "low": float(row.get("low", 0)),
+                            "close": close_price,
+                            "volume": int(float(row.get("tvol", 0))),
+                        })
+                    except (ValueError, TypeError):
+                        continue
+
+                if bars:
+                    # Reverse to chronological order (API returns newest first)
+                    bars.reverse()
+
+                    return {
+                        "symbol": symbol,
+                        "market": "US",
+                        "exchange": excd,
+                        "timeframe": "1D",
+                        "count": len(bars),
+                        "bars": bars,
+                        "source": "kis_api_direct",
+                    }
+
+            except Exception:
+                continue
+
+        # No exchange worked
+        return {
+            "symbol": symbol,
+            "market": "US",
+            "exchange": "UNKNOWN",
+            "timeframe": "1D",
+            "count": 0,
+            "bars": [],
+            "source": "kis_api_direct",
+            "error": "No data found on any exchange",
+        }
+
 
 # Singleton instance
 _kis_client: Optional[KISClient] = None
