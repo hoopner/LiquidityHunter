@@ -1,18 +1,10 @@
 /**
- * React hook for real-time price updates via WebSocket
- *
- * ARCHITECTURE:
- * - Uses centralized SubscriptionManager for cleanup
- * - Validates all incoming messages against current symbol
- * - Ensures only ONE active subscription per symbol
- * - Proper cleanup on symbol change and unmount
+ * React hook for real-time price updates via HTTP polling
+ * Polls /api/realtime/price endpoint every 5 seconds
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { subscriptionManager } from '../utils/subscriptionManager';
-import { throttle } from '../utils/performance';
-import { logger } from '../utils/logger';
-import { WS_BASE_URL } from '../config/api';
+import { API_BASE_URL } from '../config/api';
 
 export interface RealtimePrice {
   price: number;
@@ -25,6 +17,7 @@ export interface RealtimePrice {
   prevClose: number;
   timestamp: string;
   symbol?: string;
+  isExtendedHours?: boolean;
 }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -32,6 +25,7 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'er
 interface UseRealtimePriceOptions {
   enabled?: boolean;
   onPriceUpdate?: (price: RealtimePrice) => void;
+  pollInterval?: number;
 }
 
 interface UseRealtimePriceResult {
@@ -40,279 +34,139 @@ interface UseRealtimePriceResult {
   error: string | null;
   direction: 'up' | 'down' | 'unchanged';
   reconnect: () => void;
+  // Additional fields for simple access
+  isExtended: boolean;
+  lastUpdate: Date | null;
 }
-
-// Unique ID generator for this hook instance
-let instanceCounter = 0;
 
 export function useRealtimePrice(
   symbol: string,
-  market: string,
+  market: string = 'KR',
   options: UseRealtimePriceOptions = {}
 ): UseRealtimePriceResult {
-  const { enabled = true, onPriceUpdate } = options;
+  const { enabled = true, onPriceUpdate, pollInterval = 5000 } = options;
 
-  // State
   const [price, setPrice] = useState<RealtimePrice | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
   const [direction, setDirection] = useState<'up' | 'down' | 'unchanged'>('unchanged');
+  const [isExtended, setIsExtended] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  // Refs for tracking
-  const wsRef = useRef<WebSocket | null>(null);
   const lastPriceRef = useRef<number | null>(null);
-  const instanceIdRef = useRef<string>(`realtime-${++instanceCounter}`);
   const isMountedRef = useRef(true);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Store current symbol/market in refs for validation
-  const currentSymbolRef = useRef(symbol);
-  const currentMarketRef = useRef(market);
-
-  // Performance: Throttled price update setter to prevent excessive re-renders
-  // Max update rate of ~60fps (16ms)
-  const throttledPriceUpdateRef = useRef(
-    throttle((newPrice: RealtimePrice, newDirection: 'up' | 'down' | 'unchanged', callback?: (price: RealtimePrice) => void) => {
-      setPrice(newPrice);
-      setDirection(newDirection);
-      callback?.(newPrice);
-    }, 16, { leading: true, trailing: true })
-  );
-
-  // Update refs when props change
-  useEffect(() => {
-    currentSymbolRef.current = symbol;
-    currentMarketRef.current = market;
-  }, [symbol, market]);
-
-  // Cleanup throttled function on unmount
-  useEffect(() => {
-    return () => {
-      throttledPriceUpdateRef.current.cancel();
-    };
-  }, []);
-
-  // Cleanup function for this instance
-  const cleanupConnection = useCallback(() => {
-    logger.websocket.debug('Cleaning up connection for:', currentSymbolRef.current);
-
-    // Unregister all subscriptions for this instance
-    const instanceId = instanceIdRef.current;
-    subscriptionManager.unregister(`${instanceId}-ws`);
-    subscriptionManager.unregister(`${instanceId}-ping`);
-    subscriptionManager.unregister(`${instanceId}-reconnect`);
-
-    // Close WebSocket if still open
-    if (wsRef.current) {
-      const ws = wsRef.current;
-      ws.onopen = null;
-      ws.onmessage = null;
-      ws.onclose = null;
-      ws.onerror = null;
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
-      }
-      wsRef.current = null;
-    }
-  }, []);
-
-  // Connect function
-  const connect = useCallback(() => {
-    if (!enabled || !symbol) {
-      logger.websocket.debug('Not connecting - enabled:', enabled, 'symbol:', symbol);
-      return;
-    }
-
-    const instanceId = instanceIdRef.current;
-    const connectionSymbol = symbol;
-    const connectionMarket = market;
-
-    // Clean up any existing connection first
-    cleanupConnection();
-
-    if (!isMountedRef.current) return;
-
-    logger.websocket.log('Connecting to:', connectionSymbol, connectionMarket);
-    setStatus('connecting');
-    setError(null);
+  const fetchPrice = useCallback(async () => {
+    if (!isMountedRef.current || !symbol || !enabled) return;
 
     try {
-      const ws = new WebSocket(
-        `${WS_BASE_URL}/ws/realtime/${encodeURIComponent(connectionSymbol)}?market=${encodeURIComponent(connectionMarket)}`
+      const response = await fetch(
+        `${API_BASE_URL}/api/realtime/price/${encodeURIComponent(symbol)}?market=${encodeURIComponent(market)}`
       );
-      wsRef.current = ws;
 
-      // Register WebSocket with subscription manager
-      subscriptionManager.registerWebSocket(`${instanceId}-ws`, ws, connectionSymbol);
-
-      ws.onopen = () => {
-        // Validate we're still on the same symbol
-        if (currentSymbolRef.current !== connectionSymbol) {
-          logger.websocket.debug('Symbol changed during connect, closing stale connection');
-          ws.close();
-          return;
+      if (!response.ok) {
+        if (isMountedRef.current) {
+          setStatus('error');
+          setError(`HTTP ${response.status}`);
         }
+        return;
+      }
 
-        if (!isMountedRef.current) return;
+      const data = await response.json();
 
-        logger.websocket.log('Connected to:', connectionSymbol);
-        setStatus('connected');
-        setError(null);
-
-        // Register ping interval
-        subscriptionManager.registerInterval(
-          `${instanceId}-ping`,
-          () => {
-            if (ws.readyState === WebSocket.OPEN && currentSymbolRef.current === connectionSymbol) {
-              ws.send('ping');
-            }
-          },
-          30000,
-          connectionSymbol
-        );
-      };
-
-      ws.onmessage = (event) => {
-        // CRITICAL: Validate this message is for the current symbol
-        if (currentSymbolRef.current !== connectionSymbol) {
-          logger.websocket.debug('Ignoring message for stale symbol:', connectionSymbol);
-          return;
-        }
-
-        if (!isMountedRef.current) return;
-
-        try {
-          const data = JSON.parse(event.data);
-
-          if (data.type === 'price') {
-            const newPrice: RealtimePrice = {
-              price: data.price,
-              change: data.change,
-              changePct: data.change_pct,
-              high: data.high,
-              low: data.low,
-              open: data.open,
-              volume: data.volume,
-              prevClose: data.prev_close,
-              timestamp: data.timestamp,
-              symbol: connectionSymbol,
-            };
-
-            // Determine price direction
-            let newDirection: 'up' | 'down' | 'unchanged' = 'unchanged';
-            if (lastPriceRef.current !== null) {
-              if (newPrice.price > lastPriceRef.current) {
-                newDirection = 'up';
-              } else if (newPrice.price < lastPriceRef.current) {
-                newDirection = 'down';
-              }
-            }
-            lastPriceRef.current = newPrice.price;
-
-            // Performance: Use throttled update to prevent excessive re-renders
-            throttledPriceUpdateRef.current(newPrice, newDirection, onPriceUpdate);
-          } else if (data.type === 'error') {
-            logger.websocket.error('Error from server:', data.message);
-            setError(data.message);
-            if (data.code === 'KIS_NOT_CONFIGURED') {
-              setStatus('error');
-            }
-          } else if (data.type === 'connected') {
-            setStatus('connected');
-          }
-        } catch {
-          // Ignore non-JSON messages (pong, etc.)
-        }
-      };
-
-      ws.onclose = () => {
-        // Only handle if this is still the current connection
-        if (currentSymbolRef.current !== connectionSymbol) {
-          logger.websocket.debug('Closed stale connection for:', connectionSymbol);
-          return;
-        }
-
-        if (!isMountedRef.current) return;
-
-        logger.websocket.log('Disconnected from:', connectionSymbol);
-        setStatus('disconnected');
-
-        // Cleanup ping interval
-        subscriptionManager.unregister(`${instanceId}-ping`);
-
-        // Auto-reconnect with backoff (only if still same symbol and enabled)
-        if (enabled && currentSymbolRef.current === connectionSymbol) {
-          const delay = 3000; // 3 second reconnect delay
-          logger.websocket.debug('Scheduling reconnect in', delay, 'ms');
-
-          subscriptionManager.registerTimeout(
-            `${instanceId}-reconnect`,
-            () => {
-              if (currentSymbolRef.current === connectionSymbol && isMountedRef.current) {
-                connect();
-              }
-            },
-            delay,
-            connectionSymbol
-          );
-        }
-      };
-
-      ws.onerror = () => {
-        if (currentSymbolRef.current !== connectionSymbol) return;
-        if (!isMountedRef.current) return;
-
-        logger.websocket.error('WebSocket error for:', connectionSymbol);
-        setStatus('error');
-        setError('WebSocket connection error');
-      };
-    } catch (err) {
       if (!isMountedRef.current) return;
-      logger.websocket.error('Connection failed:', err);
-      setStatus('error');
-      setError(err instanceof Error ? err.message : 'Connection failed');
+
+      const newPrice = data.price;
+      const volume = data.volume || 0;
+      const isExtendedHours = data.is_extended_hours || false;
+      const timestamp = data.timestamp || new Date().toISOString();
+
+      // Determine direction
+      let newDirection: 'up' | 'down' | 'unchanged' = 'unchanged';
+      if (lastPriceRef.current !== null) {
+        if (newPrice > lastPriceRef.current) {
+          newDirection = 'up';
+        } else if (newPrice < lastPriceRef.current) {
+          newDirection = 'down';
+        }
+      }
+      lastPriceRef.current = newPrice;
+      setDirection(newDirection);
+
+      // Calculate change (use last price as reference since we don't have prevClose)
+      const prevClose = lastPriceRef.current || newPrice;
+      const change = newPrice - prevClose;
+      const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+
+      const priceData: RealtimePrice = {
+        price: newPrice,
+        change: change,
+        changePct: changePct,
+        high: newPrice,
+        low: newPrice,
+        open: prevClose,
+        volume: volume,
+        prevClose: prevClose,
+        timestamp: timestamp,
+        symbol: symbol,
+        isExtendedHours: isExtendedHours,
+      };
+
+      setPrice(priceData);
+      setIsExtended(isExtendedHours);
+      setLastUpdate(new Date(timestamp));
+      setStatus('connected');
+      setError(null);
+
+      // Call callback if provided
+      if (onPriceUpdate) {
+        onPriceUpdate(priceData);
+      }
+    } catch (err) {
+      if (isMountedRef.current) {
+        console.error('Failed to fetch real-time price:', err);
+        setStatus('error');
+        setError(err instanceof Error ? err.message : 'Failed to fetch price');
+      }
     }
-  }, [symbol, market, enabled, onPriceUpdate, cleanupConnection]);
+  }, [symbol, market, enabled, onPriceUpdate]);
 
-  // Manual reconnect
-  const reconnect = useCallback(() => {
-    logger.websocket.log('Manual reconnect requested');
-    connect();
-  }, [connect]);
-
-  // Effect: Connect on mount and symbol change
+  // Start/stop polling based on enabled state
   useEffect(() => {
     isMountedRef.current = true;
 
-    logger.websocket.debug('Symbol effect triggered:', { symbol, market, enabled });
-
-    if (enabled && symbol) {
-      // CRITICAL: Reset ALL state when symbol changes
-      setPrice(null);
-      setDirection('unchanged');
-      setError(null);
-      lastPriceRef.current = null;
-
-      // Update subscription manager's current ticker
-      subscriptionManager.setCurrentTicker(symbol, market);
-
-      // Connect to new symbol
-      connect();
+    if (!enabled || !symbol) {
+      setStatus('disconnected');
+      return;
     }
 
-    return () => {
-      logger.websocket.debug('Cleanup effect for:', symbol);
-      isMountedRef.current = false;
-      cleanupConnection();
-    };
-  }, [symbol, market, enabled, connect, cleanupConnection]);
+    // Reset state on symbol change
+    setPrice(null);
+    setDirection('unchanged');
+    setError(null);
+    lastPriceRef.current = null;
+    setStatus('connecting');
 
-  // Effect: Cleanup on unmount
-  useEffect(() => {
+    // Fetch immediately
+    fetchPrice();
+
+    // Then poll at interval
+    intervalRef.current = setInterval(fetchPrice, pollInterval);
+
     return () => {
       isMountedRef.current = false;
-      cleanupConnection();
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
     };
-  }, [cleanupConnection]);
+  }, [symbol, market, enabled, fetchPrice, pollInterval]);
+
+  const reconnect = useCallback(() => {
+    setStatus('connecting');
+    fetchPrice();
+  }, [fetchPrice]);
 
   return {
     price,
@@ -320,5 +174,10 @@ export function useRealtimePrice(
     error,
     direction,
     reconnect,
+    isExtended,
+    lastUpdate,
   };
 }
+
+// Default export for backward compatibility
+export default useRealtimePrice;

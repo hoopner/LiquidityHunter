@@ -974,3 +974,129 @@ export async function getMarketSymbols(
 
   return response.json();
 }
+
+// --- Real-Time Data Functions ---
+
+export interface RealtimeStatusResponse {
+  status: 'running' | 'no_recent_data';
+  ticks: {
+    [market: string]: {
+      symbols: number;
+      ticks_5min: number;
+      oldest: string | null;
+      newest: string | null;
+    };
+  };
+  candles: {
+    [timeframe: string]: {
+      candles_1h: number;
+      latest: string | null;
+    };
+  };
+}
+
+export interface RealtimePriceResponse {
+  symbol: string;
+  market: string;
+  price: number;
+  volume: number;
+  timestamp: string | null;
+  is_extended_hours: boolean;
+}
+
+export interface RealtimeLatestResponse {
+  count: number;
+  prices: RealtimePriceResponse[];
+}
+
+export interface RealtimeCandlesResponse {
+  symbol: string;
+  market: string;
+  timeframe: string;
+  count: number;
+  candles: {
+    time: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }[];
+}
+
+/**
+ * Get real-time data collection status
+ */
+export async function getRealtimeStatus(): Promise<RealtimeStatusResponse> {
+  const response = await fetch(`${BASE_URL}/api/realtime/status`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get latest real-time price for a symbol
+ */
+export async function getRealtimePrice(
+  symbol: string,
+  market: string = 'KR'
+): Promise<RealtimePriceResponse> {
+  const params = new URLSearchParams({ market });
+  const response = await fetch(`${BASE_URL}/api/realtime/price/${encodeURIComponent(symbol)}?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get latest real-time prices for all symbols
+ */
+export async function getRealtimeLatest(
+  market?: string,
+  limit: number = 200
+): Promise<RealtimeLatestResponse> {
+  const params = new URLSearchParams({ limit: limit.toString() });
+  if (market) params.set('market', market);
+
+  const response = await fetch(`${BASE_URL}/api/realtime/latest?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get real-time OHLC candles for a symbol
+ */
+export async function getRealtimeCandles(
+  symbol: string,
+  market: string = 'KR',
+  timeframe: string = '1min',
+  limit: number = 100
+): Promise<RealtimeCandlesResponse> {
+  const params = new URLSearchParams({
+    market,
+    timeframe,
+    limit: limit.toString(),
+  });
+
+  const response = await fetch(`${BASE_URL}/api/realtime/candles/${encodeURIComponent(symbol)}?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
