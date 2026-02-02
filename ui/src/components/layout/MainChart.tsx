@@ -210,6 +210,7 @@ export const MainChart = memo(function MainChart({
 
   // Order Block state
   const [analyzeData, setAnalyzeData] = useState<AnalyzeResponse | null>(null);
+  // Order Block and FVG toggles
   const [showOB, setShowOB] = useState(true);
   // FVG toggle (independent from OB)
   const [showFVG, setShowFVG] = useState(true);
@@ -310,9 +311,10 @@ export const MainChart = memo(function MainChart({
         high: bar.high,
         low: bar.low,
         close: bar.close,
-        color: isUp ? '#26a69a' : '#ef5350',
-        borderColor: isUp ? '#26a69a' : '#ef5350',
-        wickColor: isUp ? '#26a69a' : '#ef5350',
+        // Korean standard: Red=Up, Green=Down
+        color: isUp ? '#ef5350' : '#26a69a',
+        borderColor: isUp ? '#ef5350' : '#26a69a',
+        wickColor: isUp ? '#ef5350' : '#26a69a',
       };
     });
 
@@ -931,9 +933,35 @@ export const MainChart = memo(function MainChart({
     setObRightOffset(0);
   }, [symbol, market, timeframe]);
 
-  // Initialize chart
+  // Ref to prevent double chart creation
+  const chartCreatedRef = useRef(false);
+
+  // Initialize chart - ONLY ONCE on mount
   useEffect(() => {
     if (!chartContainerRef.current) return;
+
+    // Prevent duplicate chart creation
+    if (chartCreatedRef.current && chartRef.current) {
+      console.warn('[Chart] Chart already exists, skipping creation');
+      return;
+    }
+
+    // CRITICAL: Clear any existing chart content before creating new one
+    if (chartRef.current) {
+      try {
+        chartRef.current.remove();
+      } catch (e) {
+        // Ignore removal errors
+      }
+      chartRef.current = null;
+    }
+
+    // Clear the container of any leftover elements
+    while (chartContainerRef.current.firstChild) {
+      chartContainerRef.current.removeChild(chartContainerRef.current.firstChild);
+    }
+
+    chartCreatedRef.current = true;
 
     const chart = createChart(chartContainerRef.current, {
       layout: {
@@ -996,12 +1024,13 @@ export const MainChart = memo(function MainChart({
 
     // Create candlestick series (v5 API)
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#26a69a',
-      downColor: '#ef5350',
-      borderUpColor: '#26a69a',
-      borderDownColor: '#ef5350',
-      wickUpColor: '#26a69a',
-      wickDownColor: '#ef5350',
+      // Korean standard: Red=Up, Green=Down
+      upColor: '#ef5350',
+      downColor: '#26a69a',
+      borderUpColor: '#ef5350',
+      borderDownColor: '#26a69a',
+      wickUpColor: '#ef5350',
+      wickDownColor: '#26a69a',
       // Show current price on right axis
       lastValueVisible: true,
       priceLineVisible: true,
@@ -1360,8 +1389,10 @@ export const MainChart = memo(function MainChart({
         clearTimeout(zoomResetTimerRef.current);
       }
       chart.remove();
+      chartCreatedRef.current = false; // Reset on cleanup
     };
-  }, [updateBoxPositions]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty deps - chart created ONCE on mount
 
   // Update chart data - now uses memoized data conversions
   useEffect(() => {
@@ -1369,7 +1400,7 @@ export const MainChart = memo(function MainChart({
       return;
     }
 
-    // Performance: Use pre-computed memoized data instead of recalculating
+    // Set candlestick data (setData replaces all existing data)
     candlestickSeriesRef.current.setData(candlestickData);
     ema20SeriesRef.current.setData(maData.ema20);
     ema200SeriesRef.current.setData(maData.ema200);
@@ -1449,8 +1480,7 @@ export const MainChart = memo(function MainChart({
     sma200SeriesRef.current?.applyOptions({ visible: showSMA200 });
   }, [showSMA200]);
 
-  // Real-time last candle update
-  // ONLY updates the last candle - does NOT recalculate indicators or touch historical data
+  // Real-time update from realtimePrice prop (WebSocket)
   useEffect(() => {
     if (!realtimePrice || !data || !candlestickSeriesRef.current) return;
 
@@ -1460,7 +1490,8 @@ export const MainChart = memo(function MainChart({
 
     // Update only the last candle with real-time data
     const isUp = realtimePrice.price >= lastBar.open;
-    const candleColor = isUp ? '#26a69a' : '#ef5350';
+    // Korean standard: Red=Up, Green=Down
+    const candleColor = isUp ? '#ef5350' : '#26a69a';
 
     const updatedCandle: CandlestickData<Time> = {
       time: lastBar.time as Time,
@@ -1468,13 +1499,11 @@ export const MainChart = memo(function MainChart({
       high: Math.max(lastBar.high, realtimePrice.high),
       low: Math.min(lastBar.low, realtimePrice.low),
       close: realtimePrice.price,
-      // Color based on real-time price vs open
       color: candleColor,
       wickColor: candleColor,
       borderColor: candleColor,
     };
 
-    // Update just the last candle (lightweight-charts handles this efficiently)
     candlestickSeriesRef.current.update(updatedCandle);
   }, [realtimePrice, data]);
 
@@ -2236,8 +2265,9 @@ export const MainChart = memo(function MainChart({
 
           <div className="ml-auto flex items-center gap-4 text-xs text-[var(--text-secondary)]">
             {ob && showOB && (
-              <span className={`flex items-center gap-1 ${isBuyOB ? 'text-[#26a69a]' : 'text-[#ef5350]'}`}>
-                <span className={`w-3 h-3 rounded ${isBuyOB ? 'bg-[#26a69a]' : 'bg-[#ef5350]'} opacity-40`}></span>
+              // Korean standard: Buy=Red, Sell=Green
+              <span className={`flex items-center gap-1 ${isBuyOB ? 'text-[#ef5350]' : 'text-[#26a69a]'}`}>
+                <span className={`w-3 h-3 rounded ${isBuyOB ? 'bg-[#ef5350]' : 'bg-[#26a69a]'} opacity-40`}></span>
                 {isBuyOB ? 'Buy' : 'Sell'} OB
                 {ob.has_fvg && ' + FVG'}
                 {/* Volume strength badge */}
@@ -2635,22 +2665,25 @@ export const MainChart = memo(function MainChart({
           } else if (isRetestActive) {
             // Cyan/magenta border for active retest
             borderColor = retestDirection === 'bull' ? 'rgba(0, 255, 200, 0.95)' : 'rgba(255, 50, 150, 0.95)';
+            // Korean standard: Buy=Red, Sell=Green
             bgColor = isBuyOB
-              ? `rgba(38, 166, 154, ${bgOpacity + 0.1})`
-              : `rgba(239, 83, 80, ${bgOpacity + 0.1})`;
+              ? `rgba(239, 83, 80, ${bgOpacity + 0.1})`
+              : `rgba(38, 166, 154, ${bgOpacity + 0.1})`;
           } else if (isVolumatic) {
             // Gold border for high volumatic score
             borderColor = 'rgba(255, 215, 0, 0.9)';
+            // Korean standard: Buy=Red, Sell=Green
             bgColor = isBuyOB
-              ? `rgba(38, 166, 154, ${bgOpacity})`
-              : `rgba(239, 83, 80, ${bgOpacity})`;
+              ? `rgba(239, 83, 80, ${bgOpacity})`
+              : `rgba(38, 166, 154, ${bgOpacity})`;
           } else {
+            // Korean standard: Buy=Red, Sell=Green
             bgColor = isBuyOB
-              ? `rgba(38, 166, 154, ${bgOpacity})`
-              : `rgba(239, 83, 80, ${bgOpacity})`;
+              ? `rgba(239, 83, 80, ${bgOpacity})`
+              : `rgba(38, 166, 154, ${bgOpacity})`;
             borderColor = isBuyOB
-              ? `rgba(38, 166, 154, ${borderOpacity})`
-              : `rgba(239, 83, 80, ${borderOpacity})`;
+              ? `rgba(239, 83, 80, ${borderOpacity})`
+              : `rgba(38, 166, 154, ${borderOpacity})`;
           }
 
           // Skip rendering if dimensions are invalid
@@ -2676,10 +2709,12 @@ export const MainChart = memo(function MainChart({
                   : isVolumatic
                   ? `0 0 ${glowIntensity} rgba(255, 215, 0, 0.6), 0 0 25px rgba(255, 215, 0, 0.3)`
                   : isHighConfluence
-                  ? `0 0 ${glowIntensity} ${isBuyOB ? 'rgba(38, 166, 154, 0.7)' : 'rgba(239, 83, 80, 0.7)'}, 0 0 20px rgba(255, 215, 0, 0.4)`
+                  // Korean standard: Buy=Red, Sell=Green
+                  ? `0 0 ${glowIntensity} ${isBuyOB ? 'rgba(239, 83, 80, 0.7)' : 'rgba(38, 166, 154, 0.7)'}, 0 0 20px rgba(255, 215, 0, 0.4)`
                   : isAged
                   ? 'none'
-                  : `0 0 ${glowIntensity} ${isBuyOB ? `rgba(38, 166, 154, ${isWeak ? 0.2 : 0.5})` : `rgba(239, 83, 80, ${isWeak ? 0.2 : 0.5})`}`,
+                  // Korean standard: Buy=Red, Sell=Green
+                  : `0 0 ${glowIntensity} ${isBuyOB ? `rgba(239, 83, 80, ${isWeak ? 0.2 : 0.5})` : `rgba(38, 166, 154, ${isWeak ? 0.2 : 0.5})`}`,
                 pointerEvents: 'none',
                 opacity: isAged ? 0.5 : isWeak ? 0.6 : 1,
                 animation: isRetestActive ? 'pulse 1.5s ease-in-out infinite' : undefined,
@@ -2691,7 +2726,8 @@ export const MainChart = memo(function MainChart({
                 <div
                   className="px-2 py-0.5 text-xs font-bold rounded"
                   style={{
-                    backgroundColor: isAged ? 'rgba(128, 128, 128, 0.9)' : isBuyOB ? 'rgba(0, 200, 100, 0.95)' : 'rgba(220, 50, 50, 0.95)',
+                    // Korean standard: Buy=Red, Sell=Green
+                    backgroundColor: isAged ? 'rgba(128, 128, 128, 0.9)' : isBuyOB ? 'rgba(220, 50, 50, 0.95)' : 'rgba(0, 200, 100, 0.95)',
                     color: 'white',
                     textShadow: '0 1px 2px rgba(0,0,0,0.5)',
                   }}
@@ -2716,7 +2752,8 @@ export const MainChart = memo(function MainChart({
                 className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center"
                 style={{
                   pointerEvents: 'auto',
-                  backgroundColor: isResizingOB ? (isBuyOB ? 'rgba(38, 166, 154, 0.4)' : 'rgba(239, 83, 80, 0.4)') : 'transparent',
+                  // Korean standard: Buy=Red, Sell=Green
+                  backgroundColor: isResizingOB ? (isBuyOB ? 'rgba(239, 83, 80, 0.4)' : 'rgba(38, 166, 154, 0.4)') : 'transparent',
                 }}
                 onMouseDown={handleObResizeStart}
                 title="좌우로 드래그하여 확장/축소"
@@ -2724,7 +2761,8 @@ export const MainChart = memo(function MainChart({
                 <div
                   className="w-1 h-8 rounded"
                   style={{
-                    backgroundColor: isBuyOB ? 'rgba(38, 166, 154, 0.9)' : 'rgba(239, 83, 80, 0.9)',
+                    // Korean standard: Buy=Red, Sell=Green
+                    backgroundColor: isBuyOB ? 'rgba(239, 83, 80, 0.9)' : 'rgba(38, 166, 154, 0.9)',
                   }}
                 />
               </div>
@@ -2750,8 +2788,9 @@ export const MainChart = memo(function MainChart({
                 top: fvgPos.top,
                 width: fvgWidth,
                 height: Math.max(2, fvgHeight), // Minimum 2px height
-                backgroundColor: isBuyFVG ? 'rgba(38, 166, 154, 0.15)' : 'rgba(239, 83, 80, 0.15)',
-                border: `1px dashed ${isBuyFVG ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)'}`,
+                // Korean standard: Buy=Red, Sell=Green
+                backgroundColor: isBuyFVG ? 'rgba(239, 83, 80, 0.15)' : 'rgba(38, 166, 154, 0.15)',
+                border: `1px dashed ${isBuyFVG ? 'rgba(239, 83, 80, 0.6)' : 'rgba(38, 166, 154, 0.6)'}`,
                 borderRadius: '2px',
                 pointerEvents: 'none',
               }}
@@ -2760,7 +2799,8 @@ export const MainChart = memo(function MainChart({
               <div
                 className="absolute top-0 left-1 px-1 py-0.5 text-[9px] font-bold rounded"
                 style={{
-                  backgroundColor: isBuyFVG ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
+                  // Korean standard: Buy=Red, Sell=Green
+                  backgroundColor: isBuyFVG ? 'rgba(239, 83, 80, 0.8)' : 'rgba(38, 166, 154, 0.8)',
                   color: 'white',
                 }}
               >
