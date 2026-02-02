@@ -10,6 +10,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { API_BASE_URL } from '../../config/api';
 
 // Types
 interface TechnicalMLResult {
@@ -148,7 +149,7 @@ export function AIPredictionsPanel({ symbol, market, onTradingLevelsChange }: AI
 
     try {
       const response = await fetch(
-        `http://localhost:8000/api/ai/technical_ml?symbol=${encodeURIComponent(symbol)}&market=${market}`
+        `${API_BASE_URL}/api/ai/technical_ml?symbol=${encodeURIComponent(symbol)}&market=${market}`
       );
       if (!response.ok) throw new Error('Failed to fetch');
       const data = await response.json();
@@ -169,7 +170,7 @@ export function AIPredictionsPanel({ symbol, market, onTradingLevelsChange }: AI
 
     try {
       const response = await fetch(
-        `http://localhost:8000/api/ai/lstm_predict?symbol=${encodeURIComponent(symbol)}&market=${market}`
+        `${API_BASE_URL}/api/ai/lstm_predict?symbol=${encodeURIComponent(symbol)}&market=${market}`
       );
       if (!response.ok) throw new Error('Failed to fetch');
       const data = await response.json();
@@ -190,7 +191,7 @@ export function AIPredictionsPanel({ symbol, market, onTradingLevelsChange }: AI
 
     try {
       const response = await fetch(
-        `http://localhost:8000/api/ai/lh_analysis?symbol=${encodeURIComponent(symbol)}&market=${market}`
+        `${API_BASE_URL}/api/ai/lh_analysis?symbol=${encodeURIComponent(symbol)}&market=${market}`
       );
       if (!response.ok) throw new Error('Failed to fetch');
       const data = await response.json();

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { API_BASE_URL } from '../../config/api';
 
 interface TradingConfig {
   intervalMinutes: number;
@@ -107,7 +108,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
   useEffect(() => {
     const fetchAccountInfo = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/trading/account-info');
+        const response = await fetch(`${API_BASE_URL}/api/trading/account-info`);
         if (response.ok) {
           const data = await response.json();
           setAccountInfo(data);
@@ -123,7 +124,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
   // Fetch status
   const fetchStatus = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/trading/status');
+      const response = await fetch(`${API_BASE_URL}/api/trading/status`);
       if (response.ok) {
         const data: TradingStatus = await response.json();
         setStatus(data);
@@ -156,7 +157,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
     if (!isRunning) return;
 
     try {
-      const response = await fetch('http://localhost:8000/api/trading/positions');
+      const response = await fetch(`${API_BASE_URL}/api/trading/positions`);
       if (response.ok) {
         const data = await response.json();
         setPositions(data);
@@ -206,7 +207,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/trading/start', {
+      const response = await fetch(`${API_BASE_URL}/api/trading/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -242,7 +243,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({ market = 'KR' }) => 
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/trading/stop', {
+      const response = await fetch(`${API_BASE_URL}/api/trading/stop`, {
         method: 'POST'
       });
 

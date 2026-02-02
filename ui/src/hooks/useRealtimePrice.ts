@@ -12,6 +12,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { subscriptionManager } from '../utils/subscriptionManager';
 import { throttle } from '../utils/performance';
 import { logger } from '../utils/logger';
+import { WS_BASE_URL } from '../config/api';
 
 export interface RealtimePrice {
   price: number;
@@ -40,8 +41,6 @@ interface UseRealtimePriceResult {
   direction: 'up' | 'down' | 'unchanged';
   reconnect: () => void;
 }
-
-const WS_BASE_URL = 'ws://localhost:8000';
 
 // Unique ID generator for this hook instance
 let instanceCounter = 0;

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { API_BASE_URL } from '../../config/api';
 
 // Common fields for all screener results
 interface BaseResult {
@@ -148,15 +149,15 @@ export function ScreenerPage({ onStockSelect, onBackToChart }: ScreenerPageProps
 
         switch (screenerType) {
           case 'ob_detect':
-            endpoint = 'http://localhost:8000/screen/ob';
+            endpoint = `${API_BASE_URL}/screen/ob`;
             transformFn = transformOBResults as (data: unknown) => DisplayResult[];
             break;
           case 'ema_cross':
-            endpoint = 'http://localhost:8000/screen_all';
+            endpoint = `${API_BASE_URL}/screen_all`;
             transformFn = transformEMAResults as (data: unknown) => DisplayResult[];
             break;
           case 'rsi_extreme':
-            endpoint = 'http://localhost:8000/screen/rsi';
+            endpoint = `${API_BASE_URL}/screen/rsi`;
             transformFn = transformRSIResults as (data: unknown) => DisplayResult[];
             break;
         }

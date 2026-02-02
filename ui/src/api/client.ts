@@ -2,6 +2,8 @@
  * API client for LiquidityHunter backend
  */
 
+import { API_BASE_URL } from '../config/api';
+
 import type {
   OHLCVResponse,
   ScreenResponse,
@@ -50,7 +52,7 @@ import type {
   ScanCacheStatus,
 } from './types';
 
-const BASE_URL = 'http://localhost:8000';
+const BASE_URL = API_BASE_URL;
 
 /**
  * Fetch OHLCV data with EMA indicators
