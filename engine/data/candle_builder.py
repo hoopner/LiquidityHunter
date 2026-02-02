@@ -29,13 +29,14 @@ class CandleBuilder:
     - 1D: Daily candles
     """
 
+    # PostgreSQL date_trunc units and interval seconds
     INTERVALS = {
-        '1min': ('1 minute', 60),
-        '5min': ('5 minutes', 300),
-        '15min': ('15 minutes', 900),
-        '1h': ('1 hour', 3600),
-        '4h': ('4 hours', 14400),
-        '1D': ('1 day', 86400),
+        '1min': ('minute', 60),
+        '5min': ('minute', 300),      # Will use custom bucketing
+        '15min': ('minute', 900),     # Will use custom bucketing
+        '1h': ('hour', 3600),
+        '4h': ('hour', 14400),        # Will use custom bucketing
+        '1D': ('day', 86400),
     }
 
     def __init__(self):
@@ -74,13 +75,28 @@ class CandleBuilder:
             logger.error("No database connection")
             return 0
 
-        interval_sql, _ = self.INTERVALS[timeframe]
+        trunc_unit, interval_seconds = self.INTERVALS[timeframe]
 
         try:
             cur = self.db_conn.cursor()
 
-            # Build candles from unprocessed ticks
-            # Using PostgreSQL date_trunc for time bucketing
+            # Build time bucket expression based on interval
+            # For intervals that are multiples of the base unit, use custom bucketing
+            if timeframe == '1min':
+                time_bucket = "date_trunc('minute', timestamp_utc)"
+            elif timeframe == '5min':
+                time_bucket = "date_trunc('hour', timestamp_utc) + INTERVAL '1 minute' * (EXTRACT(MINUTE FROM timestamp_utc)::int / 5 * 5)"
+            elif timeframe == '15min':
+                time_bucket = "date_trunc('hour', timestamp_utc) + INTERVAL '1 minute' * (EXTRACT(MINUTE FROM timestamp_utc)::int / 15 * 15)"
+            elif timeframe == '1h':
+                time_bucket = "date_trunc('hour', timestamp_utc)"
+            elif timeframe == '4h':
+                time_bucket = "date_trunc('day', timestamp_utc) + INTERVAL '1 hour' * (EXTRACT(HOUR FROM timestamp_utc)::int / 4 * 4)"
+            elif timeframe == '1D':
+                time_bucket = "date_trunc('day', timestamp_utc)"
+            else:
+                time_bucket = "date_trunc('minute', timestamp_utc)"
+
             symbol_filter = "AND symbol = %s" if symbol else ""
             params = [symbol] if symbol else []
 
@@ -89,7 +105,7 @@ class CandleBuilder:
                     SELECT
                         symbol,
                         market,
-                        date_trunc('{interval_sql}', timestamp_utc) as candle_time,
+                        {time_bucket} as candle_time,
                         (array_agg(price ORDER BY timestamp_utc ASC))[1] as open,
                         MAX(price) as high,
                         MIN(price) as low,
@@ -98,7 +114,7 @@ class CandleBuilder:
                         COUNT(*) as tick_count
                     FROM realtime_ticks
                     WHERE processed = false {symbol_filter}
-                    GROUP BY symbol, market, date_trunc('{interval_sql}', timestamp_utc)
+                    GROUP BY symbol, market, {time_bucket}
                 )
                 INSERT INTO ohlcv_candles (symbol, market, timeframe, timestamp, open, high, low, close, volume)
                 SELECT
@@ -125,8 +141,8 @@ class CandleBuilder:
             cur.execute(query, params)
             count = cur.rowcount
 
-            # Mark processed ticks
-            if count > 0:
+            # Mark processed ticks (only for 1min - base timeframe)
+            if count > 0 and timeframe == '1min':
                 mark_query = f"""
                     UPDATE realtime_ticks
                     SET processed = true
