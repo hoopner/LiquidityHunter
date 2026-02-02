@@ -4182,3 +4182,233 @@ async def get_account_info():
         'account_type_name': '종합계좌' if account_type == '01' else '위탁계좌',
         'mode': 'mock' if use_mock else 'real'
     }
+
+
+# ============================================================================
+# REAL-TIME DATA API
+# ============================================================================
+
+def get_realtime_db_conn():
+    """Get database connection for real-time data"""
+    import psycopg2
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    try:
+        conn = psycopg2.connect(db_url)
+        return conn
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+
+
+@app.get("/api/realtime/price/{symbol}")
+async def get_realtime_price(
+    symbol: str,
+    market: str = Query(default="KR", description="Market: KR or US")
+):
+    """
+    Get latest real-time price for a symbol
+
+    Returns the most recent tick data from the real-time collector.
+    """
+    conn = get_realtime_db_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT price, volume, timestamp_utc, is_extended_hours
+            FROM realtime_ticks
+            WHERE symbol = %s AND market = %s
+            ORDER BY timestamp_utc DESC
+            LIMIT 1
+        """, (symbol.upper(), market.upper()))
+
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not row:
+            raise HTTPException(status_code=404, detail=f"No real-time data for {symbol}")
+
+        return {
+            "symbol": symbol.upper(),
+            "market": market.upper(),
+            "price": float(row[0]),
+            "volume": int(row[1]) if row[1] else 0,
+            "timestamp": row[2].isoformat() if row[2] else None,
+            "is_extended_hours": row[3] if row[3] is not None else False
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/realtime/latest")
+async def get_latest_prices(
+    market: Optional[str] = Query(default=None, description="Filter by market: KR or US"),
+    limit: int = Query(default=200, ge=1, le=500, description="Max number of results")
+):
+    """
+    Get latest real-time prices for all symbols
+
+    Returns the most recent tick for each symbol.
+    """
+    conn = get_realtime_db_conn()
+    try:
+        cur = conn.cursor()
+
+        market_filter = "AND market = %s" if market else ""
+        params = [market.upper()] if market else []
+
+        query = f"""
+            SELECT DISTINCT ON (symbol, market)
+                symbol, market, price, volume, timestamp_utc, is_extended_hours
+            FROM realtime_ticks
+            WHERE timestamp_utc > NOW() - INTERVAL '10 minutes'
+            {market_filter}
+            ORDER BY symbol, market, timestamp_utc DESC
+            LIMIT %s
+        """
+        params.append(limit)
+
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        return {
+            "count": len(rows),
+            "prices": [
+                {
+                    "symbol": row[0],
+                    "market": row[1],
+                    "price": float(row[2]),
+                    "volume": int(row[3]) if row[3] else 0,
+                    "timestamp": row[4].isoformat() if row[4] else None,
+                    "is_extended_hours": row[5] if row[5] is not None else False
+                }
+                for row in rows
+            ]
+        }
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/realtime/candles/{symbol}")
+async def get_realtime_candles(
+    symbol: str,
+    market: str = Query(default="KR", description="Market: KR or US"),
+    timeframe: str = Query(default="1min", description="Timeframe: 1min, 5min, 15min, 1h, 1D"),
+    limit: int = Query(default=100, ge=1, le=500, description="Number of candles")
+):
+    """
+    Get real-time OHLC candles for a symbol
+
+    Returns candles built from real-time tick data.
+    """
+    valid_timeframes = ['1min', '5min', '15min', '1h', '1D']
+    if timeframe not in valid_timeframes:
+        raise HTTPException(status_code=400, detail=f"Invalid timeframe. Use: {valid_timeframes}")
+
+    conn = get_realtime_db_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT timestamp, open, high, low, close, volume
+            FROM ohlcv_candles
+            WHERE symbol = %s AND market = %s AND timeframe = %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+        """, (symbol.upper(), market.upper(), timeframe, limit))
+
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        # Return in chronological order
+        candles = [
+            {
+                "time": row[0].isoformat() if row[0] else None,
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": int(row[5]) if row[5] else 0
+            }
+            for row in reversed(rows)
+        ]
+
+        return {
+            "symbol": symbol.upper(),
+            "market": market.upper(),
+            "timeframe": timeframe,
+            "count": len(candles),
+            "candles": candles
+        }
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/realtime/status")
+async def get_realtime_status():
+    """
+    Get real-time data collection status
+
+    Returns statistics about the real-time data collection.
+    """
+    conn = get_realtime_db_conn()
+    try:
+        cur = conn.cursor()
+
+        # Get recent tick stats
+        cur.execute("""
+            SELECT
+                market,
+                COUNT(DISTINCT symbol) as symbols,
+                COUNT(*) as ticks,
+                MIN(timestamp_utc) as oldest,
+                MAX(timestamp_utc) as newest
+            FROM realtime_ticks
+            WHERE timestamp_utc > NOW() - INTERVAL '5 minutes'
+            GROUP BY market
+        """)
+        tick_stats = {}
+        for row in cur.fetchall():
+            tick_stats[row[0]] = {
+                "symbols": row[1],
+                "ticks_5min": row[2],
+                "oldest": row[3].isoformat() if row[3] else None,
+                "newest": row[4].isoformat() if row[4] else None
+            }
+
+        # Get candle stats
+        cur.execute("""
+            SELECT
+                timeframe,
+                COUNT(*) as candles,
+                MAX(timestamp) as latest
+            FROM ohlcv_candles
+            WHERE timestamp > NOW() - INTERVAL '1 hour'
+            GROUP BY timeframe
+        """)
+        candle_stats = {}
+        for row in cur.fetchall():
+            candle_stats[row[0]] = {
+                "candles_1h": row[1],
+                "latest": row[2].isoformat() if row[2] else None
+            }
+
+        cur.close()
+        conn.close()
+
+        return {
+            "status": "running" if tick_stats else "no_recent_data",
+            "ticks": tick_stats,
+            "candles": candle_stats
+        }
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
