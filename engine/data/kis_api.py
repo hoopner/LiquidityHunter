@@ -317,6 +317,12 @@ class KISClient:
         data = self._request("GET", path, tr_id, params=params)
         output = data.get("output", {})
 
+        # Use KIS server timestamp instead of Mac system time
+        timestamp = self._parse_kis_timestamp(
+            output.get("stck_bsop_date", ""),  # Business date YYYYMMDD
+            output.get("stck_cntg_hour", ""),  # Trading time HHMMSS
+        )
+
         return {
             "symbol": symbol,
             "market": "KR",
@@ -328,8 +334,39 @@ class KISClient:
             "low": float(output.get("stck_lwpr", 0)),
             "open": float(output.get("stck_oprc", 0)),
             "prev_close": float(output.get("stck_sdpr", 0)),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": timestamp,
         }
+
+    def _parse_kis_timestamp(self, date_str: str, time_str: str) -> str:
+        """
+        Parse KIS server timestamp from date and time strings.
+
+        Args:
+            date_str: Date in YYYYMMDD format
+            time_str: Time in HHMMSS format
+
+        Returns:
+            ISO format timestamp string
+        """
+        try:
+            if date_str and len(date_str) == 8:
+                year = int(date_str[:4])
+                month = int(date_str[4:6])
+                day = int(date_str[6:8])
+
+                hour, minute, second = 0, 0, 0
+                if time_str and len(time_str) >= 6:
+                    hour = int(time_str[:2])
+                    minute = int(time_str[2:4])
+                    second = int(time_str[4:6])
+
+                dt = datetime(year, month, day, hour, minute, second)
+                return dt.isoformat()
+        except (ValueError, TypeError):
+            pass
+
+        # Fallback to system time if parsing fails
+        return datetime.now().isoformat()
 
     def _get_overseas_price(self, symbol: str) -> Dict[str, Any]:
         """Get overseas (US) stock current price."""
@@ -372,6 +409,12 @@ class KISClient:
                     except (ValueError, TypeError):
                         return default
 
+                # Use KIS server timestamp instead of Mac system time
+                timestamp = self._parse_kis_timestamp(
+                    output.get("xymd", ""),  # Date YYYYMMDD
+                    output.get("xhms", ""),  # Time HHMMSS
+                )
+
                 return {
                     "symbol": symbol,
                     "market": "US",
@@ -384,7 +427,7 @@ class KISClient:
                     "low": safe_float(output.get("low", 0)),
                     "open": safe_float(output.get("open", 0)),
                     "prev_close": safe_float(output.get("base", 0)),
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": timestamp,
                 }
             except Exception as e:
                 # Try next exchange
