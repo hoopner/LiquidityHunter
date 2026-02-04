@@ -62,17 +62,25 @@ const BASE_URL = API_BASE_URL;
  * - yfinance (delayed) as fallback
  *
  * Check response.source to see which source was used.
+ *
+ * @param limit - Max bars to return. 0 = auto (default ~500). For intraday, use 2000+
  */
 export async function fetchOHLCV(
   symbol: string,
   market: string = 'KR',
-  timeframe: string = '1D'
+  timeframe: string = '1D',
+  limit: number = 0
 ): Promise<OHLCVResponse> {
   const params = new URLSearchParams({
     symbol,
     market,
     tf: timeframe,
   });
+
+  // Add limit parameter if specified (0 = backend auto-determines)
+  if (limit > 0) {
+    params.set('limit', limit.toString());
+  }
 
   const response = await fetch(`${BASE_URL}/ohlcv?${params}`);
 

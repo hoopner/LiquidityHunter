@@ -29,7 +29,7 @@ export type Timeframe = typeof TIMEFRAMES[number];
 
 // Note: dedup/sort helpers removed - used inline or via useMemo
 
-interface MainChartProps {
+interface DailyChartProps {
   symbol?: string;
   market?: string;
   compact?: boolean;
@@ -133,10 +133,11 @@ function safeSetData(series: any, data: any[]): void {
 }
 
 /**
- * Main chart area with TradingView lightweight-charts
+ * Daily chart area with TradingView lightweight-charts
+ * Handles daily, weekly, monthly timeframes (1D, 1W, 1M)
  * Performance: Wrapped with React.memo to prevent unnecessary re-renders
  */
-export const MainChart = memo(function MainChart({
+export const DailyChart = memo(function DailyChart({
   symbol = '005930',
   market = 'KR',
   compact = false,
@@ -157,7 +158,7 @@ export const MainChart = memo(function MainChart({
   isActiveForDrawing = true,
   realtimePrice,
   tradingLevels,
-}: MainChartProps) {
+}: DailyChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -206,56 +207,27 @@ export const MainChart = memo(function MainChart({
   const [internalTimeframe, setInternalTimeframe] = useState<Timeframe>('1D');
   const [noData, setNoData] = useState(false);
 
-  // Range preset for visible data (dynamic based on timeframe)
-  // Daily presets: 1M, 3M, 4M, 6M, 1Y, ALL
-  // Intraday presets: 1D, 2D, 5D, 10D, ALL
+  // Range preset for visible data (daily presets only)
   type DailyPreset = '1M' | '3M' | '4M' | '6M' | '1Y' | 'ALL';
-  type IntradayPreset = '1D' | '2D' | '5D' | '10D' | 'ALL';
-  const [rangePreset, setRangePreset] = useState<DailyPreset | IntradayPreset>('4M');
+  const [rangePreset, setRangePreset] = useState<DailyPreset>('4M');
 
   // Share data with SubCharts when it changes
   useEffect(() => {
     onDataLoaded?.(data);
   }, [data, onDataLoaded]);
 
-  // Calculate default visible range based on timeframe
-  const getDefaultVisibleBars = useCallback((tf: string, preset: string): number => {
-    const isIntraday = isIntradayTimeframe(tf);
-
-    if (!isIntraday) {
-      // Daily timeframe presets (in trading days)
-      const dailyPresets: Record<string, number> = {
-        '1M': 22,    // ~1 month of trading days
-        '3M': 66,    // ~3 months
-        '4M': 88,    // ~4 months (default)
-        '6M': 132,   // ~6 months
-        '1Y': 252,   // ~1 year
-        'ALL': 9999, // Show all
-      };
-      return dailyPresets[preset] || 88;
-    } else {
-      // Intraday presets (in bars, scaled by timeframe)
-      // 1D = 1 trading day, 2D = 2 days, etc.
-      const barsPerDay: Record<string, number> = {
-        '1m': 390,   // 6.5 hours * 60 minutes
-        '5m': 78,    // 6.5 hours * 12 (5-min bars)
-        '15m': 26,   // 6.5 hours * 4 (15-min bars)
-        '30m': 13,   // 6.5 hours * 2
-        '1h': 7, '1H': 7,     // ~7 hourly bars per day
-        '4h': 2, '4H': 2,     // ~2 4-hour bars per day
-      };
-      // CASE-SENSITIVE: use exact tf match
-      const bpd = barsPerDay[tf] || 78;
-
-      const intradayPresets: Record<string, number> = {
-        '1D': bpd * 1,
-        '2D': bpd * 2,
-        '5D': bpd * 5,
-        '10D': bpd * 10,
-        'ALL': 9999,
-      };
-      return intradayPresets[preset] || bpd * 5; // Default to 5 days
-    }
+  // Calculate default visible range based on timeframe (daily only)
+  const getDefaultVisibleBars = useCallback((_tf: string, preset: string): number => {
+    // Daily timeframe presets (in trading days)
+    const dailyPresets: Record<string, number> = {
+      '1M': 22,    // ~1 month of trading days
+      '3M': 66,    // ~3 months
+      '4M': 88,    // ~4 months (default)
+      '6M': 132,   // ~6 months
+      '1Y': 252,   // ~1 year
+      'ALL': 9999, // Show all
+    };
+    return dailyPresets[preset] || 88;
   }, []);
 
   // Track if intraday data is available for this ticker
@@ -303,26 +275,8 @@ export const MainChart = memo(function MainChart({
     }
   };
 
-  // Determine if current timeframe is intraday (must be after timeframe declaration)
-  const isIntradayTf = isIntradayTimeframe(timeframe);
-
-  // DEBUG: Log timezone
-  console.log('[DEBUG TZ] market:', market, 'timezone:', getMarketTimezone(market), 'isIntraday:', isIntradayTf);
-
-  // Switch preset when timeframe type changes (daily <-> intraday)
-  const prevIsIntradayRef = useRef(isIntradayTf);
-  useEffect(() => {
-    if (prevIsIntradayRef.current !== isIntradayTf) {
-      prevIsIntradayRef.current = isIntradayTf;
-      // Reset to appropriate default preset
-      if (isIntradayTf) {
-        setRangePreset('ALL'); // Show all bars for intraday by default
-      } else {
-        setRangePreset('4M'); // 4 months for daily
-      }
-      console.log('[Chart] Timeframe type changed, reset preset to:', isIntradayTf ? 'ALL' : '4M');
-    }
-  }, [isIntradayTf]);
+  // DailyChart only handles daily timeframes - no intraday logic needed
+  console.log('[DailyChart] Rendering for timeframe:', timeframe);
 
   // Order Block state
   const [analyzeData, setAnalyzeData] = useState<AnalyzeResponse | null>(null);
@@ -1260,8 +1214,8 @@ export const MainChart = memo(function MainChart({
       console.error('[Chart]', id, '❌ Still', remainingCanvases.length, 'canvases after cleanup!');
     }
 
-    // Determine if intraday timeframe
-    const isIntradayTf = ['1m', '5m', '15m', '30m', '1h', '4h'].includes(timeframe);
+    // DailyChart only handles daily timeframes - always false
+    const isIntradayTf = false;
     const locale = market === 'KR' ? 'ko-KR' : 'en-US';
 
     // Weekday names for display
@@ -2513,13 +2467,10 @@ export const MainChart = memo(function MainChart({
             </button>
           </div>
 
-          {/* Range Presets - Dynamic based on timeframe */}
+          {/* Range Presets - Daily only */}
           <div className="flex items-center gap-1 border-l border-[var(--border-primary)] pl-2 ml-1">
             <span className="text-xs text-[var(--text-secondary)] mr-1">범위:</span>
-            {(isIntradayTf
-              ? (['1D', '2D', '5D', '10D', 'ALL'] as const)
-              : (['1M', '3M', '4M', '6M', '1Y', 'ALL'] as const)
-            ).map((preset) => (
+            {(['1M', '3M', '4M', '6M', '1Y', 'ALL'] as const).map((preset) => (
               <button
                 key={preset}
                 onClick={() => {

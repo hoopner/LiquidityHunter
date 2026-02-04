@@ -18,6 +18,34 @@ import { useDrawings } from '../../hooks/useDrawings';
 import { SubChartDrawingCanvas } from '../chart/SubChartDrawingCanvas';
 import type { ChartType } from '../../utils/DrawingManager';
 
+/**
+ * Get market timezone string for Intl API
+ */
+function getMarketTimezone(market: string): string {
+  return market === 'KR' ? 'Asia/Seoul' : 'America/New_York';
+}
+
+/**
+ * Convert UTC Unix timestamp to market local time for lightweight-charts.
+ * Official approach: https://tradingview.github.io/lightweight-charts/docs/time-zones
+ * lightweight-charts treats all times as UTC internally,
+ * so we "trick" it by shifting the timestamp.
+ */
+function timeToTz(originalTime: number, timeZone: string): number {
+  const zonedDate = new Date(
+    new Date(originalTime * 1000).toLocaleString('en-US', { timeZone })
+  );
+  return Math.floor(zonedDate.getTime() / 1000);
+}
+
+/**
+ * Check if timeframe is intraday (minute/hour based)
+ * CASE-SENSITIVE: 1m=minute, 1M=month
+ */
+function isIntradayTimeframe(tf: string): boolean {
+  return ['1m', '5m', '15m', '30m', '1h', '1H', '4h', '4H'].includes(tf);
+}
+
 // Indicator types - replaced Williams %R with 3 Stochastics
 export type IndicatorType = 'stoch_slow' | 'stoch_med' | 'stoch_fast' | 'rsi' | 'macd' | 'volume' | 'rsi_bb';
 export type ExpandedIndicator = IndicatorType | null;
@@ -400,6 +428,7 @@ export function SubCharts({
         {/* Expanded chart */}
         <div className="flex-1">
           <IndicatorChart
+            key={`${expandedIndicator}-${timeframe}-expanded`}
             indicator={expandedIndicator}
             data={data}
             showTimeScale={true}
@@ -411,6 +440,8 @@ export function SubCharts({
             onDrawingComplete={onDrawingComplete}
             drawingHook={drawingHooks[expandedIndicator]}
             externalVisibleRange={externalVisibleRange}
+            market={market}
+            timeframe={timeframe}
           />
         </div>
       </div>
@@ -464,6 +495,7 @@ export function SubCharts({
               {/* Chart */}
               <div className="flex-1 min-h-0">
                 <IndicatorChart
+                  key={`${indicator}-${timeframe}`}
                   indicator={indicator}
                   data={data}
                   showTimeScale={indicator === 'volume'}
@@ -475,6 +507,8 @@ export function SubCharts({
                   onDrawingComplete={onDrawingComplete}
                   drawingHook={drawingHooks[indicator]}
                   externalVisibleRange={externalVisibleRange}
+                  market={market}
+                  timeframe={timeframe}
                 />
               </div>
             </div>
@@ -501,6 +535,8 @@ function IndicatorChart({
   onDrawingComplete,
   drawingHook,
   externalVisibleRange,
+  market = 'KR',
+  timeframe = '1D',
 }: {
   indicator: IndicatorType;
   data: OHLCVResponse | null;
@@ -513,11 +549,15 @@ function IndicatorChart({
   onDrawingComplete?: () => void;
   drawingHook?: ReturnType<typeof useDrawings>;
   externalVisibleRange?: { from: number; to: number } | null;
+  market?: string;
+  timeframe?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Line' | 'Histogram'>[]>([]);
   const [chartReady, setChartReady] = useState(false);
+  // Fingerprint to prevent infinite setData loops
+  const prevDataFingerprintRef = useRef<string>('');
 
   const config = indicatorConfig[indicator];
 
@@ -525,6 +565,11 @@ function IndicatorChart({
   // Create chart with NO mouse interactions for timeline
   useEffect(() => {
     if (!containerRef.current) return;
+
+    // NOTE: Data timestamps are already shifted to local market time
+    // NO additional offset needed in formatter - just format directly
+    // CASE-SENSITIVE: 1m=minute, 1M=month
+    const isIntradayTf = ['1m', '5m', '15m', '30m', '1h', '1H', '4h', '4H'].includes(timeframe);
 
     const chart = createChart(containerRef.current, {
       layout: {
@@ -543,11 +588,17 @@ function IndicatorChart({
       timeScale: {
         borderColor: '#2a2e39',
         visible: showTimeScale,
-        timeVisible: true,
+        timeVisible: isIntradayTf,
         secondsVisible: false,
         rightOffset: 20,  // MUST match main chart exactly for timeline sync
         // CRITICAL: These settings must match MainChart for consistent labels
-        tickMarkFormatter: undefined,  // Use default formatter
+        // Custom tick formatter for intraday: show HH:MM
+        tickMarkFormatter: isIntradayTf ? (time: number) => {
+          const date = new Date(time * 1000);
+          const hours = date.getUTCHours().toString().padStart(2, '0');
+          const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+          return `${hours}:${minutes}`;
+        } : undefined,
         fixLeftEdge: false,
         fixRightEdge: false,
       },
@@ -559,6 +610,27 @@ function IndicatorChart({
       // CRITICAL: Disable ALL mouse interactions - subchart is SLAVE to main chart
       handleScroll: false,
       handleScale: false,
+      // Localization - data is already timezone-shifted, no additional offset needed
+      localization: {
+        timeFormatter: (time: number | { year: number; month: number; day: number }) => {
+          if (typeof time === 'number') {
+            // Unix timestamp already shifted to local market time
+            const date = new Date(time * 1000);
+            if (isIntradayTf) {
+              const hours = date.getUTCHours().toString().padStart(2, '0');
+              const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+              return `${hours}:${minutes}`;
+            }
+            // Daily: YYYY-MM-DD
+            const y = date.getUTCFullYear();
+            const m = (date.getUTCMonth() + 1).toString().padStart(2, '0');
+            const d = date.getUTCDate().toString().padStart(2, '0');
+            return `${y}-${m}-${d}`;
+          }
+          // BusinessDay object
+          return `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
+        },
+      },
     });
 
     chartRef.current = chart;
@@ -681,14 +753,54 @@ function IndicatorChart({
       chartRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [indicator, showTimeScale]); // onChartReady, onSeriesReady intentionally excluded - they're stable via useCallback
+  }, [indicator, showTimeScale, market, timeframe]); // onChartReady, onSeriesReady intentionally excluded - they're stable via useCallback
 
   // Update chart data - use SAME timestamps from OHLCV data
+  // TIMEZONE: Apply same shift as MainChart to align with main candles
   useEffect(() => {
-    if (!data || !chartRef.current || seriesRef.current.length === 0) return;
+    if (!data || !chartRef.current || seriesRef.current.length === 0) {
+      return;
+    }
 
-    // All indicators use the SAME timestamp array from data.bars
-    const times = data.bars.map(bar => bar.time as Time);
+    // Create fingerprint to avoid re-setting identical data (prevents infinite loop)
+    const firstTime = data.bars[0]?.time;
+    const lastTime = data.bars[data.bars.length - 1]?.time;
+    const fingerprint = `${indicator}-${data.bars.length}-${firstTime}-${lastTime}-${timeframe}-${market}`;
+    if (fingerprint === prevDataFingerprintRef.current) {
+      return; // Skip - data hasn't changed
+    }
+    prevDataFingerprintRef.current = fingerprint;
+
+    console.log('[SubChart]', indicator, 'Setting data:', data.bars.length, 'bars');
+
+    // Use official lightweight-charts timezone approach (must match MainChart)
+    const isIntraday = isIntradayTimeframe(timeframe);
+    const tz = getMarketTimezone(market);
+
+    // Helper to apply timezone shift to a bar's time
+    const shiftTime = (barTime: any): Time => {
+      if (isIntraday && typeof barTime === 'number') {
+        return timeToTz(barTime, tz) as Time;
+      } else if (isIntraday && typeof barTime === 'string') {
+        // Handle both ISO datetime "2024-02-05T09:30:00" and plain date "2024-02-05"
+        const utcSeconds = Math.floor(new Date(barTime).getTime() / 1000);
+        return timeToTz(utcSeconds, tz) as Time;
+      }
+      return barTime as Time;
+    };
+
+    // All indicators use the SAME timestamp array from data.bars (with timezone shift)
+    const times = data.bars.map(bar => shiftTime(bar.time));
+
+    // Safe setData wrapper with error handling
+    const safeSetData = (series: ISeriesApi<'Line' | 'Histogram'>, chartData: any[], name: string) => {
+      try {
+        series.setData(chartData);
+        console.log('[SubChart]', indicator, name, ':', chartData.length, 'points');
+      } catch (e) {
+        console.error('[SubChart]', indicator, name, 'setData error:', e);
+      }
+    };
 
     switch (indicator) {
       case 'stoch_slow': {
@@ -699,8 +811,8 @@ function IndicatorChart({
         const dData: LineData<Time>[] = times
           .map((time, i) => ({ time, value: data.stoch_slow_d?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
-        (k as ISeriesApi<'Line'>).setData(kData);
-        (d as ISeriesApi<'Line'>).setData(dData);
+        safeSetData(k as ISeriesApi<'Line'>, kData, '%K');
+        safeSetData(d as ISeriesApi<'Line'>, dData, '%D');
         break;
       }
       case 'stoch_med': {
@@ -711,8 +823,8 @@ function IndicatorChart({
         const dData: LineData<Time>[] = times
           .map((time, i) => ({ time, value: data.stoch_med_d?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
-        (k as ISeriesApi<'Line'>).setData(kData);
-        (d as ISeriesApi<'Line'>).setData(dData);
+        safeSetData(k as ISeriesApi<'Line'>, kData, '%K');
+        safeSetData(d as ISeriesApi<'Line'>, dData, '%D');
         break;
       }
       case 'stoch_fast': {
@@ -723,89 +835,80 @@ function IndicatorChart({
         const dData: LineData<Time>[] = times
           .map((time, i) => ({ time, value: data.stoch_fast_d?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
-        (k as ISeriesApi<'Line'>).setData(kData);
-        (d as ISeriesApi<'Line'>).setData(dData);
+        safeSetData(k as ISeriesApi<'Line'>, kData, '%K');
+        safeSetData(d as ISeriesApi<'Line'>, dData, '%D');
         break;
       }
       case 'rsi': {
         const [main, signal] = seriesRef.current;
         const rsiData: LineData<Time>[] = times
-          .map((time, i) => ({ time, value: data.rsi[i] }))
+          .map((time, i) => ({ time, value: data.rsi?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value) && d.value > 0);
         const rsiSignalData: LineData<Time>[] = times
           .map((time, i) => ({ time, value: data.rsi_signal?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
-        (main as ISeriesApi<'Line'>).setData(rsiData);
-        (signal as ISeriesApi<'Line'>).setData(rsiSignalData);
+        safeSetData(main as ISeriesApi<'Line'>, rsiData, 'RSI');
+        safeSetData(signal as ISeriesApi<'Line'>, rsiSignalData, 'Signal');
         break;
       }
       case 'macd': {
         const [line, signal, histogram] = seriesRef.current;
         // DO NOT filter out zero values - zero is valid for MACD
         const macdLineData: LineData<Time>[] = times
-          .map((time, i) => ({ time, value: data.macd_line[i] }))
+          .map((time, i) => ({ time, value: data.macd_line?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
         const signalData: LineData<Time>[] = times
-          .map((time, i) => ({ time, value: data.macd_signal[i] }))
+          .map((time, i) => ({ time, value: data.macd_signal?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
         const histogramData: HistogramData<Time>[] = times
           .map((time, i) => ({
             time,
-            value: data.macd_histogram[i],
-            color: data.macd_histogram[i] >= 0 ? '#26a69a' : '#ef5350',
+            value: data.macd_histogram?.[i],
+            color: (data.macd_histogram?.[i] ?? 0) >= 0 ? '#26a69a' : '#ef5350',
           }))
           .filter(d => d.value != null && !isNaN(d.value));
-        (line as ISeriesApi<'Line'>).setData(macdLineData);
-        (signal as ISeriesApi<'Line'>).setData(signalData);
-        (histogram as ISeriesApi<'Histogram'>).setData(histogramData);
+        safeSetData(line as ISeriesApi<'Line'>, macdLineData, 'MACD');
+        safeSetData(signal as ISeriesApi<'Line'>, signalData, 'Signal');
+        safeSetData(histogram as ISeriesApi<'Histogram'>, histogramData, 'Histogram');
         break;
       }
       case 'volume': {
         const [main] = seriesRef.current;
         // Use more opaque colors for better visibility
-        const volumeData: HistogramData<Time>[] = data.bars.map(bar => ({
-          time: bar.time as Time,
+        // Apply timezone shift to time
+        const volumeData: HistogramData<Time>[] = data.bars.map((bar, i) => ({
+          time: times[i],
           value: bar.volume,
           color: bar.close >= bar.open ? '#26a69aCC' : '#ef5350CC',  // CC = 80% opacity
         }));
-        (main as ISeriesApi<'Histogram'>).setData(volumeData);
+        safeSetData(main as ISeriesApi<'Histogram'>, volumeData, 'Volume');
         break;
       }
       case 'rsi_bb': {
         const [rsiLine, bbUpper, bbLower] = seriesRef.current;
-        // RSI data
-        const rsiData: LineData<Time>[] = data.bars.map((bar, i) => ({
-          time: bar.time as Time,
+        // RSI data - use shifted times
+        const rsiData: LineData<Time>[] = times.map((time, i) => ({
+          time,
           value: data.rsi?.[i] || 50,
         }));
-        rsiLine.setData(rsiData);
+        safeSetData(rsiLine, rsiData, 'RSI');
         // BB upper data (skip initial zeros)
-        const bbUpperData: LineData<Time>[] = data.bars
-          .map((bar, i) => ({
-            time: bar.time as Time,
+        const bbUpperData: LineData<Time>[] = times
+          .map((time, i) => ({
+            time,
             value: data.rsi_bb_upper?.[i] || 0,
           }))
           .filter((d): d is LineData<Time> => d.value > 0);
-        bbUpper.setData(bbUpperData);
+        safeSetData(bbUpper, bbUpperData, 'BB Upper');
         // BB lower data (skip initial zeros)
-        const bbLowerData: LineData<Time>[] = data.bars
-          .map((bar, i) => ({
-            time: bar.time as Time,
+        const bbLowerData: LineData<Time>[] = times
+          .map((time, i) => ({
+            time,
             value: data.rsi_bb_lower?.[i] || 0,
           }))
           .filter((d): d is LineData<Time> => d.value > 0);
-        bbLower.setData(bbLowerData);
+        safeSetData(bbLower, bbLowerData, 'BB Lower');
         break;
-      }
-    }
-
-    // Sync to external visible range AFTER data is loaded (critical for timeline sync)
-    // This is more reliable than the parent's sync effect because data is now available
-    if (externalVisibleRange && chartRef.current) {
-      try {
-        chartRef.current.timeScale().setVisibleLogicalRange(externalVisibleRange);
-      } catch {
-        // Ignore - chart might not be ready
       }
     }
 
@@ -813,7 +916,19 @@ function IndicatorChart({
     if (seriesRef.current.length > 0) {
       onSeriesReady?.(seriesRef.current[0]);
     }
-  }, [data, indicator, onSeriesReady, externalVisibleRange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, indicator, timeframe, market]); // onSeriesReady excluded - stable callback
+
+  // Separate effect for visible range sync (prevents infinite loop)
+  useEffect(() => {
+    if (externalVisibleRange && chartRef.current) {
+      try {
+        chartRef.current.timeScale().setVisibleLogicalRange(externalVisibleRange);
+      } catch {
+        // Ignore - chart might not be ready
+      }
+    }
+  }, [externalVisibleRange]);
 
   const canRenderDrawing = chartReady && drawingHook && chartRef.current && seriesRef.current.length > 0;
 

@@ -108,6 +108,111 @@ from engine.data.kis_api import (
     get_kis_client,
     configure_kis_client,
 )
+import requests
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+load_dotenv()
+
+# Alpaca API configuration for US intraday data
+ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
+ALPACA_API_SECRET = os.getenv('ALPACA_API_SECRET')
+ALPACA_DATA_URL = "https://data.alpaca.markets/v2"
+
+
+def fetch_alpaca_intraday(symbol: str, timeframe: str, limit: int = 2000) -> Optional[Dict]:
+    """
+    Fetch US intraday data from Alpaca API.
+    Returns dict with timestamps, open, high, low, close, volume arrays.
+    """
+    if not ALPACA_API_KEY or not ALPACA_API_SECRET:
+        print("[Alpaca] API keys not configured")
+        return None
+
+    # Map timeframes to Alpaca format (CASE-SENSITIVE: 1m=minute, 1M=month)
+    tf_map = {
+        '1m': '1Min', '5m': '5Min', '15m': '15Min', '30m': '30Min',
+        '1h': '1Hour', '1H': '1Hour', '4h': '4Hour', '4H': '4Hour'
+    }
+    alpaca_tf = tf_map.get(timeframe)
+    if not alpaca_tf:
+        print(f"[Alpaca] Unsupported timeframe: {timeframe}")
+        return None
+
+    headers = {
+        'APCA-API-KEY-ID': ALPACA_API_KEY,
+        'APCA-API-SECRET-KEY': ALPACA_API_SECRET,
+    }
+
+    # Calculate start date based on timeframe (need enough bars)
+    days_back = {
+        '1m': 7, '5m': 30, '15m': 60, '30m': 90,
+        '1h': 180, '1H': 180, '4h': 365, '4H': 365
+    }
+    start_date = (datetime.utcnow() - timedelta(days=days_back.get(timeframe, 30)))
+    start_str = start_date.strftime('%Y-%m-%dT00:00:00Z')
+
+    url = f"{ALPACA_DATA_URL}/stocks/{symbol}/bars"
+    params = {
+        'timeframe': alpaca_tf,
+        'start': start_str,
+        'limit': limit,
+        'feed': 'iex',  # 'iex' for free tier, 'sip' for paid
+        'sort': 'asc',
+    }
+
+    try:
+        print(f"[Alpaca] Fetching {symbol} {timeframe} from {start_str[:10]}")
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+
+        if resp.status_code != 200:
+            print(f"[Alpaca] API error {resp.status_code}: {resp.text[:200]}")
+            return None
+
+        data = resp.json()
+        bars = data.get('bars', [])
+
+        if not bars:
+            print(f"[Alpaca] No bars returned for {symbol}")
+            return None
+
+        # Convert to our format
+        timestamps = []
+        opens = []
+        highs = []
+        lows = []
+        closes = []
+        volumes = []
+
+        for bar in bars:
+            # Alpaca timestamp is ISO format with Z suffix
+            ts_str = bar['t']
+            ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            timestamps.append(int(ts.timestamp()))
+            opens.append(float(bar['o']))
+            highs.append(float(bar['h']))
+            lows.append(float(bar['l']))
+            closes.append(float(bar['c']))
+            volumes.append(int(bar['v']))
+
+        print(f"[Alpaca] Got {len(bars)} bars for {symbol} {timeframe}")
+        return {
+            'timestamps': timestamps,
+            'open': opens,
+            'high': highs,
+            'low': lows,
+            'close': closes,
+            'volume': volumes,
+            'count': len(bars),
+        }
+
+    except requests.exceptions.Timeout:
+        print(f"[Alpaca] Request timeout for {symbol}")
+        return None
+    except Exception as e:
+        print(f"[Alpaca] Error fetching {symbol}: {e}")
+        return None
+
+
 from engine.core.screener import ema, rsi, macd
 from engine.strategy.backtest import run_backtest
 from engine.screener import get_scanner
@@ -147,7 +252,7 @@ def adjust_prices_to_actual(data: OHLCVData, current_actual_price: float, symbol
     """
     Convert adjusted historical prices to actual prices.
 
-    yfinance and database store ADJUSTED prices (accounting for splits/dividends),
+    Database stores ADJUSTED prices (accounting for splits/dividends),
     but KIS API provides ACTUAL trading prices. This function aligns historical
     data with current actual prices.
 
@@ -225,24 +330,48 @@ def load_ohlcv_unified(
     """
     Unified data loading function used by both /ohlcv and /analyze endpoints.
 
-    Priority: KIS API (direct) → PostgreSQL → yfinance
+    Priority: KIS API (direct) → PostgreSQL → KIS API (fallback)
 
-    KIS API is now the PRIMARY source for accurate, real-time data.
+    KIS API is the PRIMARY source for accurate, real-time data.
     PostgreSQL is used as backup when KIS doesn't have enough history.
-    yfinance is the final fallback.
+    KIS API fallback uses the data.py module for CSV caching.
 
     Returns:
         tuple: (OHLCVData, source_used)
     """
     market = market.upper()
     data = None
-    source_used = "yfinance"
+    source_used = "kis"
     needs_price_adjustment = False
 
     # Minimum bars needed for EMA200 to have valid data
     MIN_BARS_FOR_EMA200 = 250
 
-    is_daily_tf = tf.upper() in ("1D", "1W", "1M", "1MO")
+    # CASE-SENSITIVE: 1m=minute, 1M=month - do NOT use .lower() or .upper()
+    is_daily_tf = tf in ("1D", "1d", "1W", "1w", "1M", "1MO", "1mo")
+    is_intraday = tf in ("1m", "5m", "15m", "30m", "1h", "1H", "4h", "4H")
+
+    # ========================================
+    # PRIORITY 0: ALPACA for US INTRADAY (much more data than KIS)
+    # ========================================
+    if market == "US" and is_intraday:
+        try:
+            alpaca_data = fetch_alpaca_intraday(symbol, tf, limit=limit if limit > 0 else 2000)
+            if alpaca_data and alpaca_data.get('count', 0) > 0:
+                data = OHLCVData(
+                    timestamps=alpaca_data["timestamps"],
+                    open=np.array(alpaca_data["open"]),
+                    high=np.array(alpaca_data["high"]),
+                    low=np.array(alpaca_data["low"]),
+                    close=np.array(alpaca_data["close"]),
+                    volume=np.array(alpaca_data["volume"]),
+                )
+                source_used = "alpaca"
+                print(f"[OHLCV] Alpaca returned {len(data.close)} bars for {symbol} {tf}")
+                # Skip KIS for US intraday if Alpaca succeeded
+                return data, source_used
+        except Exception as e:
+            print(f"[OHLCV] Alpaca error: {e}, falling back to KIS")
 
     # ========================================
     # PRIORITY 1: KIS API DIRECT (most accurate, real-time)
@@ -253,7 +382,7 @@ def load_ohlcv_unified(
             print(f"[OHLCV] Trying KIS API DIRECT for {symbol} {market} {tf}")
 
             # Use direct chart methods for daily data (bypass old pipeline)
-            if is_daily_tf and tf.upper() == "1D":
+            if is_daily_tf and tf in ("1D", "1d"):
                 if market == "KR":
                     kis_result = client.get_daily_chart(symbol, count=500)
                 else:
@@ -380,13 +509,155 @@ def load_ohlcv_unified(
             except Exception as e:
                 print(f"[OHLCV] PostgreSQL error: {e}")
 
-    # Fall back to yfinance if other sources failed or returned insufficient data
+    # ========================================
+    # PRIORITY 3: yfinance for US stocks (2+ years of history, free)
+    # ========================================
+    if market == "US" and is_daily_tf and (data is None or len(data.close) < MIN_BARS_FOR_EMA200):
+        try:
+            import yfinance as yf
+            from datetime import datetime, timedelta
+
+            print(f"[OHLCV] Trying yfinance for US stock {symbol}")
+
+            # Fetch 2 years of daily bars
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=730)  # 2 years
+
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
+
+            if not df.empty and len(df) >= MIN_BARS_FOR_EMA200:
+                # Convert to our format
+                timestamps = [ts.strftime("%Y-%m-%d") for ts in df.index]
+                opens = df["Open"].values
+                highs = df["High"].values
+                lows = df["Low"].values
+                closes = df["Close"].values
+                volumes = df["Volume"].values
+
+                # Merge with KIS data if available (KIS has latest data)
+                if kis_recent_data is not None and kis_bar_count > 0:
+                    kis_dates = set(kis_recent_data.timestamps)
+
+                    # Filter out yfinance data that overlaps with KIS
+                    merged_timestamps = []
+                    merged_open = []
+                    merged_high = []
+                    merged_low = []
+                    merged_close = []
+                    merged_volume = []
+
+                    for i, ts in enumerate(timestamps):
+                        if ts not in kis_dates:
+                            merged_timestamps.append(ts)
+                            merged_open.append(opens[i])
+                            merged_high.append(highs[i])
+                            merged_low.append(lows[i])
+                            merged_close.append(closes[i])
+                            merged_volume.append(volumes[i])
+
+                    # Add KIS data (most recent)
+                    merged_timestamps.extend(kis_recent_data.timestamps)
+                    merged_open.extend(kis_recent_data.open.tolist())
+                    merged_high.extend(kis_recent_data.high.tolist())
+                    merged_low.extend(kis_recent_data.low.tolist())
+                    merged_close.extend(kis_recent_data.close.tolist())
+                    merged_volume.extend(kis_recent_data.volume.tolist())
+
+                    # Sort by date
+                    sorted_indices = sorted(range(len(merged_timestamps)), key=lambda i: merged_timestamps[i])
+                    data = OHLCVData(
+                        timestamps=[merged_timestamps[i] for i in sorted_indices],
+                        open=np.array([merged_open[i] for i in sorted_indices]),
+                        high=np.array([merged_high[i] for i in sorted_indices]),
+                        low=np.array([merged_low[i] for i in sorted_indices]),
+                        close=np.array([merged_close[i] for i in sorted_indices]),
+                        volume=np.array([merged_volume[i] for i in sorted_indices]),
+                    )
+                    source_used = "yfinance+kis"
+                    print(f"[OHLCV] Merged yfinance ({len(df)}) + KIS ({kis_bar_count}) = {len(data.close)} bars")
+                else:
+                    data = OHLCVData(
+                        timestamps=timestamps,
+                        open=opens,
+                        high=highs,
+                        low=lows,
+                        close=closes,
+                        volume=volumes,
+                    )
+                    source_used = "yfinance"
+                    print(f"[OHLCV] yfinance returned {len(df)} bars for {symbol}")
+                needs_price_adjustment = False
+            else:
+                print(f"[OHLCV] yfinance returned insufficient data: {len(df)} bars")
+        except Exception as e:
+            print(f"[OHLCV] yfinance error: {e}")
+
+    # ========================================
+    # PRIORITY 4: yfinance for US INTRADAY stocks
+    # ALWAYS use yfinance for US intraday - KIS doesn't support US minute data
+    # ========================================
+    # CASE-SENSITIVE: 1m=minute, 1M=month
+    is_intraday_tf = tf in ("1m", "5m", "15m", "30m", "1h", "1H", "4h", "4H")
+    if market == "US" and is_intraday_tf:
+        try:
+            import yfinance as yf
+            from datetime import datetime, timedelta
+
+            # Map timeframe to yfinance interval (case-sensitive)
+            yf_interval_map = {
+                "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+                "1h": "1h", "1H": "1h", "4h": "1h", "4H": "1h"
+            }
+            yf_interval = yf_interval_map.get(tf, "5m")
+
+            # yfinance intraday limits: 1m=7days, 5m+=60days
+            days_back = 7 if tf == "1m" else 60
+
+            print(f"[OHLCV] Trying yfinance INTRADAY for US stock {symbol} {tf}")
+
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days_back)
+
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d"),
+                interval=yf_interval
+            )
+
+            if not df.empty:
+                # Convert to Unix timestamps (seconds) for intraday
+                timestamps = [int(ts.timestamp()) for ts in df.index]
+                opens = df["Open"].values
+                highs = df["High"].values
+                lows = df["Low"].values
+                closes = df["Close"].values
+                volumes = df["Volume"].values
+
+                data = OHLCVData(
+                    timestamps=timestamps,
+                    open=opens,
+                    high=highs,
+                    low=lows,
+                    close=closes,
+                    volume=volumes,
+                )
+                source_used = "yfinance_intraday"
+                needs_price_adjustment = False
+                print(f"[OHLCV] yfinance INTRADAY returned {len(df)} bars for {symbol} {tf}")
+            else:
+                print(f"[OHLCV] yfinance INTRADAY returned no data for {symbol} {tf}")
+        except Exception as e:
+            print(f"[OHLCV] yfinance INTRADAY error: {e}")
+
+    # Fall back to KIS API via data.py if other sources failed or returned insufficient data
     if data is None:
-        print(f"[OHLCV] Loading from yfinance for {symbol} {market} {tf}")
+        print(f"[OHLCV] Loading from KIS API for {symbol} {market} {tf}")
         data = load_with_refresh(symbol, market, tf, data_dir="data", force_refresh=refresh)
-        source_used = "yfinance"
-        needs_price_adjustment = True  # yfinance uses adjusted prices
-        print(f"[OHLCV] yfinance returned {len(data.close)} bars")
+        source_used = "kis"
+        needs_price_adjustment = True  # KIS uses adjusted prices
+        print(f"[OHLCV] KIS API returned {len(data.close)} bars")
 
     # CRITICAL: Adjust historical prices to match actual trading prices
     if needs_price_adjustment and data is not None:
@@ -682,7 +953,7 @@ def analyze(
     Returns the current valid order block (if any) and validation details.
     Set filter_weak=true to exclude OBs with weak volume (< 0.8x avg volume).
     """
-    # Use SAME unified data loading as OHLCV endpoint (PostgreSQL → KIS → yfinance)
+    # Use SAME unified data loading as OHLCV endpoint (KIS API → PostgreSQL → KIS fallback)
     market = market.upper() if market else "US"
     try:
         data, source = load_ohlcv_unified(symbol, market, tf, refresh=False)
@@ -692,8 +963,8 @@ def analyze(
 
     # Apply same limits as OHLCV endpoint to ensure consistency
     default_limits = {
-        "1m": 500, "5m": 500, "15m": 500, "30m": 500,
-        "1h": 500, "1H": 500, "4h": 500, "4H": 500,
+        "1m": 2000, "5m": 2000, "15m": 2000, "30m": 2000,
+        "1h": 2000, "1H": 2000, "4h": 2000, "4H": 2000,
         "1D": 1500, "1d": 1500, "1W": 0, "1w": 0, "1M": 0, "1mo": 0,
     }
     max_bars = default_limits.get(tf, 1000)
@@ -976,7 +1247,7 @@ def get_ohlcv(
     symbol: str = Query(..., description="Symbol name"),
     market: str = Query("KR", description="Market: KR or US"),
     tf: str = Query("1D", description="Timeframe: 1m, 5m, 15m, 1h, 1D, 1W, 1M"),
-    refresh: bool = Query(False, description="Force refresh from yfinance"),
+    refresh: bool = Query(False, description="Force refresh from KIS API"),
     limit: int = Query(0, description="Max bars to return (0=auto based on timeframe)"),
 ) -> OHLCVResponse:
     """
@@ -985,9 +1256,9 @@ def get_ohlcv(
     Supports all timeframes: 1m, 5m, 15m, 1h, 1D, 1W, 1M
 
     Data source selection (automatic):
-    - PostgreSQL: Used FIRST for daily data (fastest, local data)
-    - KIS API: Used as SECONDARY if configured (real-time data for KR and US)
-    - yfinance: FALLBACK if others not available or fail (delayed data)
+    - KIS API: PRIMARY source for real-time data (KR and US markets)
+    - PostgreSQL: Used as SECONDARY for daily data (cached local data)
+    - KIS API fallback: Used if primary sources fail (via data.py module)
 
     DYNAMIC SYMBOL SUPPORT:
     - Auto-tracks viewed symbols
@@ -1017,21 +1288,41 @@ def get_ohlcv(
         logging.debug(f"Symbol tracking error: {e}")
 
     # Use unified data loading function (same as /analyze endpoint)
+    is_intraday_tf = tf in ("1m", "5m", "15m", "30m", "1h", "1H", "4h", "4H")
     try:
         data, source_used = load_ohlcv_unified(symbol, market, tf, refresh=refresh, limit=limit)
     except FileNotFoundError as e:
+        # For intraday timeframes, return empty response instead of 404
+        # This allows frontend to gracefully fall back to daily timeframe
+        if is_intraday_tf:
+            return OHLCVResponse(
+                symbol=symbol,
+                market=market,
+                timeframe=tf,
+                bars=[],
+                ema20=[],
+                ema200=[],
+                sma20=[],
+                sma200=[],
+                rsi=[],
+                rsi_signal=[],
+                macd_line=[],
+                macd_signal=[],
+                macd_histogram=[],
+                source="unavailable",
+            )
         raise HTTPException(status_code=404, detail=str(e))
 
     # Apply default limits based on timeframe to prevent browser crashes
     default_limits = {
-        "1m": 500,   # ~1 day of trading
-        "5m": 500,   # ~2 days
-        "15m": 500,  # ~5 days
-        "30m": 500,  # ~10 days
-        "1h": 500,   # ~3 weeks
-        "1H": 500,
-        "4h": 500,   # ~3 months
-        "4H": 500,
+        "1m": 2000,   # ~5 days of trading
+        "5m": 2000,   # ~25 days
+        "15m": 2000,  # ~2 months
+        "30m": 2000,  # ~4 months
+        "1h": 2000,   # ~6 months
+        "1H": 2000,
+        "4h": 2000,   # ~1 year
+        "4H": 2000,
         "1D": 1500,  # ~6 years
         "1d": 1500,
         "1W": 0,     # No limit for weekly
@@ -1054,19 +1345,27 @@ def get_ohlcv(
         data.volume = data.volume[start_idx:]
 
     # Build bars list
-    # For intraday timeframes, convert to Unix timestamp (lightweight-charts requirement)
-    is_intraday = tf in ("1m", "5m", "15m", "30m", "1h", "1H", "4h", "4H")
+    # Convert ALL time values to Unix timestamp (seconds) for frontend consistency
+    from datetime import datetime as dt_module
     bars = []
     for i in range(len(data.close)):
         time_val = data.timestamps[i]
-        # Convert intraday datetime strings to Unix timestamp
-        if is_intraday and " " in time_val:
-            from datetime import datetime
+
+        # Convert to Unix timestamp if not already an int
+        if isinstance(time_val, str):
             try:
-                dt = datetime.strptime(time_val, "%Y-%m-%d %H:%M:%S")
-                time_val = int(dt.timestamp())
+                if " " in time_val:
+                    # Datetime format: "YYYY-MM-DD HH:MM:SS"
+                    parsed = dt_module.strptime(time_val, "%Y-%m-%d %H:%M:%S")
+                else:
+                    # Date-only format: "YYYY-MM-DD" - treat as noon UTC
+                    parsed = dt_module.strptime(time_val, "%Y-%m-%d")
+                time_val = int(parsed.timestamp())
             except ValueError:
                 pass  # Keep original if parsing fails
+        elif isinstance(time_val, (int, float)):
+            time_val = int(time_val)
+
         bars.append(OHLCVBar(
             time=time_val,
             open=float(data.open[i]),
@@ -1346,45 +1645,55 @@ def add_to_watchlist(request: AddSymbolRequest) -> AddSymbolResponse:
             bar_count=bar_count,
         )
 
-    # Download data using yfinance
+    # Download data using KIS API
     try:
-        import yfinance as yf
-        from datetime import datetime, timedelta
+        from engine.data.kis_api import get_kis_client, KISAPIError
 
-        # Determine ticker format
-        if market == "KR":
-            ticker = f"{symbol}.KS"
-        else:
-            ticker = symbol
+        kis = get_kis_client()
+        if not kis.is_configured():
+            raise HTTPException(
+                status_code=500,
+                detail="KIS API not configured"
+            )
 
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=500)
+        result = kis.get_ohlcv(
+            symbol=symbol,
+            market=market,
+            timeframe="1D",
+            count=500
+        )
 
-        stock = yf.Ticker(ticker)
-        df = stock.history(start=start_date, end=end_date)
-
-        if df.empty:
+        if not result or "timestamps" not in result or len(result["timestamps"]) == 0:
             raise HTTPException(
                 status_code=404,
                 detail=f"No data found for {symbol} in {market} market"
             )
 
         # Save to CSV
-        df = df.reset_index()
-        df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
-        df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
-
+        import csv
         data_dir = DATA_DIR / market.lower()
         data_dir.mkdir(parents=True, exist_ok=True)
-        data_path = data_dir / f"{symbol}_1D.csv"
-        df.to_csv(data_path, index=False)
+        data_path = data_dir / f"{symbol}_1day.csv"
 
-        bar_count = len(df)
+        with open(data_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            for i in range(len(result["timestamps"])):
+                writer.writerow([
+                    result["timestamps"][i],
+                    result["open"][i],
+                    result["high"][i],
+                    result["low"][i],
+                    result["close"][i],
+                    result["volume"][i]
+                ])
+
+        bar_count = len(result["timestamps"])
 
     except ImportError:
         raise HTTPException(
             status_code=500,
-            detail="yfinance not installed. Run: pip install yfinance"
+            detail="KIS API client not available"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to download data: {str(e)}")
@@ -2449,22 +2758,22 @@ def get_data_source_info():
         client = get_kis_client()
         status = client.test_connection()
 
-        available = ["yfinance"]
+        available = ["kis"]
         if status["configured"]:
-            available.append("kis")
+            available.insert(0, "kis_realtime")
 
         return DataSourceInfo(
-            current_source="yfinance",  # Default source
+            current_source="kis",  # KIS API is the primary source
             kis_configured=status["configured"],
             kis_connected=status["connected"],
             available_sources=available,
         )
     except Exception:
         return DataSourceInfo(
-            current_source="yfinance",
+            current_source="kis",
             kis_configured=False,
             kis_connected=False,
-            available_sources=["yfinance"],
+            available_sources=["kis"],
         )
 
 
@@ -4309,8 +4618,22 @@ async def get_realtime_price(
     Get latest real-time price for a symbol
 
     Returns the most recent tick data from the real-time collector.
+    Returns null price if no data available (instead of error) to prevent frontend spam.
     """
-    conn = get_realtime_db_conn()
+    try:
+        conn = get_realtime_db_conn()
+    except Exception:
+        # Database not available - return null response instead of error
+        return {
+            "symbol": symbol.upper(),
+            "market": market.upper(),
+            "price": None,
+            "volume": 0,
+            "timestamp": None,
+            "is_extended_hours": False,
+            "error": "realtime_db_unavailable"
+        }
+
     try:
         cur = conn.cursor()
         cur.execute("""
@@ -4326,7 +4649,16 @@ async def get_realtime_price(
         conn.close()
 
         if not row:
-            raise HTTPException(status_code=404, detail=f"No real-time data for {symbol}")
+            # Return null response instead of 404 to prevent frontend retry spam
+            return {
+                "symbol": symbol.upper(),
+                "market": market.upper(),
+                "price": None,
+                "volume": 0,
+                "timestamp": None,
+                "is_extended_hours": False,
+                "error": "no_data"
+            }
 
         return {
             "symbol": symbol.upper(),
@@ -4336,11 +4668,21 @@ async def get_realtime_price(
             "timestamp": row[2].isoformat() if row[2] else None,
             "is_extended_hours": row[3] if row[3] is not None else False
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        conn.close()
-        raise HTTPException(status_code=500, detail=str(e))
+        try:
+            conn.close()
+        except:
+            pass
+        # Return null response with error info instead of 500
+        return {
+            "symbol": symbol.upper(),
+            "market": market.upper(),
+            "price": None,
+            "volume": 0,
+            "timestamp": None,
+            "is_extended_hours": False,
+            "error": str(e)[:100]
+        }
 
 
 @app.get("/api/realtime/latest")

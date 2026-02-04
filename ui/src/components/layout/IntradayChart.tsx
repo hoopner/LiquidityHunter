@@ -18,6 +18,7 @@ import type { OHLCVResponse, AnalyzeResponse, WatchlistItem, VolumeProfileRespon
 import type { RealtimePrice } from '../../hooks/useRealtimePrice';
 import type { TradingLevels } from '../ai/AIPredictionsPanel';
 import { useAIPredictions, type AIType, type OHLCVBar } from '../../hooks/useAIPredictions';
+import { useProcessedChartData, getOneDayBars, timeToTz, getMarketTimezone, isIntradayTimeframe } from '../../hooks/useProcessedBars';
 import { useDrawings } from '../../hooks/useDrawings';
 import { DrawingToolbar } from '../chart/DrawingToolbar';
 import { DrawingCanvas } from '../chart/DrawingCanvas';
@@ -27,9 +28,9 @@ import type { DrawingToolType } from '../../types/drawings';
 export const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'] as const;
 export type Timeframe = typeof TIMEFRAMES[number];
 
-// Note: dedup/sort helpers removed - used inline or via useMemo
+// Note: dedup/sort now handled in useProcessedBars hook
 
-interface MainChartProps {
+interface IntradayChartProps {
   symbol?: string;
   market?: string;
   compact?: boolean;
@@ -65,33 +66,7 @@ interface BoxPosition {
   visible: boolean;
 }
 
-/**
- * Get market timezone string for Intl API
- */
-function getMarketTimezone(market: string): string {
-  return market === 'KR' ? 'Asia/Seoul' : 'America/New_York';
-}
-
-/**
- * Convert UTC Unix timestamp to market local time for lightweight-charts.
- * Official approach: https://tradingview.github.io/lightweight-charts/docs/time-zones
- * lightweight-charts treats all times as UTC internally,
- * so we "trick" it by shifting the timestamp.
- */
-function timeToTz(originalTime: number, timeZone: string): number {
-  const zonedDate = new Date(
-    new Date(originalTime * 1000).toLocaleString('en-US', { timeZone })
-  );
-  return Math.floor(zonedDate.getTime() / 1000);
-}
-
-/**
- * Check if timeframe is intraday (minute/hour based)
- * CASE-SENSITIVE: 1m=minute, 1M=month
- */
-function isIntradayTimeframe(tf: string): boolean {
-  return ['1m', '5m', '15m', '30m', '1h', '1H', '4h', '4H'].includes(tf);
-}
+// Note: getMarketTimezone, timeToTz, isIntradayTimeframe imported from useProcessedBars hook
 
 /**
  * Safe setData wrapper - removes duplicates and sorts ascending by time
@@ -133,10 +108,14 @@ function safeSetData(series: any, data: any[]): void {
 }
 
 /**
- * Main chart area with TradingView lightweight-charts
+ * Intraday chart area with TradingView lightweight-charts
+ * Handles intraday timeframes (1m, 5m, 15m, 30m, 1h, 4h)
+ * - Converts timestamps to local market time (ET for US, KST for KR)
+ * - Filters out extended/pre-market hours for US stocks
+ * - Uses day-based range presets (1D, 2D, 5D, 10D, ALL)
  * Performance: Wrapped with React.memo to prevent unnecessary re-renders
  */
-export const MainChart = memo(function MainChart({
+export const IntradayChart = memo(function IntradayChart({
   symbol = '005930',
   market = 'KR',
   compact = false,
@@ -157,7 +136,7 @@ export const MainChart = memo(function MainChart({
   isActiveForDrawing = true,
   realtimePrice,
   tradingLevels,
-}: MainChartProps) {
+}: IntradayChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -206,56 +185,28 @@ export const MainChart = memo(function MainChart({
   const [internalTimeframe, setInternalTimeframe] = useState<Timeframe>('1D');
   const [noData, setNoData] = useState(false);
 
-  // Range preset for visible data (dynamic based on timeframe)
-  // Daily presets: 1M, 3M, 4M, 6M, 1Y, ALL
-  // Intraday presets: 1D, 2D, 5D, 10D, ALL
-  type DailyPreset = '1M' | '3M' | '4M' | '6M' | '1Y' | 'ALL';
+  // Range preset for visible data (intraday presets: days)
   type IntradayPreset = '1D' | '2D' | '5D' | '10D' | 'ALL';
-  const [rangePreset, setRangePreset] = useState<DailyPreset | IntradayPreset>('4M');
+  const [rangePreset, setRangePreset] = useState<IntradayPreset>('5D');
 
   // Share data with SubCharts when it changes
   useEffect(() => {
     onDataLoaded?.(data);
   }, [data, onDataLoaded]);
 
-  // Calculate default visible range based on timeframe
+  // Calculate default visible range based on timeframe (intraday: bars per day)
   const getDefaultVisibleBars = useCallback((tf: string, preset: string): number => {
-    const isIntraday = isIntradayTimeframe(tf);
+    const bpd = getOneDayBars(tf);
 
-    if (!isIntraday) {
-      // Daily timeframe presets (in trading days)
-      const dailyPresets: Record<string, number> = {
-        '1M': 22,    // ~1 month of trading days
-        '3M': 66,    // ~3 months
-        '4M': 88,    // ~4 months (default)
-        '6M': 132,   // ~6 months
-        '1Y': 252,   // ~1 year
-        'ALL': 9999, // Show all
-      };
-      return dailyPresets[preset] || 88;
-    } else {
-      // Intraday presets (in bars, scaled by timeframe)
-      // 1D = 1 trading day, 2D = 2 days, etc.
-      const barsPerDay: Record<string, number> = {
-        '1m': 390,   // 6.5 hours * 60 minutes
-        '5m': 78,    // 6.5 hours * 12 (5-min bars)
-        '15m': 26,   // 6.5 hours * 4 (15-min bars)
-        '30m': 13,   // 6.5 hours * 2
-        '1h': 7, '1H': 7,     // ~7 hourly bars per day
-        '4h': 2, '4H': 2,     // ~2 4-hour bars per day
-      };
-      // CASE-SENSITIVE: use exact tf match
-      const bpd = barsPerDay[tf] || 78;
-
-      const intradayPresets: Record<string, number> = {
-        '1D': bpd * 1,
-        '2D': bpd * 2,
-        '5D': bpd * 5,
-        '10D': bpd * 10,
-        'ALL': 9999,
-      };
-      return intradayPresets[preset] || bpd * 5; // Default to 5 days
-    }
+    // Intraday presets (in trading days)
+    const intradayPresets: Record<string, number> = {
+      '1D': bpd * 1,      // 1 day
+      '2D': bpd * 2,      // 2 days
+      '5D': bpd * 5,      // 5 days (default)
+      '10D': bpd * 10,    // 10 days
+      'ALL': 9999,        // Show all
+    };
+    return intradayPresets[preset] || bpd * 5;
   }, []);
 
   // Track if intraday data is available for this ticker
@@ -303,26 +254,16 @@ export const MainChart = memo(function MainChart({
     }
   };
 
-  // Determine if current timeframe is intraday (must be after timeframe declaration)
-  const isIntradayTf = isIntradayTimeframe(timeframe);
+  // ========== PROCESSED DATA FROM HOOK ==========
+  // This is the SINGLE SOURCE OF TRUTH for all chart data
+  // - Timezone-shifted timestamps (ET for US, KST for KR)
+  // - Extended hours filtered (US only)
+  // - Deduplicated and sorted
+  // - Indicator arrays aligned with filtered bars
+  const processedData = useProcessedChartData(data, market || 'US', timeframe);
 
-  // DEBUG: Log timezone
-  console.log('[DEBUG TZ] market:', market, 'timezone:', getMarketTimezone(market), 'isIntraday:', isIntradayTf);
-
-  // Switch preset when timeframe type changes (daily <-> intraday)
-  const prevIsIntradayRef = useRef(isIntradayTf);
-  useEffect(() => {
-    if (prevIsIntradayRef.current !== isIntradayTf) {
-      prevIsIntradayRef.current = isIntradayTf;
-      // Reset to appropriate default preset
-      if (isIntradayTf) {
-        setRangePreset('ALL'); // Show all bars for intraday by default
-      } else {
-        setRangePreset('4M'); // 4 months for daily
-      }
-      console.log('[Chart] Timeframe type changed, reset preset to:', isIntradayTf ? 'ALL' : '4M');
-    }
-  }, [isIntradayTf]);
+  // IntradayChart handles intraday timeframes (1m, 5m, 15m, 1h)
+  // Note: Render logging removed to reduce console noise
 
   // Order Block state
   const [analyzeData, setAnalyzeData] = useState<AnalyzeResponse | null>(null);
@@ -413,105 +354,17 @@ export const MainChart = memo(function MainChart({
     return bars;
   }, [data?.bars]);
 
-  // Performance: Memoize candlestick data conversion to prevent recalculation on every render
-  // CRITICAL: Sort ascending by time and remove duplicates to prevent lightweight-charts crash
-  // TIMEZONE: Shift intraday timestamps to display local market time
+  // ========== USE PROCESSED DATA FROM HOOK ==========
+  // All timezone conversion, extended hours filtering, dedup, and sorting is done in useProcessedChartData
   const candlestickData = useMemo((): CandlestickData<Time>[] => {
-    if (!data?.bars) return [];
+    if (!processedData) return [];
+    console.log('[IntradayChart] Using', processedData.candlesticks.length, 'processed candles');
+    return processedData.candlesticks;
+  }, [processedData]);
 
-    console.log('[Chart] Processing bars:', data.bars.length);
-
-    // Use official lightweight-charts timezone approach
-    const isIntraday = isIntradayTimeframe(timeframe);
-    const tz = getMarketTimezone(market);
-
-    // DEBUG: Log timezone info
-    console.log('[TZ DEBUG] market:', market, 'tz:', tz, 'isIntraday:', isIntraday);
-    if (data.bars.length > 0 && isIntraday && typeof data.bars[0].time === 'number') {
-      const rawTime = data.bars[0].time;
-      const shiftedTime = timeToTz(rawTime, tz);
-      console.log('[TZ DEBUG] First bar - raw:', rawTime, 'shifted:', shiftedTime,
-        'rawDate:', new Date(rawTime * 1000).toISOString(),
-        'shiftedDate:', new Date(shiftedTime * 1000).toISOString());
-    }
-
-    // Filter out extended hours for US intraday (show only 9:30-16:00 ET)
-    let barsToProcess = data.bars;
-    if (isIntraday && market === 'US') {
-      barsToProcess = data.bars.filter(bar => {
-        if (typeof bar.time !== 'number') return true;
-        // Convert to ET and check if within regular trading hours
-        const shiftedTime = timeToTz(bar.time, 'America/New_York');
-        const shiftedDate = new Date(shiftedTime * 1000);
-        const h = shiftedDate.getUTCHours();
-        const m = shiftedDate.getUTCMinutes();
-        const minutesSinceMidnight = h * 60 + m;
-        // Regular US trading hours: 9:30 (570 min) to 16:00 (960 min)
-        return minutesSinceMidnight >= 570 && minutesSinceMidnight < 960;
-      });
-      console.log('[Chart] Filtered extended hours:', data.bars.length, '→', barsToProcess.length, 'bars');
-    }
-
-    // Convert to candlestick format with timezone-shifted time
-    const mapped = barsToProcess.map((bar) => {
-      const isUp = bar.close > bar.open;
-
-      // Apply timezone shift to Unix timestamps (intraday only)
-      let chartTime: Time;
-      if (isIntraday && typeof bar.time === 'number') {
-        chartTime = timeToTz(bar.time, tz) as Time;
-      } else if (isIntraday && typeof bar.time === 'string') {
-        // String date/datetime for intraday - convert to Unix and shift
-        // Handles both ISO datetime "2024-02-05T09:30:00" and plain date "2024-02-05"
-        const utcSeconds = Math.floor(new Date(bar.time).getTime() / 1000);
-        chartTime = timeToTz(utcSeconds, tz) as Time;
-        console.log('[DEBUG] Converted string time:', bar.time, '→', chartTime);
-      } else {
-        // Daily: keep YYYY-MM-DD string as-is
-        chartTime = bar.time as Time;
-      }
-
-      return {
-        time: chartTime,
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-        // Korean standard: Red=Up, Green=Down
-        color: isUp ? '#ef5350' : '#26a69a',
-        borderColor: isUp ? '#ef5350' : '#26a69a',
-        wickColor: isUp ? '#ef5350' : '#26a69a',
-      };
-    });
-
-    // Sort by time ascending (required by lightweight-charts)
-    const sorted = mapped.sort((a, b) => {
-      const timeA = typeof a.time === 'string' ? new Date(a.time).getTime() : Number(a.time);
-      const timeB = typeof b.time === 'string' ? new Date(b.time).getTime() : Number(b.time);
-      return timeA - timeB;
-    });
-
-    // Remove duplicates (keep first occurrence)
-    const unique = sorted.filter((item, index, array) => {
-      if (index === 0) return true;
-      return item.time !== array[index - 1].time;
-    });
-
-    console.log('[Chart] After dedup:', unique.length, 'First:', unique[0]?.time, 'Last:', unique[unique.length-1]?.time);
-    // DEBUG: Check converted data format
-    if (unique.length > 0) {
-      console.log('[DEBUG] Converted time type:', typeof unique[0].time, 'value:', unique[0].time);
-      console.log('[DEBUG] First 3 converted bars:', JSON.stringify(unique.slice(0, 3).map(b => ({ time: b.time, o: b.open, c: b.close }))));
-    }
-
-    return unique;
-  }, [data?.bars, timeframe, market]);
-
-  // Performance: Memoize moving average data conversions
-  // Sort and dedupe to match candlestick data order
-  // TIMEZONE: Apply same shift as candlestick data
+  // ========== MA DATA FROM HOOK ==========
   const maData = useMemo(() => {
-    if (!data?.bars) {
+    if (!processedData) {
       return {
         ema20: [] as LineData<Time>[],
         ema200: [] as LineData<Time>[],
@@ -519,61 +372,17 @@ export const MainChart = memo(function MainChart({
         sma200: [] as LineData<Time>[],
       };
     }
-
-    // Use official lightweight-charts timezone approach (must match candlestickData)
-    const isIntraday = isIntradayTimeframe(timeframe);
-    const tz = getMarketTimezone(market);
-
-    const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
-      if (!arr) return [];
-      const mapped = data.bars
-        .map((bar, i) => {
-          // Apply same timezone shift as candlestick data
-          let chartTime: Time;
-          if (isIntraday && typeof bar.time === 'number') {
-            chartTime = timeToTz(bar.time, tz) as Time;
-          } else if (isIntraday && typeof bar.time === 'string') {
-            // String date/datetime for intraday - convert to Unix and shift
-            const utcSeconds = Math.floor(new Date(bar.time).getTime() / 1000);
-            chartTime = timeToTz(utcSeconds, tz) as Time;
-          } else {
-            // Daily: keep YYYY-MM-DD string as-is
-            chartTime = bar.time as Time;
-          }
-          return {
-            time: chartTime,
-            value: arr[i],
-          };
-        })
-        .filter((d): d is LineData<Time> => d.value != null && d.value > 0);
-
-      // Sort by time ascending
-      const sorted = mapped.sort((a, b) => {
-        const timeA = typeof a.time === 'string' ? new Date(a.time).getTime() : Number(a.time);
-        const timeB = typeof b.time === 'string' ? new Date(b.time).getTime() : Number(b.time);
-        return timeA - timeB;
-      });
-
-      // Remove duplicates
-      return sorted.filter((item, index, array) => {
-        if (index === 0) return true;
-        return item.time !== array[index - 1].time;
-      });
-    };
-
     return {
-      ema20: toLineData(data.ema20),
-      ema200: toLineData(data.ema200),
-      sma20: toLineData(data.sma20),
-      sma200: toLineData(data.sma200),
+      ema20: processedData.ema20,
+      ema200: processedData.ema200,
+      sma20: processedData.sma20,
+      sma200: processedData.sma200,
     };
-  }, [data?.bars, data?.ema20, data?.ema200, data?.sma20, data?.sma200, timeframe, market]);
+  }, [processedData]);
 
-  // Performance: Memoize Bollinger Band data
-  // Sort and dedupe to match candlestick data order
-  // TIMEZONE: Apply same shift as candlestick data
+  // ========== BB DATA FROM HOOK ==========
   const bbData = useMemo(() => {
-    if (!data?.bars) {
+    if (!processedData) {
       return {
         bb1Upper: [] as LineData<Time>[],
         bb1Middle: [] as LineData<Time>[],
@@ -582,62 +391,18 @@ export const MainChart = memo(function MainChart({
         bb2Lower: [] as LineData<Time>[],
       };
     }
-
-    // Use official lightweight-charts timezone approach (must match candlestickData)
-    const isIntraday = isIntradayTimeframe(timeframe);
-    const tz = getMarketTimezone(market);
-
-    const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
-      if (!arr) return [];
-      const mapped = data.bars
-        .map((bar, i) => {
-          // Apply same timezone shift as candlestick data
-          let chartTime: Time;
-          if (isIntraday && typeof bar.time === 'number') {
-            chartTime = timeToTz(bar.time, tz) as Time;
-          } else if (isIntraday && typeof bar.time === 'string') {
-            // String date/datetime for intraday - convert to Unix and shift
-            const utcSeconds = Math.floor(new Date(bar.time).getTime() / 1000);
-            chartTime = timeToTz(utcSeconds, tz) as Time;
-          } else {
-            // Daily: keep YYYY-MM-DD string as-is
-            chartTime = bar.time as Time;
-          }
-          return {
-            time: chartTime,
-            value: arr[i] || 0,
-          };
-        })
-        .filter((d): d is LineData<Time> => d.value > 0);
-
-      // Sort by time ascending
-      const sorted = mapped.sort((a, b) => {
-        const timeA = typeof a.time === 'string' ? new Date(a.time).getTime() : Number(a.time);
-        const timeB = typeof b.time === 'string' ? new Date(b.time).getTime() : Number(b.time);
-        return timeA - timeB;
-      });
-
-      // Remove duplicates
-      return sorted.filter((item, index, array) => {
-        if (index === 0) return true;
-        return item.time !== array[index - 1].time;
-      });
-    };
-
     return {
-      bb1Upper: toLineData(data.bb1_upper),
-      bb1Middle: toLineData(data.bb1_middle),
-      bb1Lower: toLineData(data.bb1_lower),
-      bb2Upper: toLineData(data.bb2_upper),
-      bb2Lower: toLineData(data.bb2_lower),
+      bb1Upper: processedData.bb1Upper,
+      bb1Middle: processedData.bb1Middle,
+      bb1Lower: processedData.bb1Lower,
+      bb2Upper: processedData.bb2Upper,
+      bb2Lower: processedData.bb2Lower,
     };
-  }, [data?.bars, data?.bb1_upper, data?.bb1_middle, data?.bb1_lower, data?.bb2_upper, data?.bb2_lower, timeframe, market]);
+  }, [processedData]);
 
-  // Performance: Memoize VWAP and Keltner Channel data
-  // Sort and dedupe to match candlestick data order
-  // TIMEZONE: Apply same shift as candlestick data
+  // ========== OTHER INDICATORS FROM HOOK ==========
   const otherIndicatorData = useMemo(() => {
-    if (!data?.bars) {
+    if (!processedData) {
       return {
         vwap: [] as LineData<Time>[],
         kcUpper: [] as LineData<Time>[],
@@ -645,55 +410,13 @@ export const MainChart = memo(function MainChart({
         kcLower: [] as LineData<Time>[],
       };
     }
-
-    // Use official lightweight-charts timezone approach (must match candlestickData)
-    const isIntraday = isIntradayTimeframe(timeframe);
-    const tz = getMarketTimezone(market);
-
-    const toLineData = (arr: (number | null | undefined)[] | undefined): LineData<Time>[] => {
-      if (!arr) return [];
-      const mapped = data.bars
-        .map((bar, i) => {
-          // Apply same timezone shift as candlestick data
-          let chartTime: Time;
-          if (isIntraday && typeof bar.time === 'number') {
-            chartTime = timeToTz(bar.time, tz) as Time;
-          } else if (isIntraday && typeof bar.time === 'string') {
-            // String date/datetime for intraday - convert to Unix and shift
-            const utcSeconds = Math.floor(new Date(bar.time).getTime() / 1000);
-            chartTime = timeToTz(utcSeconds, tz) as Time;
-          } else {
-            // Daily: keep YYYY-MM-DD string as-is
-            chartTime = bar.time as Time;
-          }
-          return {
-            time: chartTime,
-            value: arr[i] || 0,
-          };
-        })
-        .filter((d): d is LineData<Time> => d.value > 0);
-
-      // Sort by time ascending
-      const sorted = mapped.sort((a, b) => {
-        const timeA = typeof a.time === 'string' ? new Date(a.time).getTime() : Number(a.time);
-        const timeB = typeof b.time === 'string' ? new Date(b.time).getTime() : Number(b.time);
-        return timeA - timeB;
-      });
-
-      // Remove duplicates
-      return sorted.filter((item, index, array) => {
-        if (index === 0) return true;
-        return item.time !== array[index - 1].time;
-      });
-    };
-
     return {
-      vwap: toLineData(data.vwap),
-      kcUpper: toLineData(data.kc_upper),
-      kcMiddle: toLineData(data.kc_middle),
-      kcLower: toLineData(data.kc_lower),
+      vwap: processedData.vwap,
+      kcUpper: processedData.kcUpper,
+      kcMiddle: processedData.kcMiddle,
+      kcLower: processedData.kcLower,
     };
-  }, [data?.bars, data?.vwap, data?.kc_upper, data?.kc_middle, data?.kc_lower, timeframe, market]);
+  }, [processedData]);
 
   // Helper: Apply timezone shift to a bar's time (for inline useEffect hooks)
   // Use this for on-demand indicator data conversion
@@ -755,7 +478,8 @@ export const MainChart = memo(function MainChart({
         // Reload data after adding
         setNoData(false);
         setLoading(true);
-        fetchOHLCV(symbol, market, timeframe)
+        const intradayLimit = isIntradayTimeframe(timeframe) ? 2000 : 0;
+        fetchOHLCV(symbol, market, timeframe, intradayLimit)
           .then((response) => {
             if (response.bars.length === 0) {
               setNoData(true);
@@ -822,9 +546,12 @@ export const MainChart = memo(function MainChart({
     setAnalyzeData(null);
     setIntradayMessage(null);
 
-    logger.fetch.log('OHLCV Fetch:', symbol, market, timeframe);
+    // Request more bars for intraday timeframes (need 200+ for EMA200, plus scrolling)
+    const intradayLimit = isIntradayTimeframe(timeframe) ? 2000 : 0;
 
-    fetchOHLCV(symbol, market, timeframe)
+    logger.fetch.log('OHLCV Fetch:', symbol, market, timeframe, 'limit:', intradayLimit);
+
+    fetchOHLCV(symbol, market, timeframe, intradayLimit)
       .then((response) => {
         // DEBUG: Check API response for duplicates
         const apiTimes = response.bars.map(b => b.time);
@@ -1260,8 +987,8 @@ export const MainChart = memo(function MainChart({
       console.error('[Chart]', id, '❌ Still', remainingCanvases.length, 'canvases after cleanup!');
     }
 
-    // Determine if intraday timeframe
-    const isIntradayTf = ['1m', '5m', '15m', '30m', '1h', '4h'].includes(timeframe);
+    // IntradayChart handles intraday timeframes - always true
+    const isIntradayTf = true;
     const locale = market === 'KR' ? 'ko-KR' : 'en-US';
 
     // Weekday names for display
@@ -2513,13 +2240,10 @@ export const MainChart = memo(function MainChart({
             </button>
           </div>
 
-          {/* Range Presets - Dynamic based on timeframe */}
+          {/* Range Presets - Intraday (days) */}
           <div className="flex items-center gap-1 border-l border-[var(--border-primary)] pl-2 ml-1">
             <span className="text-xs text-[var(--text-secondary)] mr-1">범위:</span>
-            {(isIntradayTf
-              ? (['1D', '2D', '5D', '10D', 'ALL'] as const)
-              : (['1M', '3M', '4M', '6M', '1Y', 'ALL'] as const)
-            ).map((preset) => (
+            {(['1D', '2D', '5D', '10D', 'ALL'] as const).map((preset) => (
               <button
                 key={preset}
                 onClick={() => {
@@ -3867,3 +3591,5 @@ function MTFZonesOverlay({
   );
 }
 
+// Default export for ChartContainer import
+export default IntradayChart;

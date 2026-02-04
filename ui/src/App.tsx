@@ -21,6 +21,8 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import './App.css';
 import { MultiChartLayout } from './components/layout/MultiChartLayout';
+// import ChartClean from './components/layout/ChartClean'; // TEMP: Debug chart
+// import ChartJS from './components/layout/ChartJS'; // TEMP: Chart.js test
 import { Sidebar } from './components/layout/Sidebar';
 import { WhyPanel } from './components/layout/WhyPanel';
 import { ScreenerPage } from './components/layout/ScreenerPage';
@@ -74,17 +76,18 @@ function App() {
     { enabled: currentView === 'chart' }  // Only enable when viewing chart
   );
 
-  // Format price for display
+  // Format price for display - with null safety
   const formattedPrice = useMemo(() => {
-    if (!realtimePrice) return null;
+    if (!realtimePrice || realtimePrice.price == null) return null;
     const currency = selectedStock.market === 'KR' ? '₩' : '$';
     const priceStr = selectedStock.market === 'KR'
       ? realtimePrice.price.toLocaleString('ko-KR')
       : realtimePrice.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const changeStr = realtimePrice.changePct >= 0
-      ? `+${realtimePrice.changePct.toFixed(2)}%`
-      : `${realtimePrice.changePct.toFixed(2)}%`;
-    return { currency, priceStr, changeStr, isUp: realtimePrice.changePct >= 0 };
+    const changePct = realtimePrice.changePct ?? 0;
+    const changeStr = changePct >= 0
+      ? `+${changePct.toFixed(2)}%`
+      : `${changePct.toFixed(2)}%`;
+    return { currency, priceStr, changeStr, isUp: changePct >= 0 };
   }, [realtimePrice, selectedStock.market]);
 
   // Track last update time for "Updated Xs ago" display
