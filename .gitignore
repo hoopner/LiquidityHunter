@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 .env
 .kis_token.json
+build/
+dist/
+data/
+logs/
+.DS_Store
+*.bak
+node_modules/
