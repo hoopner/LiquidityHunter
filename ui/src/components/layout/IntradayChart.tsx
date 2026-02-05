@@ -1366,8 +1366,6 @@ export const IntradayChart = memo(function IntradayChart({
       barCount: candlestickData.length,
       firstBar: candlestickData[0],
       lastBar: candlestickData[candlestickData.length - 1],
-      globalCanvasCount: allCanvases.length,
-      chartContainers: chartContainers.length,
     };
 
     safeSetData(ema20SeriesRef.current, maData.ema20);
