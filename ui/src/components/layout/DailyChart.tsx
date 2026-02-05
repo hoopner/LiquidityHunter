@@ -1432,8 +1432,6 @@ export const DailyChart = memo(function DailyChart({
       barCount: candlestickData.length,
       firstBar: candlestickData[0],
       lastBar: candlestickData[candlestickData.length - 1],
-      globalCanvasCount: allCanvases.length,
-      chartContainers: chartContainers.length,
     };
 
     safeSetData(ema20SeriesRef.current, maData.ema20);

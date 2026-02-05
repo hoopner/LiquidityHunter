@@ -105,7 +105,7 @@ class MarketDataService:
 
     Routes:
       KR market → KISRepository
-      US market → AlpacaRepository (with KIS fallback)
+      US market → AlpacaRepository only
     """
 
     def __init__(self):
