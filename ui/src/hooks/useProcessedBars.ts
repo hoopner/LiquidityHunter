@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { OHLCVResponse, OHLCVBar } from '../api/types';
 import type { CandlestickData, LineData, Time } from 'lightweight-charts';
+import { timeToTz, getMarketTimezone, isIntradayTimeframe, toUtcSeconds } from '../utils/time';
 
 // ===== Types =====
 export interface ProcessedBar {
@@ -37,60 +38,6 @@ export interface ProcessedChartData {
   kcLower: LineData<Time>[];
 }
 
-// ===== Timezone Functions =====
-
-export function getMarketTimezone(market: string): string {
-  if (market === 'KR') return 'Asia/Seoul';
-  return 'America/New_York';
-}
-
-/**
- * Browser-timezone-independent conversion for lightweight-charts display.
- * Uses Intl.DateTimeFormat.formatToParts to extract exact time components
- * in the target timezone, then builds a UTC timestamp with those values.
- * This tricks lightweight-charts into displaying the correct local time
- * regardless of the browser's timezone setting.
- */
-export function timeToTz(utcSeconds: number, timeZone: string): number {
-  const date = new Date(utcSeconds * 1000);
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(date);
-
-  const get = (type: string) => {
-    const val = parts.find(p => p.type === type)?.value || '0';
-    return parseInt(val, 10);
-  };
-
-  // Build a UTC timestamp with the local time values
-  // This tricks lightweight-charts into displaying local time
-  const shifted = Date.UTC(
-    get('year'),
-    get('month') - 1,
-    get('day'),
-    get('hour') === 24 ? 0 : get('hour'),
-    get('minute'),
-    get('second')
-  );
-
-  return Math.floor(shifted / 1000);
-}
-
-/**
- * Convert any time format to UTC seconds
- */
-export function toUtcSeconds(time: string | number): number {
-  if (typeof time === 'number') return time;
-  return Math.floor(new Date(time).getTime() / 1000);
-}
-
 /**
  * Check if bar is within regular trading hours.
  * Uses Intl.DateTimeFormat.formatToParts for browser-timezone-independent results.
@@ -112,14 +59,6 @@ export function isRegularHours(utcSeconds: number, market: string): boolean {
   if (market === 'US') return mins >= 570 && mins < 960;   // 9:30 - 16:00
   if (market === 'KR') return mins >= 540 && mins < 930;   // 9:00 - 15:30
   return true;
-}
-
-/**
- * Check if timeframe is intraday
- * CASE-SENSITIVE: 1m=minute (lowercase), 1M=month (uppercase)
- */
-export function isIntradayTimeframe(tf: string): boolean {
-  return ['1m', '5m', '15m', '30m', '1h', '1H', '4h', '4H'].includes(tf);
 }
 
 // ===== Main Processing Function =====

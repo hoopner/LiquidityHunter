@@ -18,7 +18,8 @@ import type { OHLCVResponse, AnalyzeResponse, WatchlistItem, VolumeProfileRespon
 import type { RealtimePrice } from '../../hooks/useRealtimePrice';
 import type { TradingLevels } from '../ai/AIPredictionsPanel';
 import { useAIPredictions, type AIType, type OHLCVBar } from '../../hooks/useAIPredictions';
-import { useProcessedChartData, getOneDayBars, timeToTz, getMarketTimezone, isIntradayTimeframe } from '../../hooks/useProcessedBars';
+import { useProcessedChartData, getOneDayBars } from '../../hooks/useProcessedBars';
+import { timeToTz, getMarketTimezone, isIntradayTimeframe } from '../../utils/time';
 import { useDrawings } from '../../hooks/useDrawings';
 import { DrawingToolbar } from '../chart/DrawingToolbar';
 import { DrawingCanvas } from '../chart/DrawingCanvas';
@@ -943,22 +944,6 @@ export const IntradayChart = memo(function IntradayChart({
 
     console.log('[Chart]', id, '🔄 Creating/recreating chart for timeframe:', timeframe);
 
-    // NUCLEAR cleanup: Remove ALL orphan canvases in DOM (fixes memory leak)
-    const allCanvases = document.querySelectorAll('canvas');
-    console.log('[Chart]', id, '🔍 Found', allCanvases.length, 'total canvases in DOM');
-    let orphanCount = 0;
-    allCanvases.forEach(canvas => {
-      const parent = canvas.closest('[data-chart-id]');
-      if (!parent) {
-        console.log('[Chart]', id, '🗑️ Removing orphan canvas');
-        canvas.remove();
-        orphanCount++;
-      }
-    });
-    if (orphanCount > 0) {
-      console.log('[Chart]', id, '✅ Removed', orphanCount, 'orphan canvases');
-    }
-
     // Tag container with instance ID for debugging
     chartContainerRef.current.setAttribute('data-chart-id', id);
 
@@ -1341,7 +1326,7 @@ export const IntradayChart = memo(function IntradayChart({
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeframe]); // Recreate chart when timeframe changes (fixes Chrome canvas issues)
+  }, [timeframe, symbol, market]); // Recreate chart when timeframe/symbol/market changes (fixes orphan canvas leak)
 
   // Update chart data - now uses memoized data conversions
   useEffect(() => {
@@ -1366,22 +1351,11 @@ export const IntradayChart = memo(function IntradayChart({
     if (chartContainerRef.current) {
       const canvases = chartContainerRef.current.querySelectorAll('canvas');
       console.log('[Chart]', id, 'Canvas count in container:', canvases.length);
-      if (canvases.length > 10) {
-        console.error('[Chart]', id, '⚠️ TOO MANY CANVASES! Possible stacked charts:', canvases.length);
-      }
     }
 
     // Use safeSetData to handle dedup and sorting
     console.log('[Chart] Setting', candlestickData.length, 'bars via safeSetData');
     safeSetData(candlestickSeriesRef.current, candlestickData);
-
-    // DEBUG: Check total canvas count in DOM
-    const allCanvases = document.querySelectorAll('canvas');
-    const chartContainers = document.querySelectorAll('[data-chart-id]');
-    console.log('[Chart]', id, '📊 Global canvas count:', allCanvases.length, '| Chart containers:', chartContainers.length);
-    if (allCanvases.length > chartContainers.length * 10) {
-      console.warn('[Chart]', id, '⚠️ Orphan canvases detected! Expected max:', chartContainers.length * 10, 'Found:', allCanvases.length);
-    }
 
     // Expose to browser console for inspection
     (window as any).__CHART_DEBUG__ = {
@@ -1791,6 +1765,7 @@ export const IntradayChart = memo(function IntradayChart({
       // Apply timezone shift to intraday timestamps
       predictions.forEach((pred) => {
         const predDate = new Date(pred.timestamp);
+        if (isNaN(predDate.getTime())) return;
         // Use same time format as chart: number (Unix seconds) for intraday, string for daily
         const time = isIntradayBar
           ? timeToTz(Math.floor(predDate.getTime() / 1000), tz) as Time

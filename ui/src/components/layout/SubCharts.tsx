@@ -17,37 +17,10 @@ import type { DrawingToolType } from '../../types/drawings';
 import { useDrawings } from '../../hooks/useDrawings';
 import { SubChartDrawingCanvas } from '../chart/SubChartDrawingCanvas';
 import type { ChartType } from '../../utils/DrawingManager';
+import { timeToTz, getMarketTimezone, isIntradayTimeframe } from '../../utils/time';
 
-/**
- * Get market timezone string for Intl API
- */
-function getMarketTimezone(market: string): string {
-  return market === 'KR' ? 'Asia/Seoul' : 'America/New_York';
-}
-
-/**
- * Convert UTC Unix timestamp to market local time for lightweight-charts.
- * Official approach: https://tradingview.github.io/lightweight-charts/docs/time-zones
- * lightweight-charts treats all times as UTC internally,
- * so we "trick" it by shifting the timestamp.
- */
-function timeToTz(originalTime: number, timeZone: string): number {
-  const zonedDate = new Date(
-    new Date(originalTime * 1000).toLocaleString('en-US', { timeZone })
-  );
-  return Math.floor(zonedDate.getTime() / 1000);
-}
-
-/**
- * Check if timeframe is intraday (minute/hour based)
- * CASE-SENSITIVE: 1m=minute, 1M=month
- */
-function isIntradayTimeframe(tf: string): boolean {
-  return ['1m', '5m', '15m', '30m', '1h', '1H', '4h', '4H'].includes(tf);
-}
-
-// Indicator types - replaced Williams %R with 3 Stochastics
-export type IndicatorType = 'stoch_slow' | 'stoch_med' | 'stoch_fast' | 'rsi' | 'macd' | 'volume' | 'rsi_bb';
+// Indicator types - combined Stochastics into one panel
+export type IndicatorType = 'stoch_combined' | 'rsi' | 'macd' | 'volume' | 'rsi_bb';
 export type ExpandedIndicator = IndicatorType | null;
 
 interface SubChartsProps {
@@ -65,27 +38,14 @@ interface SubChartsProps {
 }
 
 // Indicator config with colors
-const indicatorConfig: Record<IndicatorType, { label: string; shortLabel: string; color: string; kColor?: string; dColor?: string }> = {
-  stoch_slow: {
-    label: 'Stoch Slow (20,12,12)',
-    shortLabel: 'Stoch S',
-    color: '#3b82f6',  // Blue for %K
-    kColor: '#3b82f6',
-    dColor: '#f97316',  // Orange for %D
-  },
-  stoch_med: {
-    label: 'Stoch Med (10,6,6)',
-    shortLabel: 'Stoch M',
-    color: '#22c55e',  // Green for %K
-    kColor: '#22c55e',
-    dColor: '#f97316',  // Orange for %D
-  },
-  stoch_fast: {
-    label: 'Stoch Fast (5,3,3)',
-    shortLabel: 'Stoch F',
-    color: '#06b6d4',  // Cyan for %K
-    kColor: '#06b6d4',
-    dColor: '#f97316',  // Orange for %D
+const indicatorConfig: Record<IndicatorType, { label: string; shortLabel: string; color: string; slowColor?: string; medColor?: string; fastColor?: string }> = {
+  stoch_combined: {
+    label: 'Stochastic (S/M/F)',
+    shortLabel: 'Stoch',
+    color: '#3b82f6',  // Primary blue
+    slowColor: '#3b82f6',  // Blue for Slow %K
+    medColor: '#22c55e',   // Green for Med %K
+    fastColor: '#06b6d4',  // Cyan for Fast %K
   },
   rsi: { label: 'RSI (14)', shortLabel: 'RSI', color: '#06b6d4' },
   macd: { label: 'MACD (12,26,9)', shortLabel: 'MACD', color: '#3b82f6' },
@@ -93,22 +53,29 @@ const indicatorConfig: Record<IndicatorType, { label: string; shortLabel: string
   rsi_bb: { label: 'RSI BB (14,30,2)', shortLabel: 'RSI BB', color: '#a855f7' },
 };
 
-// Default order: Stoch Slow (top), Stoch Med, Stoch Fast, RSI, MACD, Volume, RSI BB (bottom)
-const DEFAULT_INDICATOR_ORDER: IndicatorType[] = ['stoch_slow', 'stoch_med', 'stoch_fast', 'rsi', 'macd', 'volume', 'rsi_bb'];
+// Default order: Stoch combined (top), RSI, MACD, Volume, RSI BB (bottom)
+const DEFAULT_INDICATOR_ORDER: IndicatorType[] = ['stoch_combined', 'rsi', 'macd', 'volume', 'rsi_bb'];
 
 // LocalStorage key for persisting order
 const INDICATOR_ORDER_KEY = 'subchart_indicator_order';
 
-// Load indicator order from localStorage
+// Load indicator order from localStorage (with migration from old stoch types)
 function loadIndicatorOrder(): IndicatorType[] {
   try {
     const stored = localStorage.getItem(INDICATOR_ORDER_KEY);
     if (stored) {
-      const parsed = JSON.parse(stored) as IndicatorType[];
-      // Validate that all indicators are present
-      if (parsed.length === DEFAULT_INDICATOR_ORDER.length &&
-          DEFAULT_INDICATOR_ORDER.every(ind => parsed.includes(ind))) {
-        return parsed;
+      const parsed = JSON.parse(stored) as string[];
+      // Migrate old separate stoch types to combined
+      const migratedStoch = parsed.filter(ind => !['stoch_slow', 'stoch_med', 'stoch_fast'].includes(ind));
+      if (parsed.some(ind => ['stoch_slow', 'stoch_med', 'stoch_fast'].includes(ind))) {
+        // Add combined stoch at the position of the first old stoch
+        const firstStochIdx = parsed.findIndex(ind => ['stoch_slow', 'stoch_med', 'stoch_fast'].includes(ind));
+        migratedStoch.splice(firstStochIdx, 0, 'stoch_combined');
+      }
+      // Validate that all new indicators are present
+      const result = migratedStoch as IndicatorType[];
+      if (DEFAULT_INDICATOR_ORDER.every(ind => result.includes(ind))) {
+        return result;
       }
     }
   } catch {
@@ -148,9 +115,12 @@ export function SubCharts({
   const data = sharedData ?? localData;
   // RSI BB is off by default (user can toggle it on)
   const [activeIndicators, setActiveIndicators] = useState<Set<IndicatorType>>(
-    new Set(['stoch_slow', 'stoch_med', 'stoch_fast', 'rsi', 'macd', 'volume'])
+    new Set(['stoch_combined', 'rsi', 'macd', 'volume'])
   );
   const [expandedIndicator, setExpandedIndicator] = useState<ExpandedIndicator>(null);
+
+  // Collapsed state for each panel (separate from active - collapsed panels still show header)
+  const [collapsedPanels, setCollapsedPanels] = useState<Set<IndicatorType>>(new Set());
 
   // Indicator order (for drag-and-drop reordering)
   const [indicatorOrder, setIndicatorOrder] = useState<IndicatorType[]>(loadIndicatorOrder);
@@ -166,23 +136,32 @@ export function SubCharts({
   const seriesRefs = useRef<Map<IndicatorType, ISeriesApi<'Line' | 'Histogram'>>>(new Map());
 
   // Drawing hooks for each indicator type
-  const stochSlowDrawings = useDrawings(symbol, timeframe, 'stoch_slow');
-  const stochMedDrawings = useDrawings(symbol, timeframe, 'stoch_med');
-  const stochFastDrawings = useDrawings(symbol, timeframe, 'stoch_fast');
+  const stochCombinedDrawings = useDrawings(symbol, timeframe, 'stoch_combined');
   const rsiDrawings = useDrawings(symbol, timeframe, 'rsi');
   const macdDrawings = useDrawings(symbol, timeframe, 'macd');
   const volumeDrawings = useDrawings(symbol, timeframe, 'volume');
   const rsiBBDrawings = useDrawings(symbol, timeframe, 'rsi_bb');
 
   // Map indicator type to drawing hook
-  const drawingHooks: Record<IndicatorType, typeof stochSlowDrawings> = {
-    stoch_slow: stochSlowDrawings,
-    stoch_med: stochMedDrawings,
-    stoch_fast: stochFastDrawings,
+  const drawingHooks: Record<IndicatorType, typeof stochCombinedDrawings> = {
+    stoch_combined: stochCombinedDrawings,
     rsi: rsiDrawings,
     macd: macdDrawings,
     volume: volumeDrawings,
     rsi_bb: rsiBBDrawings,
+  };
+
+  // Toggle collapse state
+  const toggleCollapse = (indicator: IndicatorType) => {
+    setCollapsedPanels(prev => {
+      const next = new Set(prev);
+      if (next.has(indicator)) {
+        next.delete(indicator);
+      } else {
+        next.add(indicator);
+      }
+      return next;
+    });
   };
 
 
@@ -344,36 +323,17 @@ export function SubCharts({
     const config = indicatorConfig[indicator];
 
     switch (indicator) {
-      case 'stoch_slow': {
-        const k = data.stoch_slow_k?.[data.stoch_slow_k.length - 1];
-        const d = data.stoch_slow_d?.[data.stoch_slow_d.length - 1];
+      case 'stoch_combined': {
+        const slowK = data.stoch_slow_k?.[data.stoch_slow_k.length - 1];
+        const medK = data.stoch_med_k?.[data.stoch_med_k.length - 1];
+        const fastK = data.stoch_fast_k?.[data.stoch_fast_k.length - 1];
         return (
           <>
-            {k != null && !isNaN(k) && <span style={{ color: config.kColor }}>K:{k.toFixed(0)}</span>}
+            {slowK != null && !isNaN(slowK) && <span style={{ color: config.slowColor }}>S:{slowK.toFixed(0)}</span>}
             {' '}
-            {d != null && !isNaN(d) && <span style={{ color: config.dColor }}>D:{d.toFixed(0)}</span>}
-          </>
-        );
-      }
-      case 'stoch_med': {
-        const k = data.stoch_med_k?.[data.stoch_med_k.length - 1];
-        const d = data.stoch_med_d?.[data.stoch_med_d.length - 1];
-        return (
-          <>
-            {k != null && !isNaN(k) && <span style={{ color: config.kColor }}>K:{k.toFixed(0)}</span>}
+            {medK != null && !isNaN(medK) && <span style={{ color: config.medColor }}>M:{medK.toFixed(0)}</span>}
             {' '}
-            {d != null && !isNaN(d) && <span style={{ color: config.dColor }}>D:{d.toFixed(0)}</span>}
-          </>
-        );
-      }
-      case 'stoch_fast': {
-        const k = data.stoch_fast_k?.[data.stoch_fast_k.length - 1];
-        const d = data.stoch_fast_d?.[data.stoch_fast_d.length - 1];
-        return (
-          <>
-            {k != null && !isNaN(k) && <span style={{ color: config.kColor }}>K:{k.toFixed(0)}</span>}
-            {' '}
-            {d != null && !isNaN(d) && <span style={{ color: config.dColor }}>D:{d.toFixed(0)}</span>}
+            {fastK != null && !isNaN(fastK) && <span style={{ color: config.fastColor }}>F:{fastK.toFixed(0)}</span>}
           </>
         );
       }
@@ -465,13 +425,14 @@ export function SubCharts({
           const config = indicatorConfig[indicator];
           const isDragging = draggedIndicator === indicator;
           const isDropTarget = dropTargetIndicator === indicator;
+          const isCollapsed = collapsedPanels.has(indicator);
           return (
             <div
               key={indicator}
               className={`flex flex-col border-b border-[var(--border-color)] transition-all ${
                 isDragging ? 'opacity-50' : ''
               } ${isDropTarget ? 'border-t-2 border-t-[var(--accent-blue)]' : ''}`}
-              style={{ height: '90px' }}
+              style={{ height: isCollapsed ? '24px' : '120px' }}
             >
               {/* Header - draggable */}
               <div
@@ -481,36 +442,51 @@ export function SubCharts({
                 onDragOver={handleDragOver(indicator)}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop(indicator)}
-                onClick={() => setExpandedIndicator(indicator)}
                 className="px-2 py-0.5 text-xs bg-[var(--bg-secondary)] border-b border-[var(--border-color)] flex items-center gap-2 cursor-grab hover:bg-[var(--bg-tertiary)] transition-colors active:cursor-grabbing select-none"
               >
+                {/* Collapse toggle */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleCollapse(indicator); }}
+                  className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                  title={isCollapsed ? '펼치기' : '접기'}
+                >
+                  {isCollapsed ? '▶' : '▼'}
+                </button>
                 {/* Drag handle icon */}
                 <span className="text-[var(--text-secondary)] opacity-50 hover:opacity-100" title="드래그하여 순서 변경">
                   ⠿
                 </span>
                 <span className="text-[var(--text-secondary)]">{config.label}</span>
                 {getCurrentValue(indicator)}
-                <span className="ml-auto text-[10px] text-[var(--text-secondary)]">클릭: 확대 | 드래그: 순서 변경</span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setExpandedIndicator(indicator); }}
+                  className="ml-auto text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  title="확대"
+                >
+                  ⛶
+                </button>
               </div>
-              {/* Chart */}
-              <div className="flex-1 min-h-0">
-                <IndicatorChart
-                  key={`${indicator}-${timeframe}`}
-                  indicator={indicator}
-                  data={data}
-                  showTimeScale={indicator === 'volume'}
-                  onChartReady={(chart) => registerChart(indicator, chart)}
-                  onSeriesReady={(series) => registerSeries(indicator, series)}
-                  drawingToolActive={drawingToolActive}
-                  isActiveChart={activeChartType === indicator}
-                  onChartActivate={() => onChartActivate?.(indicator)}
-                  onDrawingComplete={onDrawingComplete}
-                  drawingHook={drawingHooks[indicator]}
-                  externalVisibleRange={externalVisibleRange}
-                  market={market}
-                  timeframe={timeframe}
-                />
-              </div>
+              {/* Chart - hidden when collapsed */}
+              {!isCollapsed && (
+                <div className="flex-1 min-h-0">
+                  <IndicatorChart
+                    key={`${indicator}-${timeframe}`}
+                    indicator={indicator}
+                    data={data}
+                    showTimeScale={indicator === 'volume'}
+                    onChartReady={(chart) => registerChart(indicator, chart)}
+                    onSeriesReady={(series) => registerSeries(indicator, series)}
+                    drawingToolActive={drawingToolActive}
+                    isActiveChart={activeChartType === indicator}
+                    onChartActivate={() => onChartActivate?.(indicator)}
+                    onDrawingComplete={onDrawingComplete}
+                    drawingHook={drawingHooks[indicator]}
+                    externalVisibleRange={externalVisibleRange}
+                    market={market}
+                    timeframe={timeframe}
+                  />
+                </div>
+              )}
             </div>
           );
         })}
@@ -638,26 +614,31 @@ function IndicatorChart({
 
     // Add series based on indicator type
     switch (indicator) {
-      case 'stoch_slow':
-      case 'stoch_med':
-      case 'stoch_fast': {
-        // %D line (drawn first, behind %K)
-        const d = chart.addSeries(LineSeries, {
-          color: config.dColor || '#f97316',
-          lineWidth: 1,
+      case 'stoch_combined': {
+        // Combined Stochastic: overlay Slow, Med, Fast on one chart
+        // Slow %K - Blue
+        const slowK = chart.addSeries(LineSeries, {
+          color: config.slowColor || '#3b82f6',
+          lineWidth: 2,
           priceLineVisible: false,
         });
-        // %K line (drawn on top)
-        const k = chart.addSeries(LineSeries, {
-          color: config.kColor || config.color,
+        // Med %K - Green
+        const medK = chart.addSeries(LineSeries, {
+          color: config.medColor || '#22c55e',
+          lineWidth: 2,
+          priceLineVisible: false,
+        });
+        // Fast %K - Cyan
+        const fastK = chart.addSeries(LineSeries, {
+          color: config.fastColor || '#06b6d4',
           lineWidth: 2,
           priceLineVisible: false,
         });
         // Reference lines: 80 (overbought), 50 (middle), 20 (oversold)
-        k.createPriceLine({ price: 80, color: '#ef5350', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
-        k.createPriceLine({ price: 50, color: '#758696', lineWidth: 1, lineStyle: 3, axisLabelVisible: false });
-        k.createPriceLine({ price: 20, color: '#26a69a', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
-        seriesRef.current = [k, d];
+        slowK.createPriceLine({ price: 80, color: '#ef5350', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+        slowK.createPriceLine({ price: 50, color: '#758696', lineWidth: 1, lineStyle: 3, axisLabelVisible: false });
+        slowK.createPriceLine({ price: 20, color: '#26a69a', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+        seriesRef.current = [slowK, medK, fastK];
         break;
       }
       case 'rsi': {
@@ -803,40 +784,23 @@ function IndicatorChart({
     };
 
     switch (indicator) {
-      case 'stoch_slow': {
-        const [k, d] = seriesRef.current;
-        const kData: LineData<Time>[] = times
+      case 'stoch_combined': {
+        const [slowK, medK, fastK] = seriesRef.current;
+        // Slow %K data - Blue
+        const slowKData: LineData<Time>[] = times
           .map((time, i) => ({ time, value: data.stoch_slow_k?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
-        const dData: LineData<Time>[] = times
-          .map((time, i) => ({ time, value: data.stoch_slow_d?.[i] }))
-          .filter(d => d.value != null && !isNaN(d.value));
-        safeSetData(k as ISeriesApi<'Line'>, kData, '%K');
-        safeSetData(d as ISeriesApi<'Line'>, dData, '%D');
-        break;
-      }
-      case 'stoch_med': {
-        const [k, d] = seriesRef.current;
-        const kData: LineData<Time>[] = times
+        // Med %K data - Green
+        const medKData: LineData<Time>[] = times
           .map((time, i) => ({ time, value: data.stoch_med_k?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
-        const dData: LineData<Time>[] = times
-          .map((time, i) => ({ time, value: data.stoch_med_d?.[i] }))
-          .filter(d => d.value != null && !isNaN(d.value));
-        safeSetData(k as ISeriesApi<'Line'>, kData, '%K');
-        safeSetData(d as ISeriesApi<'Line'>, dData, '%D');
-        break;
-      }
-      case 'stoch_fast': {
-        const [k, d] = seriesRef.current;
-        const kData: LineData<Time>[] = times
+        // Fast %K data - Cyan
+        const fastKData: LineData<Time>[] = times
           .map((time, i) => ({ time, value: data.stoch_fast_k?.[i] }))
           .filter(d => d.value != null && !isNaN(d.value));
-        const dData: LineData<Time>[] = times
-          .map((time, i) => ({ time, value: data.stoch_fast_d?.[i] }))
-          .filter(d => d.value != null && !isNaN(d.value));
-        safeSetData(k as ISeriesApi<'Line'>, kData, '%K');
-        safeSetData(d as ISeriesApi<'Line'>, dData, '%D');
+        safeSetData(slowK as ISeriesApi<'Line'>, slowKData, 'Slow %K');
+        safeSetData(medK as ISeriesApi<'Line'>, medKData, 'Med %K');
+        safeSetData(fastK as ISeriesApi<'Line'>, fastKData, 'Fast %K');
         break;
       }
       case 'rsi': {

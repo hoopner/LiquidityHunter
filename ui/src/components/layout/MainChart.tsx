@@ -23,6 +23,7 @@ import { DrawingToolbar } from '../chart/DrawingToolbar';
 import { DrawingCanvas } from '../chart/DrawingCanvas';
 import { DrawingPropertyEditor } from '../chart/DrawingPropertyEditor';
 import type { DrawingToolType } from '../../types/drawings';
+import { timeToTz, getMarketTimezone, isIntradayTimeframe } from '../../utils/time';
 
 export const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'] as const;
 export type Timeframe = typeof TIMEFRAMES[number];
@@ -63,34 +64,6 @@ interface BoxPosition {
   top: number;
   bottom: number;
   visible: boolean;
-}
-
-/**
- * Get market timezone string for Intl API
- */
-function getMarketTimezone(market: string): string {
-  return market === 'KR' ? 'Asia/Seoul' : 'America/New_York';
-}
-
-/**
- * Convert UTC Unix timestamp to market local time for lightweight-charts.
- * Official approach: https://tradingview.github.io/lightweight-charts/docs/time-zones
- * lightweight-charts treats all times as UTC internally,
- * so we "trick" it by shifting the timestamp.
- */
-function timeToTz(originalTime: number, timeZone: string): number {
-  const zonedDate = new Date(
-    new Date(originalTime * 1000).toLocaleString('en-US', { timeZone })
-  );
-  return Math.floor(zonedDate.getTime() / 1000);
-}
-
-/**
- * Check if timeframe is intraday (minute/hour based)
- * CASE-SENSITIVE: 1m=minute, 1M=month
- */
-function isIntradayTimeframe(tf: string): boolean {
-  return ['1m', '5m', '15m', '30m', '1h', '1H', '4h', '4H'].includes(tf);
 }
 
 /**
@@ -1216,22 +1189,6 @@ export const MainChart = memo(function MainChart({
 
     console.log('[Chart]', id, '🔄 Creating/recreating chart for timeframe:', timeframe);
 
-    // NUCLEAR cleanup: Remove ALL orphan canvases in DOM (fixes memory leak)
-    const allCanvases = document.querySelectorAll('canvas');
-    console.log('[Chart]', id, '🔍 Found', allCanvases.length, 'total canvases in DOM');
-    let orphanCount = 0;
-    allCanvases.forEach(canvas => {
-      const parent = canvas.closest('[data-chart-id]');
-      if (!parent) {
-        console.log('[Chart]', id, '🗑️ Removing orphan canvas');
-        canvas.remove();
-        orphanCount++;
-      }
-    });
-    if (orphanCount > 0) {
-      console.log('[Chart]', id, '✅ Removed', orphanCount, 'orphan canvases');
-    }
-
     // Tag container with instance ID for debugging
     chartContainerRef.current.setAttribute('data-chart-id', id);
 
@@ -1639,22 +1596,11 @@ export const MainChart = memo(function MainChart({
     if (chartContainerRef.current) {
       const canvases = chartContainerRef.current.querySelectorAll('canvas');
       console.log('[Chart]', id, 'Canvas count in container:', canvases.length);
-      if (canvases.length > 10) {
-        console.error('[Chart]', id, '⚠️ TOO MANY CANVASES! Possible stacked charts:', canvases.length);
-      }
     }
 
     // Use safeSetData to handle dedup and sorting
     console.log('[Chart] Setting', candlestickData.length, 'bars via safeSetData');
     safeSetData(candlestickSeriesRef.current, candlestickData);
-
-    // DEBUG: Check total canvas count in DOM
-    const allCanvases = document.querySelectorAll('canvas');
-    const chartContainers = document.querySelectorAll('[data-chart-id]');
-    console.log('[Chart]', id, '📊 Global canvas count:', allCanvases.length, '| Chart containers:', chartContainers.length);
-    if (allCanvases.length > chartContainers.length * 10) {
-      console.warn('[Chart]', id, '⚠️ Orphan canvases detected! Expected max:', chartContainers.length * 10, 'Found:', allCanvases.length);
-    }
 
     // Expose to browser console for inspection
     (window as any).__CHART_DEBUG__ = {
@@ -2064,6 +2010,7 @@ export const MainChart = memo(function MainChart({
       // Apply timezone shift to intraday timestamps
       predictions.forEach((pred) => {
         const predDate = new Date(pred.timestamp);
+        if (isNaN(predDate.getTime())) return;
         // Use same time format as chart: number (Unix seconds) for intraday, string for daily
         const time = isIntradayBar
           ? timeToTz(Math.floor(predDate.getTime() / 1000), tz) as Time

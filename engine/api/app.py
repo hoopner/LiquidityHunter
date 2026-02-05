@@ -36,6 +36,7 @@ from engine.indicators.keltner import calculate_keltner_channel, calculate_ttm_s
 from engine.core.screener import screen_watchlist, ScreenResult
 from engine.core.volume_profile import calculate_volume_profile
 from engine.api.data import load_csv, load_with_refresh, OHLCVData
+from engine.api.routers.ohlcv import router as ohlcv_v2_router
 from engine.api.schemas import (
     AnalyzeResponse,
     ReplayResponse,
@@ -690,6 +691,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(ohlcv_v2_router)
 
 
 def _ob_to_schema(
@@ -1354,7 +1357,10 @@ def get_ohlcv(
         # Convert to Unix timestamp if not already an int
         if isinstance(time_val, str):
             try:
-                if " " in time_val:
+                if "T" in time_val:
+                    # ISO format: "YYYY-MM-DDTHH:MM:SS" (from KIS API)
+                    parsed = dt_module.fromisoformat(time_val)
+                elif " " in time_val:
                     # Datetime format: "YYYY-MM-DD HH:MM:SS"
                     parsed = dt_module.strptime(time_val, "%Y-%m-%d %H:%M:%S")
                 else:
@@ -1362,7 +1368,11 @@ def get_ohlcv(
                     parsed = dt_module.strptime(time_val, "%Y-%m-%d")
                 time_val = int(parsed.timestamp())
             except ValueError:
-                pass  # Keep original if parsing fails
+                # If ISO/strptime parsing fails, log warning and use index-based timestamp
+                import logging
+                logging.warning(f"Failed to parse timestamp: {time_val}, using fallback")
+                # Use a fallback timestamp based on index (1 day apart)
+                time_val = int(dt_module(2020, 1, 1).timestamp()) + (i * 86400)
         elif isinstance(time_val, (int, float)):
             time_val = int(time_val)
 

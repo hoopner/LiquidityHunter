@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import {
-  createChart,
   CandlestickSeries,
   LineSeries,
 } from 'lightweight-charts';
@@ -23,6 +22,8 @@ import { DrawingToolbar } from '../chart/DrawingToolbar';
 import { DrawingCanvas } from '../chart/DrawingCanvas';
 import { DrawingPropertyEditor } from '../chart/DrawingPropertyEditor';
 import type { DrawingToolType } from '../../types/drawings';
+import { timeToTz, getMarketTimezone, isIntradayTimeframe } from '../../utils/time';
+import { useChartInstance } from '../../hooks/useChartInstance';
 
 export const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'] as const;
 export type Timeframe = typeof TIMEFRAMES[number];
@@ -63,34 +64,6 @@ interface BoxPosition {
   top: number;
   bottom: number;
   visible: boolean;
-}
-
-/**
- * Get market timezone string for Intl API
- */
-function getMarketTimezone(market: string): string {
-  return market === 'KR' ? 'Asia/Seoul' : 'America/New_York';
-}
-
-/**
- * Convert UTC Unix timestamp to market local time for lightweight-charts.
- * Official approach: https://tradingview.github.io/lightweight-charts/docs/time-zones
- * lightweight-charts treats all times as UTC internally,
- * so we "trick" it by shifting the timestamp.
- */
-function timeToTz(originalTime: number, timeZone: string): number {
-  const zonedDate = new Date(
-    new Date(originalTime * 1000).toLocaleString('en-US', { timeZone })
-  );
-  return Math.floor(zonedDate.getTime() / 1000);
-}
-
-/**
- * Check if timeframe is intraday (minute/hour based)
- * CASE-SENSITIVE: 1m=minute, 1M=month
- */
-function isIntradayTimeframe(tf: string): boolean {
-  return ['1m', '5m', '15m', '30m', '1h', '1H', '4h', '4H'].includes(tf);
 }
 
 /**
@@ -160,7 +133,74 @@ export const DailyChart = memo(function DailyChart({
   tradingLevels,
 }: DailyChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
+
+  // DailyChart only handles daily timeframes
+  const locale = market === 'KR' ? 'ko-KR' : 'en-US';
+  const weekdays = market === 'KR'
+    ? ['일', '월', '화', '수', '목', '금', '토']
+    : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  const { chartRef, isReady } = useChartInstance(chartContainerRef, {
+    options: {
+      layout: {
+        background: { color: '#131722' },
+        textColor: '#d1d4dc',
+      },
+      grid: {
+        vertLines: { color: '#1e222d' },
+        horzLines: { color: '#1e222d' },
+      },
+      localization: {
+        locale: locale,
+        timeFormatter: (time: number | string) => {
+          if (typeof time === 'number') {
+            const date = new Date(time * 1000);
+            const month = (date.getUTCMonth() + 1).toString().padStart(2, '0');
+            const day = date.getUTCDate().toString().padStart(2, '0');
+            const weekday = weekdays[date.getUTCDay()];
+            return `${month}/${day} (${weekday})`;
+          }
+          if (typeof time === 'string') {
+            const date = new Date(time + 'T12:00:00');
+            const month = (date.getMonth() + 1).toString().padStart(2, '0');
+            const day = date.getDate().toString().padStart(2, '0');
+            const weekday = weekdays[date.getDay()];
+            return `${month}/${day} (${weekday})`;
+          }
+          return String(time);
+        },
+      },
+      crosshair: {
+        mode: 1,
+        vertLine: { color: '#758696', width: 1, style: 3, labelBackgroundColor: '#2a2e39' },
+        horzLine: { color: '#758696', width: 1, style: 3, labelBackgroundColor: '#2a2e39' },
+      },
+      rightPriceScale: {
+        borderColor: '#2a2e39',
+        scaleMargins: { top: 0.1, bottom: 0.1 },
+        autoScale: true,
+        minimumWidth: 60,
+      },
+      timeScale: {
+        borderColor: '#2a2e39',
+        visible: showTimeScale,
+        timeVisible: false,
+        secondsVisible: false,
+        rightOffset: 20,
+      },
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: true,
+      },
+      kineticScroll: {
+        mouse: true,
+        touch: true,
+      },
+    },
+    autoResize: true,
+  });
+
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const ema20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const ema200SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
@@ -1158,172 +1198,53 @@ export const DailyChart = memo(function DailyChart({
     };
   }, []);
 
-  // Initialize chart - ONLY ONCE on mount
+  // Set up series and event handlers once chart is ready (via useChartInstance hook)
+  // Also re-runs on timeframe change to recreate series with fresh data
   useEffect(() => {
-    if (!chartContainerRef.current) return;
+    const chart = chartRef.current;
+    if (!isReady || !chart) return;
 
     const id = instanceIdRef.current;
-    console.log('[Chart]', id, '🆕 Initializing chart...');
-
-    // Reset the created flag (allows recreation on timeframe change)
-    chartCreatedRef.current = false;
-
-    console.log('[Chart]', id, '🔄 Creating/recreating chart for timeframe:', timeframe);
-
-    // NUCLEAR cleanup: Remove ALL orphan canvases in DOM (fixes memory leak)
-    const allCanvases = document.querySelectorAll('canvas');
-    console.log('[Chart]', id, '🔍 Found', allCanvases.length, 'total canvases in DOM');
-    let orphanCount = 0;
-    allCanvases.forEach(canvas => {
-      const parent = canvas.closest('[data-chart-id]');
-      if (!parent) {
-        console.log('[Chart]', id, '🗑️ Removing orphan canvas');
-        canvas.remove();
-        orphanCount++;
-      }
-    });
-    if (orphanCount > 0) {
-      console.log('[Chart]', id, '✅ Removed', orphanCount, 'orphan canvases');
-    }
+    console.log('[Chart]', id, '📊 Setting up series for timeframe:', timeframe);
 
     // Tag container with instance ID for debugging
-    chartContainerRef.current.setAttribute('data-chart-id', id);
-
-    // CRITICAL: Remove ALL existing canvases in container (fixes stacked chart bug)
-    const existingCanvases = chartContainerRef.current.querySelectorAll('canvas');
-    console.log('[Chart]', id, 'Found', existingCanvases.length, 'existing canvases in container - removing all');
-    existingCanvases.forEach(canvas => canvas.remove());
-
-    // Remove old chart instance if exists
-    if (chartRef.current) {
-      console.log('[Chart]', id, 'Removing old chart instance');
-      try {
-        chartRef.current.remove();
-      } catch (e) {
-        console.warn('[Chart]', id, 'Error removing old chart:', e);
-      }
-      chartRef.current = null;
-    }
-
-    // Clear container completely
-    chartContainerRef.current.innerHTML = '';
-
-    // Verify container is empty
-    const remainingCanvases = chartContainerRef.current.querySelectorAll('canvas');
-    if (remainingCanvases.length > 0) {
-      console.error('[Chart]', id, '❌ Still', remainingCanvases.length, 'canvases after cleanup!');
-    }
-
-    // DailyChart only handles daily timeframes - always false
-    const isIntradayTf = false;
-    const locale = market === 'KR' ? 'ko-KR' : 'en-US';
-
-    // Weekday names for display
-    const weekdays = market === 'KR'
-      ? ['일', '월', '화', '수', '목', '금', '토']
-      : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-    const chart = createChart(chartContainerRef.current, {
-      layout: {
-        background: { color: '#131722' },
-        textColor: '#d1d4dc',
-      },
-      grid: {
-        vertLines: { color: '#1e222d' },
-        horzLines: { color: '#1e222d' },
-      },
-      localization: {
-        locale: locale,
-        // NOTE: Data timestamps are already timezone-shifted (local market time)
-        // NO additional offset needed - just format directly
-        timeFormatter: (time: number | string) => {
-          if (typeof time === 'number') {
-            // Unix timestamp already shifted to local market time
-            const date = new Date(time * 1000);
-
-            if (isIntradayTf) {
-              const hours = date.getUTCHours().toString().padStart(2, '0');
-              const minutes = date.getUTCMinutes().toString().padStart(2, '0');
-              return `${hours}:${minutes}`;
-            }
-            // Daily from Unix timestamp
-            const month = (date.getUTCMonth() + 1).toString().padStart(2, '0');
-            const day = date.getUTCDate().toString().padStart(2, '0');
-            const weekday = weekdays[date.getUTCDay()];
-            return `${month}/${day} (${weekday})`;
-          }
-          if (typeof time === 'string') {
-            // YYYY-MM-DD (daily)
-            const date = new Date(time + 'T12:00:00');
-            const month = (date.getMonth() + 1).toString().padStart(2, '0');
-            const day = date.getDate().toString().padStart(2, '0');
-            const weekday = weekdays[date.getDay()];
-            return `${month}/${day} (${weekday})`;
-          }
-          return String(time);
-        },
-      },
-      crosshair: {
-        mode: 1,
-        vertLine: {
-          color: '#758696',
-          width: 1,
-          style: 3,
-          labelBackgroundColor: '#2a2e39',
-        },
-        horzLine: {
-          color: '#758696',
-          width: 1,
-          style: 3,
-          labelBackgroundColor: '#2a2e39',
-        },
-      },
-      rightPriceScale: {
-        borderColor: '#2a2e39',
-        scaleMargins: {
-          top: 0.1,    // 10% padding at top
-          bottom: 0.1, // 10% padding at bottom
-        },
-        autoScale: true,
-        minimumWidth: 60,  // Fixed width for alignment with subcharts
-      },
-      timeScale: {
-        borderColor: '#2a2e39',
-        visible: showTimeScale,  // Hide when subcharts show timeline at bottom
-        timeVisible: isIntradayTf,  // Show time for intraday
-        secondsVisible: false,
-        rightOffset: 20,  // Increased padding for price label visibility
-        // Custom tick formatter for intraday: show HH:MM
-        tickMarkFormatter: isIntradayTf ? (time: number) => {
-          // Time is already shifted by timeToTz, use UTC methods to display correctly
-          const date = new Date(time * 1000);
-          const hours = date.getUTCHours().toString().padStart(2, '0');
-          const minutes = date.getUTCMinutes().toString().padStart(2, '0');
-          return `${hours}:${minutes}`;
-        } : undefined,
-      },
-      handleScale: {
-        // Make default wheel zoom more gradual
-        mouseWheel: true,
-        pinch: true,
-        axisPressedMouseMove: true,
-      },
-      kineticScroll: {
-        mouse: true,
-        touch: true,
-      },
-    });
-
-    chartRef.current = chart;
-    console.log('[Chart]', id, '✅ Chart instance created');
+    chartContainerRef.current?.setAttribute('data-chart-id', id);
 
     // Notify parent that chart is ready
     if (onChartReady) {
       onChartReady(chartRef);
     }
 
+    // Remove existing series before recreating (handles timeframe change)
+    try {
+      if (candlestickSeriesRef.current) { chart.removeSeries(candlestickSeriesRef.current); candlestickSeriesRef.current = null; }
+      if (ema20SeriesRef.current) { chart.removeSeries(ema20SeriesRef.current); ema20SeriesRef.current = null; }
+      if (ema200SeriesRef.current) { chart.removeSeries(ema200SeriesRef.current); ema200SeriesRef.current = null; }
+      if (sma20SeriesRef.current) { chart.removeSeries(sma20SeriesRef.current); sma20SeriesRef.current = null; }
+      if (sma200SeriesRef.current) { chart.removeSeries(sma200SeriesRef.current); sma200SeriesRef.current = null; }
+      if (bb1UpperRef.current) { chart.removeSeries(bb1UpperRef.current); bb1UpperRef.current = null; }
+      if (bb1MiddleRef.current) { chart.removeSeries(bb1MiddleRef.current); bb1MiddleRef.current = null; }
+      if (bb1LowerRef.current) { chart.removeSeries(bb1LowerRef.current); bb1LowerRef.current = null; }
+      if (bb2UpperRef.current) { chart.removeSeries(bb2UpperRef.current); bb2UpperRef.current = null; }
+      if (bb2LowerRef.current) { chart.removeSeries(bb2LowerRef.current); bb2LowerRef.current = null; }
+      if (vwapRef.current) { chart.removeSeries(vwapRef.current); vwapRef.current = null; }
+      if (kcUpperRef.current) { chart.removeSeries(kcUpperRef.current); kcUpperRef.current = null; }
+      if (kcMiddleRef.current) { chart.removeSeries(kcMiddleRef.current); kcMiddleRef.current = null; }
+      if (kcLowerRef.current) { chart.removeSeries(kcLowerRef.current); kcLowerRef.current = null; }
+      if (aiPredTechnicalRef.current) { chart.removeSeries(aiPredTechnicalRef.current); aiPredTechnicalRef.current = null; }
+      if (aiPredLSTMRef.current) { chart.removeSeries(aiPredLSTMRef.current); aiPredLSTMRef.current = null; }
+      if (aiPredLHRef.current) { chart.removeSeries(aiPredLHRef.current); aiPredLHRef.current = null; }
+      if (aiPredConsensusRef.current) { chart.removeSeries(aiPredConsensusRef.current); aiPredConsensusRef.current = null; }
+      if (aiBacktestTechnicalRef.current) { chart.removeSeries(aiBacktestTechnicalRef.current); aiBacktestTechnicalRef.current = null; }
+      if (aiBacktestLSTMRef.current) { chart.removeSeries(aiBacktestLSTMRef.current); aiBacktestLSTMRef.current = null; }
+      if (aiBacktestLHRef.current) { chart.removeSeries(aiBacktestLHRef.current); aiBacktestLHRef.current = null; }
+      if (aiBacktestConsensusRef.current) { chart.removeSeries(aiBacktestConsensusRef.current); aiBacktestConsensusRef.current = null; }
+    } catch (e) {
+      console.warn('[Chart]', id, 'Error removing old series:', e);
+    }
+    lastDataIdRef.current = null;
+
     // Create candlestick series (v5 API)
-    console.log('[Chart]', id, '📊 Adding candlestick series...');
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
       // Korean standard: Red=Up, Green=Down
       upColor: '#ef5350',
@@ -1332,17 +1253,12 @@ export const DailyChart = memo(function DailyChart({
       borderDownColor: '#26a69a',
       wickUpColor: '#ef5350',
       wickDownColor: '#26a69a',
-      // Show current price on right axis
       lastValueVisible: true,
       priceLineVisible: true,
       priceLineWidth: 1,
-      priceLineStyle: 2, // Dashed line
+      priceLineStyle: 2,
     });
     candlestickSeriesRef.current = candlestickSeries;
-
-    // Verify canvas count after chart creation (7 is normal for lightweight-charts)
-    const finalCanvases = chartContainerRef.current?.querySelectorAll('canvas') || [];
-    console.log('[Chart]', id, '✅ Chart created. Canvas count:', finalCanvases.length);
 
     // Create EMA20 line series - Bright Pink
     const ema20Series = chart.addSeries(LineSeries, {
@@ -1354,53 +1270,17 @@ export const DailyChart = memo(function DailyChart({
 
     // Create EMA200 line series - Sky Blue, thicker for visibility
     const ema200Series = chart.addSeries(LineSeries, {
-      color: '#00BFFF',  // Sky blue / cyan
-      lineWidth: 3,      // Thicker for better visibility
+      color: '#00BFFF',
+      lineWidth: 3,
       title: 'EMA200',
     });
     ema200SeriesRef.current = ema200Series;
 
-    // ALL indicator series are created ON-DEMAND when toggled ON
-    // This reduces initial series from 22 to just 3 (candlestick, EMA20, EMA200)
-    // Dramatically reduces canvas count from 7 to 1-2
-    sma20SeriesRef.current = null;
-    sma200SeriesRef.current = null;
-    bb1UpperRef.current = null;
-    bb1MiddleRef.current = null;
-    bb1LowerRef.current = null;
-    bb2UpperRef.current = null;
-    bb2LowerRef.current = null;
-    vwapRef.current = null;
-    kcUpperRef.current = null;
-    kcMiddleRef.current = null;
-    kcLowerRef.current = null;
-    aiPredTechnicalRef.current = null;
-    aiPredLSTMRef.current = null;
-    aiPredLHRef.current = null;
-    aiPredConsensusRef.current = null;
-    aiBacktestTechnicalRef.current = null;
-    aiBacktestLSTMRef.current = null;
-    aiBacktestLHRef.current = null;
-    aiBacktestConsensusRef.current = null;
-
-    // DEBUG: Check canvas count (lightweight-charts uses ~7 canvases internally, this is normal)
-    const canvasCountAfterSeries = chartContainerRef.current?.querySelectorAll('canvas').length || 0;
-    console.log('[Chart]', id, '📊 Canvas count:', canvasCountAfterSeries, '(7 is normal for lightweight-charts)');
-    if (canvasCountAfterSeries > 12) {
-      console.warn('[Chart]', id, '⚠️ Unusual canvas count:', canvasCountAfterSeries);
-    }
-
     // Performance: Cleanup manager for this effect
     const cleanup = new CleanupManager();
 
-    // Performance: Debounced resize handler (wait 200ms after resize stops)
+    // Performance: Debounced resize handler for box positions
     const handleResizeCore = () => {
-      if (chartContainerRef.current) {
-        chart.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-          height: chartContainerRef.current.clientHeight,
-        });
-      }
       updateBoxPositions();
     };
     const handleResize = debounce(handleResizeCore, 200);
@@ -1409,24 +1289,20 @@ export const DailyChart = memo(function DailyChart({
     // Performance: Throttled visible range change handler (max 60fps)
     const handleVisibleRangeChangeCore = (range: { from: number; to: number } | null) => {
       updateBoxPositions();
-      // Notify parent to sync all subcharts with main chart's visible range
       if (onVisibleRangeChangeRef.current && range) {
         onVisibleRangeChangeRef.current({ from: range.from, to: range.to });
       }
     };
-    const handleVisibleRangeChange = throttle(handleVisibleRangeChangeCore, 16); // ~60fps
+    const handleVisibleRangeChange = throttle(handleVisibleRangeChangeCore, 16);
     cleanup.add(() => handleVisibleRangeChange.cancel());
 
-    // Subscribe to visible range changes to update box positions and sync subcharts
+    // Subscribe to visible range changes
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       handleVisibleRangeChange(range);
     });
 
-    // Wheel zoom handlers:
-    // - Normal wheel: Gentle horizontal zoom (centered)
-    // - Ctrl + wheel: Horizontal zoom (X-axis) - right edge fixed
+    // Wheel zoom handlers
     const handleWheel = (e: WheelEvent) => {
-      // Ctrl + wheel: Horizontal zoom with right edge fixed
       if (e.ctrlKey && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -1436,38 +1312,23 @@ export const DailyChart = memo(function DailyChart({
         if (!currentRange) return;
 
         const now = Date.now();
-
-        // Lock the anchor point at the start of zoom gesture
         if (!zoomAnchorRef.current.locked || (now - zoomAnchorRef.current.lastWheelTime > 300)) {
           zoomAnchorRef.current.locked = true;
           zoomAnchorRef.current.anchorLogical = currentRange.to;
         }
         zoomAnchorRef.current.lastWheelTime = now;
 
-        if (zoomResetTimerRef.current) {
-          clearTimeout(zoomResetTimerRef.current);
-        }
+        if (zoomResetTimerRef.current) clearTimeout(zoomResetTimerRef.current);
+        zoomResetTimerRef.current = setTimeout(() => { zoomAnchorRef.current.locked = false; }, 200);
 
-        zoomResetTimerRef.current = setTimeout(() => {
-          zoomAnchorRef.current.locked = false;
-        }, 200);
-
-        // Zoom direction: scroll up = zoom in, scroll down = zoom out
-        // Use gentler zoom factors for smoother experience
         const zoomFactor = e.deltaY < 0 ? 0.95 : 1.05;
         const currentWidth = currentRange.to - currentRange.from;
-        const newWidth = currentWidth * zoomFactor;
-        const clampedWidth = Math.max(5, Math.min(500, newWidth));
-
+        const clampedWidth = Math.max(5, Math.min(500, currentWidth * zoomFactor));
         const rightAnchor = zoomAnchorRef.current.anchorLogical;
-        const newFrom = rightAnchor - clampedWidth;
-        const newTo = rightAnchor;
-
-        timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
+        timeScale.setVisibleLogicalRange({ from: rightAnchor - clampedWidth, to: rightAnchor });
         return;
       }
 
-      // No modifier - apply gentler horizontal zoom (override default behavior)
       e.preventDefault();
       e.stopPropagation();
 
@@ -1475,80 +1336,50 @@ export const DailyChart = memo(function DailyChart({
       const currentRange = timeScale.getVisibleLogicalRange();
       if (!currentRange) return;
 
-      // Gentler zoom for normal wheel (no modifier)
       const zoomFactor = e.deltaY < 0 ? 0.97 : 1.03;
       const currentWidth = currentRange.to - currentRange.from;
-      const newWidth = currentWidth * zoomFactor;
-      const clampedWidth = Math.max(10, Math.min(500, newWidth));
-
-      // Zoom centered on visible range
+      const clampedWidth = Math.max(10, Math.min(500, currentWidth * zoomFactor));
       const center = (currentRange.from + currentRange.to) / 2;
-      const newFrom = center - clampedWidth / 2;
-      const newTo = center + clampedWidth / 2;
-
-      timeScale.setVisibleLogicalRange({ from: newFrom, to: newTo });
-
+      timeScale.setVisibleLogicalRange({ from: center - clampedWidth / 2, to: center + clampedWidth / 2 });
       zoomAnchorRef.current.locked = false;
     };
 
-    // Reset anchor lock when Ctrl key is released
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'Control') {
-        zoomAnchorRef.current.locked = false;
-      }
+      if (e.key === 'Control') zoomAnchorRef.current.locked = false;
     };
 
-    // Add wheel listener to chart container
     const container = chartContainerRef.current;
     if (container) {
       container.addEventListener('wheel', handleWheel, { passive: false });
       cleanup.add(() => container.removeEventListener('wheel', handleWheel));
     }
 
-    // Add keyup listener to reset anchor lock when Ctrl is released
     cleanup.addEventListener(window, 'keyup', handleKeyUp as EventListener);
     cleanup.addEventListener(window, 'resize', handleResize as EventListener);
 
-    // Initial resize (immediate, not debounced)
+    // Initial box position update
     handleResizeCore();
 
     return () => {
-      console.log('[Chart]', id, '🧹 Cleanup: removing chart and clearing DOM');
-
-      // Performance: Clean up all registered resources
+      console.log('[Chart]', id, '🧹 Cleanup: removing series and event handlers');
       cleanup.cleanup();
+      if (zoomResetTimerRef.current) clearTimeout(zoomResetTimerRef.current);
 
-      if (zoomResetTimerRef.current) {
-        clearTimeout(zoomResetTimerRef.current);
-      }
-
-      // Remove chart instance
-      try {
-        chart.remove();
-        console.log('[Chart]', id, '✅ Chart removed successfully');
-      } catch (e) {
-        console.warn('[Chart]', id, '⚠️ Error removing chart (may already be removed)');
-      }
-
-      // CRITICAL: Clear ALL refs to prevent stale references
-      chartRef.current = null;
+      // Clear series refs (chart instance is managed by useChartInstance hook)
       candlestickSeriesRef.current = null;
       ema20SeriesRef.current = null;
       ema200SeriesRef.current = null;
       sma20SeriesRef.current = null;
       sma200SeriesRef.current = null;
-      // BB series
       bb1UpperRef.current = null;
       bb1MiddleRef.current = null;
       bb1LowerRef.current = null;
       bb2UpperRef.current = null;
       bb2LowerRef.current = null;
-      // VWAP and KC
       vwapRef.current = null;
       kcUpperRef.current = null;
       kcMiddleRef.current = null;
       kcLowerRef.current = null;
-      // AI prediction series
       aiPredTechnicalRef.current = null;
       aiPredLSTMRef.current = null;
       aiPredLHRef.current = null;
@@ -1557,18 +1388,11 @@ export const DailyChart = memo(function DailyChart({
       aiBacktestLSTMRef.current = null;
       aiBacktestLHRef.current = null;
       aiBacktestConsensusRef.current = null;
-      // Reset flags
       chartCreatedRef.current = false;
       lastDataIdRef.current = null;
-
-      // Clear container DOM completely
-      if (chartContainerRef.current) {
-        chartContainerRef.current.innerHTML = '';
-        console.log('[Chart]', id, '✅ Container cleared');
-      }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeframe]); // Recreate chart when timeframe changes (fixes Chrome canvas issues)
+  }, [isReady, timeframe]); // Re-create series when chart becomes ready or timeframe changes
 
   // Update chart data - now uses memoized data conversions
   useEffect(() => {
@@ -1593,22 +1417,11 @@ export const DailyChart = memo(function DailyChart({
     if (chartContainerRef.current) {
       const canvases = chartContainerRef.current.querySelectorAll('canvas');
       console.log('[Chart]', id, 'Canvas count in container:', canvases.length);
-      if (canvases.length > 10) {
-        console.error('[Chart]', id, '⚠️ TOO MANY CANVASES! Possible stacked charts:', canvases.length);
-      }
     }
 
     // Use safeSetData to handle dedup and sorting
     console.log('[Chart] Setting', candlestickData.length, 'bars via safeSetData');
     safeSetData(candlestickSeriesRef.current, candlestickData);
-
-    // DEBUG: Check total canvas count in DOM
-    const allCanvases = document.querySelectorAll('canvas');
-    const chartContainers = document.querySelectorAll('[data-chart-id]');
-    console.log('[Chart]', id, '📊 Global canvas count:', allCanvases.length, '| Chart containers:', chartContainers.length);
-    if (allCanvases.length > chartContainers.length * 10) {
-      console.warn('[Chart]', id, '⚠️ Orphan canvases detected! Expected max:', chartContainers.length * 10, 'Found:', allCanvases.length);
-    }
 
     // Expose to browser console for inspection
     (window as any).__CHART_DEBUG__ = {
@@ -2018,6 +1831,7 @@ export const DailyChart = memo(function DailyChart({
       // Apply timezone shift to intraday timestamps
       predictions.forEach((pred) => {
         const predDate = new Date(pred.timestamp);
+        if (isNaN(predDate.getTime())) return;
         // Use same time format as chart: number (Unix seconds) for intraday, string for daily
         const time = isIntradayBar
           ? timeToTz(Math.floor(predDate.getTime() / 1000), tz) as Time

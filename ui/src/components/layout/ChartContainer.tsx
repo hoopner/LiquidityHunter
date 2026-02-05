@@ -14,6 +14,7 @@ import type { TradingLevels } from '../ai/AIPredictionsPanel';
 import type { IChartApi } from 'lightweight-charts';
 import type { DrawingToolType } from '../../types/drawings';
 import type { OHLCVResponse } from '../../api/types';
+import { isIntradayTimeframe } from '../../utils/time';
 
 interface ChartContainerProps {
   symbol?: string;
@@ -38,15 +39,9 @@ interface ChartContainerProps {
   tradingLevels?: TradingLevels | null;
 }
 
-// CASE-SENSITIVE: 1m=minute, 1M=month
-function isIntradayTimeframe(tf: string | undefined): boolean {
-  if (!tf) return false;
-  return ['1m', '5m', '15m', '30m', '1h', '1H', '4h', '4H'].includes(tf);
-}
-
 export const ChartContainer: React.FC<ChartContainerProps> = (props) => {
   const { timeframe } = props;
-  const isIntraday = isIntradayTimeframe(timeframe);
+  const isIntraday = timeframe ? isIntradayTimeframe(timeframe) : false;
 
   console.log('[ChartContainer] Rendering', isIntraday ? 'IntradayChart' : 'DailyChart', 'for timeframe:', timeframe);
 
