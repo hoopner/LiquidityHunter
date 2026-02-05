@@ -31,6 +31,7 @@ def get_ohlcv(
     This is the v2 endpoint using the repository pattern.
     The legacy /ohlcv endpoint remains unchanged.
     """
+    print(f"[v2/ohlcv] Request: symbol={symbol}, market={market}, tf={tf}")
     try:
         result = _service.get_ohlcv(
             symbol=symbol,

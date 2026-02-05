@@ -37,6 +37,7 @@ from engine.core.screener import screen_watchlist, ScreenResult
 from engine.core.volume_profile import calculate_volume_profile
 from engine.api.data import load_csv, load_with_refresh, OHLCVData
 from engine.api.routers.ohlcv import router as ohlcv_v2_router
+from engine.services.market_data_service import MarketDataService
 from engine.api.schemas import (
     AnalyzeResponse,
     ReplayResponse,
@@ -694,6 +695,8 @@ app.add_middleware(
 
 app.include_router(ohlcv_v2_router)
 
+_market_data_service = MarketDataService()
+
 
 def _ob_to_schema(
     ob: OrderBlock,
@@ -956,13 +959,27 @@ def analyze(
     Returns the current valid order block (if any) and validation details.
     Set filter_weak=true to exclude OBs with weak volume (< 0.8x avg volume).
     """
-    # Use SAME unified data loading as OHLCV endpoint (KIS API → PostgreSQL → KIS fallback)
+    # Use same data source as /v2/ohlcv (MarketDataService)
     market = market.upper() if market else "US"
     try:
-        data, source = load_ohlcv_unified(symbol, market, tf, refresh=False)
-        print(f"[Analyze] Using {source} data for {symbol} {market} {tf}")
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        v2_result = _market_data_service.get_ohlcv(symbol, market, tf)
+        bars = v2_result.get('bars', [])
+        if not bars:
+            raise HTTPException(status_code=404, detail=f"No data for {symbol} {market} {tf}")
+        data = OHLCVData(
+            timestamps=[str(b['time']) for b in bars],
+            open=np.array([b['open'] for b in bars]),
+            high=np.array([b['high'] for b in bars]),
+            low=np.array([b['low'] for b in bars]),
+            close=np.array([b['close'] for b in bars]),
+            volume=np.array([b['volume'] for b in bars]),
+        )
+        source = v2_result.get('data_source', 'unknown')
+        print(f"[Analyze] Using {source} data for {symbol} {market} {tf}: {len(bars)} bars")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     # Apply same limits as OHLCV endpoint to ensure consistency
     default_limits = {

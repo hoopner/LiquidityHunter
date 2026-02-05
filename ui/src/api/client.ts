@@ -65,6 +65,40 @@ const BASE_URL = API_BASE_URL;
  *
  * @param limit - Max bars to return. 0 = auto (default ~500). For intraday, use 2000+
  */
+function adaptV2Response(v2: any): any {
+  // 1. Flatten: move indicators.* to top level
+  const adapted: any = {
+    ...v2,
+    source: v2.data_source || v2.source || 'unknown',
+  };
+
+  // 2. Flatten all indicators to top level
+  if (v2.indicators) {
+    for (const [key, value] of Object.entries(v2.indicators)) {
+      // 3. Rename macd_hist → macd_histogram
+      if (key === 'macd_hist') {
+        adapted['macd_histogram'] = value;
+      } else {
+        adapted[key] = value;
+      }
+    }
+  }
+
+  // 4. Add missing middle bands as empty arrays if not present
+  const barCount = v2.bars?.length || 0;
+  if (!adapted.bb1_middle) adapted.bb1_middle = new Array(barCount).fill(null);
+  if (!adapted.bb2_middle) adapted.bb2_middle = new Array(barCount).fill(null);
+  if (!adapted.kc_middle) adapted.kc_middle = new Array(barCount).fill(null);
+  if (!adapted.rsi_bb_middle) adapted.rsi_bb_middle = new Array(barCount).fill(null);
+
+  // 5. Clean up: remove nested indicators and data_source
+  delete adapted.indicators;
+  delete adapted.data_source;
+  delete adapted.last_updated;
+
+  return adapted;
+}
+
 export async function fetchOHLCV(
   symbol: string,
   market: string = 'KR',
@@ -82,14 +116,15 @@ export async function fetchOHLCV(
     params.set('limit', limit.toString());
   }
 
-  const response = await fetch(`${BASE_URL}/ohlcv?${params}`);
+  const response = await fetch(`${BASE_URL}/v2/ohlcv?${params}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
     throw new Error(error.detail || `HTTP ${response.status}`);
   }
 
-  return response.json();
+  const data = await response.json();
+  return adaptV2Response(data);
 }
 
 /**
