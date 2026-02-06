@@ -16,6 +16,7 @@ import numpy as np
 from engine.repositories.base import OHLCVData
 from engine.repositories.kis_repository import KISRepository
 from engine.repositories.alpaca_repository import AlpacaRepository
+from engine.repositories.yfinance_repository import YFinanceRepository
 
 # Import existing indicator functions — do NOT reimplement
 from engine.core.screener import ema, rsi, macd
@@ -108,9 +109,12 @@ class MarketDataService:
       US market → AlpacaRepository only
     """
 
+    _INTRADAY_TFS = {"1m", "5m", "15m", "30m", "1h", "1H", "4h", "4H"}
+
     def __init__(self):
         self.kis_repo = KISRepository()
         self.alpaca_repo = AlpacaRepository()
+        self.yfinance_repo = YFinanceRepository()
 
     def get_ohlcv(self, symbol: str, market: str, timeframe: str) -> dict:
         """
@@ -162,26 +166,71 @@ class MarketDataService:
         self, symbol: str, market: str, timeframe: str
     ) -> tuple[OHLCVData, str]:
         """
-        Fetch data from the single designated repository per market.
+        Fetch data from the appropriate repository per market.
 
-        KR → KISRepository only
-        US → AlpacaRepository only
+        KR intraday → yfinance (past days) + KIS (today), merged
+        KR daily    → KIS only
+        US          → Alpaca only
         """
         empty = OHLCVData(
             timestamps=[], open=[], high=[], low=[], close=[], volume=[]
         )
 
         if market == "KR":
-            data = self.kis_repo.get_ohlcv(
-                symbol, timeframe, market="KR", count=500
-            )
-            return (data, "kis") if not data.is_empty() else (empty, "kis")
+            if timeframe in self._INTRADAY_TFS:
+                # Past data from yfinance + today from KIS
+                yf_data = self.yfinance_repo.get_ohlcv(symbol, timeframe)
+                kis_data = self.kis_repo.get_ohlcv(
+                    symbol, timeframe, market="KR", count=500
+                )
+                data = self._merge_ohlcv(yf_data, kis_data)
+                source = "yfinance+kis"
+            else:
+                # Daily/Weekly/Monthly — KIS only
+                data = self.kis_repo.get_ohlcv(
+                    symbol, timeframe, market="KR", count=500
+                )
+                source = "kis"
+            return (data, source) if not data.is_empty() else (empty, source)
 
         elif market == "US":
             data = self.alpaca_repo.get_ohlcv(symbol, timeframe)
             return (data, "alpaca") if not data.is_empty() else (empty, "alpaca")
 
         return empty, "unavailable"
+
+    @staticmethod
+    def _merge_ohlcv(past: OHLCVData, today: OHLCVData) -> OHLCVData:
+        """Merge past (yfinance) and today (KIS) data.
+
+        Concatenates, deduplicates by timestamp (today wins), sorts ascending.
+        """
+        merged: dict = {}
+
+        for i in range(len(past.timestamps)):
+            ts = past.timestamps[i]
+            merged[ts] = (
+                past.open[i], past.high[i], past.low[i],
+                past.close[i], past.volume[i],
+            )
+
+        # Today's data overwrites any duplicates from past
+        for i in range(len(today.timestamps)):
+            ts = today.timestamps[i]
+            merged[ts] = (
+                today.open[i], today.high[i], today.low[i],
+                today.close[i], today.volume[i],
+            )
+
+        sorted_ts = sorted(merged.keys())
+        return OHLCVData(
+            timestamps=sorted_ts,
+            open=[merged[ts][0] for ts in sorted_ts],
+            high=[merged[ts][1] for ts in sorted_ts],
+            low=[merged[ts][2] for ts in sorted_ts],
+            close=[merged[ts][3] for ts in sorted_ts],
+            volume=[merged[ts][4] for ts in sorted_ts],
+        )
 
     def _calculate_indicators(self, data: OHLCVData, timeframe: str) -> dict:
         """
