@@ -6,6 +6,7 @@ its output into the standard OHLCVData format with Unix-second timestamps.
 """
 
 import logging
+from collections import OrderedDict
 from datetime import datetime
 from typing import Optional
 
@@ -138,16 +139,16 @@ class KISRepository(MarketDataRepository):
         market = market.upper()
 
         try:
-            # KIS get_ohlcv handles all the routing internally:
-            #   KR daily  -> _get_domestic_daily_ohlcv
-            #   KR minute -> _get_domestic_minute_ohlcv
-            #   US daily  -> _get_overseas_daily_ohlcv
-            #   US minute -> _get_overseas_minute_ohlcv
+            # KIS minute endpoint always returns 1m candles regardless of
+            # requested interval. Fetch 1m and resample to target timeframe.
+            is_intraday = timeframe in INTRADAY_TIMEFRAMES
+            fetch_tf = "1m" if is_intraday else timeframe
+
             end_date_str = end.strftime("%Y%m%d") if end else None
             raw = self.client.get_ohlcv(
                 symbol=symbol,
                 market=market,
-                timeframe=timeframe,
+                timeframe=fetch_tf,
                 count=count,
                 end_date=end_date_str,
             )
@@ -175,6 +176,16 @@ class KISRepository(MarketDataRepository):
 
             # Ensure ascending sort (KIS already reverses, but verify)
             data = self._sort_ascending(data)
+
+            # Resample 1m bars into larger intraday intervals if needed
+            if is_intraday:
+                _INTERVAL_MAP = {
+                    "1m": 1, "5m": 5, "15m": 15, "30m": 30,
+                    "1h": 60, "1H": 60, "4h": 240, "4H": 240,
+                }
+                interval = _INTERVAL_MAP.get(timeframe, 1)
+                if interval > 1:
+                    data = self._resample_minutes(data, interval)
 
             logger.info(
                 f"[KISRepo] {symbol} {market} {timeframe}: "
@@ -293,6 +304,48 @@ class KISRepository(MarketDataRepository):
             logger.error(f"[KISRepo] Price fetch error for {symbol}: {e}")
 
         return None
+
+    @staticmethod
+    def _resample_minutes(data: OHLCVData, interval_minutes: int) -> OHLCVData:
+        """Aggregate 1-minute bars into N-minute bars.
+
+        Grouping uses floor(timestamp / interval_seconds) so candles
+        align to natural clock boundaries (e.g. 09:00, 09:05, 09:10).
+        """
+        if data.is_empty() or interval_minutes <= 1:
+            return data
+
+        interval_sec = interval_minutes * 60
+        groups: OrderedDict = OrderedDict()
+
+        for i in range(len(data.timestamps)):
+            key = (data.timestamps[i] // interval_sec) * interval_sec
+            if key not in groups:
+                groups[key] = {
+                    "time": data.timestamps[i],
+                    "open": data.open[i],
+                    "high": data.high[i],
+                    "low": data.low[i],
+                    "close": data.close[i],
+                    "volume": data.volume[i],
+                }
+            else:
+                g = groups[key]
+                g["high"] = max(g["high"], data.high[i])
+                g["low"] = min(g["low"], data.low[i])
+                g["close"] = data.close[i]
+                g["volume"] += data.volume[i]
+
+        ts, o, h, l, c, v = [], [], [], [], [], []
+        for g in groups.values():
+            ts.append(g["time"])
+            o.append(g["open"])
+            h.append(g["high"])
+            l.append(g["low"])
+            c.append(g["close"])
+            v.append(g["volume"])
+
+        return OHLCVData(timestamps=ts, open=o, high=h, low=l, close=c, volume=v)
 
     @staticmethod
     def _empty() -> OHLCVData:
