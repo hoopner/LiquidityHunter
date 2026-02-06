@@ -14,9 +14,12 @@ import os
 import time
 import json
 import hashlib
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Tuple
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import requests
 from dotenv import load_dotenv
@@ -493,22 +496,67 @@ class KISClient:
         count: int,
         end_date: Optional[str],
     ) -> Dict[str, Any]:
-        """Get domestic stock daily/weekly/monthly OHLCV."""
-        path = "/uapi/domestic-stock/v1/quotations/inquire-daily-price"
-        tr_id = "FHKST01010400"
+        """Get domestic stock daily/weekly/monthly OHLCV with pagination.
 
-        # Period code: D=일, W=주, M=월
-        params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_INPUT_ISCD": symbol,
-            "FID_PERIOD_DIV_CODE": period,
-            "FID_ORG_ADJ_PRC": "0",  # 수정주가 사용
-        }
+        Uses inquire-daily-itemchartprice (FHKST03010100) which returns
+        100 bars per page and supports date-range pagination.
+        """
+        path = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        tr_id = "FHKST03010100"
 
-        data = self._request("GET", path, tr_id, params=params)
-        output = data.get("output", [])
+        # Date range: 2 years back from end_date (or today)
+        if end_date:
+            end_dt = datetime.strptime(end_date, "%Y%m%d")
+        else:
+            end_dt = datetime.now()
+        start_date = (end_dt - timedelta(days=730)).strftime("%Y%m%d")
+        page_end_date = end_dt.strftime("%Y%m%d")
 
-        return self._parse_domestic_ohlcv(output, symbol, period, count)
+        all_items: List[Dict] = []
+        max_pages = 10  # Safety: 10 × 100 = 1000 bars max
+
+        for page in range(max_pages):
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": symbol,
+                "FID_INPUT_DATE_1": start_date,
+                "FID_INPUT_DATE_2": page_end_date,
+                "FID_PERIOD_DIV_CODE": period,
+                "FID_ORG_ADJ_PRC": "0",  # 수정주가 사용
+            }
+
+            data = self._request("GET", path, tr_id, params=params)
+            items = data.get("output2", [])
+
+            if not items:
+                break
+
+            all_items.extend(items)
+
+            logger.debug(
+                f"[KIS] Daily page {page+1}: {len(items)} bars, "
+                f"total {len(all_items)}"
+            )
+
+            if len(items) < 100:
+                break  # Last page
+
+            if len(all_items) >= count:
+                break  # Enough data
+
+            # Next page: day before oldest bar in this page
+            oldest_date_str = items[-1].get("stck_bsop_date", "")
+            if not oldest_date_str:
+                break
+            oldest_dt = datetime.strptime(oldest_date_str, "%Y%m%d")
+            page_end_date = (oldest_dt - timedelta(days=1)).strftime("%Y%m%d")
+
+            if page_end_date < start_date:
+                break  # Reached start boundary
+
+            time.sleep(0.05)  # Brief rate limit between pages
+
+        return self._parse_domestic_ohlcv(all_items, symbol, period, count)
 
     def _get_domestic_minute_ohlcv(
         self,
@@ -516,25 +564,74 @@ class KISClient:
         interval: str,
         count: int,
     ) -> Dict[str, Any]:
-        """Get domestic stock minute OHLCV."""
+        """Get domestic stock minute OHLCV with pagination.
+
+        Paginates by using the oldest time from the previous response
+        as the next query time. Skips first bar on page 2+ to avoid
+        overlap (KIS returns the boundary bar in both pages).
+        """
+        from zoneinfo import ZoneInfo
+
         path = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
         tr_id = "FHKST03010200"
 
-        # Get current time for the request
-        now = datetime.now()
-        hour_str = now.strftime("%H%M%S")
+        # Use KST time; fall back to market close if outside trading hours
+        kst = ZoneInfo("Asia/Seoul")
+        now_kst = datetime.now(kst)
+        current_time_str = now_kst.strftime("%H%M%S")
 
-        params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_INPUT_ISCD": symbol,
-            "FID_INPUT_HOUR_1": hour_str,
-            "FID_PW_DATA_INCU_YN": "Y",  # 과거 데이터 포함
-        }
+        if current_time_str < "090000" or current_time_str > "153000":
+            query_time = "153000"
+        else:
+            query_time = current_time_str
 
-        data = self._request("GET", path, tr_id, params=params)
-        output = data.get("output2", [])
+        all_items: List[Dict] = []
+        max_pages = 10  # Safety: 10 × 30 = ~300 bars max
 
-        return self._parse_domestic_minute_ohlcv(output, symbol, interval, count)
+        for page in range(max_pages):
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": symbol,
+                "FID_INPUT_HOUR_1": query_time,
+                "FID_PW_DATA_INCU_YN": "Y",  # 과거 데이터 포함
+                "FID_ETC_CLS_CODE": "",       # 기본값 (분봉 구분)
+            }
+
+            data = self._request("GET", path, tr_id, params=params)
+            items = data.get("output2", [])
+
+            if not items:
+                break
+
+            # Skip first bar on page 2+ (overlaps with previous page's last bar)
+            page_items = items[1:] if page > 0 else items
+
+            if not page_items:
+                break
+
+            all_items.extend(page_items)
+
+            logger.debug(
+                f"[KIS] Minute page {page+1}: {len(page_items)} bars, "
+                f"total {len(all_items)}"
+            )
+
+            if len(items) < 30:
+                break  # Last page
+
+            if len(all_items) >= count:
+                break  # Enough data
+
+            # Next page: oldest time from full response (including skipped bar)
+            oldest_time = items[-1].get("stck_cntg_hour", "")
+            if not oldest_time or oldest_time <= "090000":
+                break  # Reached market open
+
+            query_time = oldest_time
+
+            time.sleep(0.05)  # Brief rate limit between pages
+
+        return self._parse_domestic_minute_ohlcv(all_items, symbol, interval, count)
 
     def _parse_domestic_ohlcv(
         self,
@@ -799,8 +896,9 @@ class KISClient:
                 opens.append(float(row.get("open", 0)))
                 highs.append(float(row.get("high", 0)))
                 lows.append(float(row.get("low", 0)))
-                closes.append(float(row.get("clos", 0)))
-                volumes.append(int(float(row.get("tvol", 0))))
+                # KIS API uses 'last' for close price and 'evol' for volume in minute data
+                closes.append(float(row.get("last", row.get("clos", 0))))
+                volumes.append(int(float(row.get("evol", row.get("tvol", 0)))))
             except (ValueError, TypeError):
                 continue
 
